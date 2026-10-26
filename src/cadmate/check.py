@@ -3,8 +3,8 @@
 The model's bounding box (from FreeCAD, in the model's own frame) is moved by
 the footprint's model offset and compared with the pads and courtyard. KiCad's
 footprint Y axis points down while the 3D Y axis points up, so pad Y values
-are flipped before comparing. Rotation other than 0/90/180/270 about Z is not
-handled here yet.
+are flipped before comparing. Rotations other than steps of 90 degrees are not
+handled here yet (they would need the rotated shape, not its box).
 """
 
 from __future__ import annotations
@@ -15,23 +15,36 @@ CENTER_TOLERANCE = 0.25  # mm
 Z_TOLERANCE = 0.05  # mm
 
 
+def _rotate90(v: tuple[float, float, float], axis: int, quarter_turns: int) -> tuple[float, float, float]:
+    """Rotate v by quarter_turns * 90 degrees counter-clockwise about axis (0=X, 1=Y, 2=Z)."""
+    i, j = [(1, 2), (2, 0), (0, 1)][axis]
+    v = list(v)
+    for _ in range(quarter_turns % 4):
+        v[i], v[j] = -v[j], v[i]
+    return tuple(v)
+
+
 def _apply_placement(bbox: dict, model: Model) -> dict:
+    """Place the model's bounding box as KiCad does: scale, rotate X, then Y, then Z, then offset.
+
+    KiCad stores the rotation angles negated (a file value of -90 about X turns
+    a Y-up model so its +Y points to +Z), so each angle is applied as -angle.
+    """
     sx, sy, sz = model.scale
+    corners = [
+        (x * sx, y * sy, z * sz)
+        for x in (bbox["xmin"], bbox["xmax"])
+        for y in (bbox["ymin"], bbox["ymax"])
+        for z in (bbox["zmin"], bbox["zmax"])
+    ]
+    for axis in (0, 1, 2):
+        turns = round(-model.rotate[axis] / 90)
+        corners = [_rotate90(c, axis, turns) for c in corners]
     ox, oy, oz = model.offset
-    xs = [bbox["xmin"] * sx, bbox["xmax"] * sx]
-    ys = [bbox["ymin"] * sy, bbox["ymax"] * sy]
-    zs = [bbox["zmin"] * sz, bbox["zmax"] * sz]
-    rz = round(model.rotate[2]) % 360
-    if rz == 90:  # (x, y) -> (-y, x)
-        xs, ys = [-y for y in ys], xs
-    elif rz == 270:  # (x, y) -> (y, -x)
-        xs, ys = ys, [-x for x in xs]
-    elif rz == 180:
-        xs, ys = [-x for x in xs], [-y for y in ys]
     return {
-        "xmin": min(xs) + ox, "xmax": max(xs) + ox,
-        "ymin": min(ys) + oy, "ymax": max(ys) + oy,
-        "zmin": min(zs) + oz, "zmax": max(zs) + oz,
+        "xmin": min(c[0] for c in corners) + ox, "xmax": max(c[0] for c in corners) + ox,
+        "ymin": min(c[1] for c in corners) + oy, "ymax": max(c[1] for c in corners) + oy,
+        "zmin": min(c[2] for c in corners) + oz, "zmax": max(c[2] for c in corners) + oz,
     }
 
 
@@ -43,8 +56,8 @@ def check_model(footprint: Footprint, bbox: dict, model: Model | None = None, ex
     expected: optional body size from the datasheet, keys length/width/height (mm).
     """
     model = model or Model(path="")
-    if model.rotate[0] or model.rotate[1] or round(model.rotate[2]) % 90:
-        return {"ok": False, "errors": ["only Z rotations in steps of 90 degrees are checked so far"], "warnings": [], "measured": {}}
+    if any(abs(r - 90 * round(r / 90)) > 1e-6 for r in model.rotate):
+        return {"ok": False, "errors": ["only rotations in steps of 90 degrees are checked so far"], "warnings": [], "measured": {}}
     b = _apply_placement(bbox, model)
     errors: list[str] = []
     warnings: list[str] = []

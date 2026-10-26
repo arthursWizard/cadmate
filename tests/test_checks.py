@@ -61,3 +61,23 @@ def test_rotation_swaps_axes():
 def test_too_tall_and_sunk_model():
     r = check.check_model(SOIC, GOOD | {"zmin": -0.3, "zmax": 2.5}, expected={"height": 1.75})
     assert len(r["errors"]) == 2
+
+
+def test_y_up_model_is_stood_up_by_x_rotation():
+    # A Y-up model (height along +Y), as many vendor STEPs are; KiCad's rotate X = -90 stands it on the board.
+    y_up = {"xmin": -3.0, "xmax": 3.0, "ymin": 0.0, "ymax": 1.75, "zmin": -2.45, "zmax": 2.45}
+    r = check.check_model(SOIC, y_up, footprint.Model(path="", rotate=(-90, 0, 0)), {"length": 6.0, "width": 4.9, "height": 1.75})
+    assert r["ok"], r
+    assert r["measured"]["model_bbox_placed"]["zmin"] == 0.0
+
+
+def test_z_rotation_direction():
+    # KiCad's rotate Z = 90 turns the model clockwise seen from above: +X goes to -Y.
+    off_centre = {"xmin": 0.0, "xmax": 1.0, "ymin": 0.0, "ymax": 0.0, "zmin": 0.0, "zmax": 1.0}
+    b = check._apply_placement(off_centre, footprint.Model(path="", rotate=(0, 0, 90)))
+    assert (b["ymin"], b["ymax"], b["xmin"], b["xmax"]) == (-1.0, 0.0, 0.0, 0.0)
+
+
+def test_odd_angles_are_refused():
+    r = check.check_model(SOIC, GOOD, footprint.Model(path="", rotate=(0, 0, 45)))
+    assert not r["ok"]

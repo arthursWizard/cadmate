@@ -135,13 +135,15 @@ for hx, hy, ex, ey in pins:
         pads.append(box(x0, y0, z, x1 - x0, y1 - y0, PAD_T))
 for c in cuts:
     pcb = pcb.cut(c)
-pad_shape = Part.makeCompound(pads)
-for c in cuts:
-    pad_shape = pad_shape.cut(c)
 add("PCB", pcb, BLUE)
 for i in range(10):
-    pad_shape = pad_shape.fuse(centred_box(BACK_PAD_X, BACK_PAD_Y0 - i * BACK_PAD_PITCH, Z_BOT - PAD_T, BACK_PAD_W, BACK_PAD_L, PAD_T))
-add("Pads", pad_shape, GOLD)
+    pads.append(centred_box(BACK_PAD_X, BACK_PAD_Y0 - i * BACK_PAD_PITCH, Z_BOT - PAD_T, BACK_PAD_W, BACK_PAD_L, PAD_T))
+# One object per pad: a multi-solid compound loses its colour in some STEP readers.
+for i, pad in enumerate(pads):
+    for c in cuts:
+        if pad.BoundBox.intersect(c.BoundBox):
+            pad = pad.cut(c)
+    add(f"Pad_{i + 1}", pad, GOLD)
 
 # USB-C: box with rounded ends (rounded edges run along Y)
 usb_y1 = BOARD_YMAX + USB_OVERHANG

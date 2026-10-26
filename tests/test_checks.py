@@ -100,3 +100,21 @@ def test_through_hole_model_off_the_pads_is_caught():
     assert any("pads reach" in w for w in r["warnings"])
     far = RP2040_MODEL | {"xmin": 31.16, "xmax": 49.16}
     assert not check.check_model(RP2040_ZERO, far)["ok"]
+
+
+# The user's other RP2040-Zero STEP: Y-up, centred, linked with offset (10.25, 12.75, 0) and rotate (-90, 0, 0).
+# It shows the right way up in KiCad, which fixes the sign: a file value of -90 about X turns +Y into +Z.
+Y_UP_ZERO = {"xmin": -9.0, "xmax": 9.0, "ymin": -1.0, "ymax": 4.35, "zmin": -12.95, "zmax": 11.75}
+
+
+def test_kicad_rotation_sign_matches_a_real_footprint():
+    m = footprint.Model(path="", offset=(10.25, 12.75, 0), rotate=(-90, 0, 0))
+    b = check._apply_placement(Y_UP_ZERO, m)
+    assert (round(b["zmin"], 2), round(b["zmax"], 2)) == (-1.0, 4.35)
+    assert not any("upside down" in w for w in check.check_model(RP2040_ZERO, Y_UP_ZERO, m)["warnings"])
+
+
+def test_upside_down_module_is_flagged():
+    m = footprint.Model(path="", offset=(10.25, 12.75, 0), rotate=(90, 0, 0))
+    r = check.check_model(RP2040_ZERO, Y_UP_ZERO, m)
+    assert any("upside down" in w for w in r["warnings"])

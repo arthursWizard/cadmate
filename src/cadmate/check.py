@@ -85,6 +85,8 @@ def check_model(footprint: Footprint, bbox: dict, model: Model | None = None, ex
             warnings.append("through-hole footprint whose pin 1 is not at the origin (KiCad library convention puts it there)")
         if b["zmin"] > Z_TOLERANCE:
             warnings.append("through-hole model has no part below the board; leads may be missing")
+        if -b["zmin"] > b["zmax"]:
+            warnings.append(f"model is mostly below the board (z {b['zmin']:.2f}..{b['zmax']:.2f}); it may be upside down, check the rotation")
         if pad_box:
             # Leads or castellations sit on the pads, so the model should cover every pad.
             out = max(b["xmin"] - pad_box["xmax"], pad_box["xmin"] - b["xmax"], b["ymin"] - pad_box["ymax"], pad_box["ymin"] - b["ymax"])

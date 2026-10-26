@@ -81,3 +81,22 @@ def test_z_rotation_direction():
 def test_odd_angles_are_refused():
     r = check.check_model(SOIC, GOOD, footprint.Model(path="", rotate=(0, 0, 45)))
     assert not r["ok"]
+
+
+RP2040_ZERO = footprint.read(Path(__file__).parent.parent / "examples" / "rp2040-zero" / "RP2040-Zero.kicad_mod")
+# Generated model: board on the courtyard, USB-C 1 mm past the top edge, parts under the board.
+RP2040_MODEL = {"xmin": 1.16, "xmax": 19.16, "ymin": 0.95, "ymax": 25.45, "zmin": -1.1, "zmax": 4.76}
+
+
+def test_overhang_is_a_warning_not_silent():
+    r = check.check_model(RP2040_ZERO, RP2040_MODEL, expected={"length": 18, "width": 23.5})
+    assert r["ok"], r
+    assert any("width" in w and "over the datasheet" in w for w in r["warnings"])
+
+
+def test_through_hole_model_off_the_pads_is_caught():
+    shifted = RP2040_MODEL | {"xmin": 4.16, "xmax": 22.16}
+    r = check.check_model(RP2040_ZERO, shifted)
+    assert any("pads reach" in w for w in r["warnings"])
+    far = RP2040_MODEL | {"xmin": 31.16, "xmax": 49.16}
+    assert not check.check_model(RP2040_ZERO, far)["ok"]

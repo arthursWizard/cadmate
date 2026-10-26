@@ -13,6 +13,8 @@ from .footprint import Footprint, Model
 
 CENTER_TOLERANCE = 0.25  # mm
 Z_TOLERANCE = 0.05  # mm
+PAD_COVER_TOLERANCE = 0.5  # mm
+OVERSIZE_WARNING = 0.5  # mm
 
 
 def _rotate90(v: tuple[float, float, float], axis: int, quarter_turns: int) -> tuple[float, float, float]:
@@ -83,6 +85,14 @@ def check_model(footprint: Footprint, bbox: dict, model: Model | None = None, ex
             warnings.append("through-hole footprint whose pin 1 is not at the origin (KiCad library convention puts it there)")
         if b["zmin"] > Z_TOLERANCE:
             warnings.append("through-hole model has no part below the board; leads may be missing")
+        if pad_box:
+            # Leads or castellations sit on the pads, so the model should cover every pad.
+            out = max(b["xmin"] - pad_box["xmax"], pad_box["xmin"] - b["xmax"], b["ymin"] - pad_box["ymax"], pad_box["ymin"] - b["ymax"])
+            uncovered = max(b["xmin"] - pad_box["xmin"], pad_box["xmax"] - b["xmax"], b["ymin"] - pad_box["ymin"], pad_box["ymax"] - b["ymax"])
+            if out > 0:
+                errors.append("model does not overlap the pads at all; check the offset")
+            elif uncovered > PAD_COVER_TOLERANCE:
+                warnings.append(f"pads reach {uncovered:.2f} mm beyond the model; check the offset")
 
     court = footprint.courtyard
     if court is not None:
@@ -101,6 +111,8 @@ def check_model(footprint: Footprint, bbox: dict, model: Model | None = None, ex
                 diff = size[key] - float(expected[key])
                 if diff < -0.05:
                     errors.append(f"model {key} {size[key]:.2f} mm is smaller than the datasheet {expected[key]} mm")
+                elif key != "height" and diff > OVERSIZE_WARNING:
+                    warnings.append(f"model {key} {size[key]:.2f} mm is {diff:.2f} mm over the datasheet {expected[key]} mm; fine only for parts that overhang (connectors, leads)")
                 elif key == "height" and diff > 0.1:
                     errors.append(f"model height {size[key]:.2f} mm exceeds the datasheet {expected[key]} mm")
 

@@ -1,6 +1,9 @@
 # Builds a 3D model of the Waveshare RP2040-Zero for the RP2040-Zero.kicad_mod
-# footprint and exports it as STEP. Runs in FreeCAD 0.20+ (GUI Python console,
-# Macro > Execute, or headless: FreeCADCmd build_rp2040_zero.py).
+# footprint and exports it as STEP. Runs in
+# FreeCAD 0.20+. Colours are only written when the FreeCAD GUI is running:
+#   GUI:      Macro > Macros... > Execute, or
+#             CADMATE_QUIT=1 /Applications/FreeCAD.app/Contents/MacOS/FreeCAD build_rp2040_zero.py
+#   headless: FreeCADCmd build_rp2040_zero.py   (same geometry, no colours)
 #
 # Frame: the model is built in the footprint's own 3D frame (mm, Z up, Z = 0 is
 # the top of the carrier PCB, footprint Y flipped), so it links with offset 0
@@ -12,6 +15,7 @@
 #   footprint  = RP2040-Zero.kicad_mod (cadmate read_footprint)
 #   datasheet  = the component's own datasheet
 #   ASSUMED    = typical value, not confirmed for this board
+#   waveshare  = measured on Waveshare's official STEP after the first build (comparison run)
 import os
 
 import FreeCAD as App
@@ -30,7 +34,7 @@ MOUNT_Z = 0.0                          # user: soldered flat
 BOARD_XMIN, BOARD_XMAX = 1.16, 19.16   # drawing 18.00, placed on the footprint courtyard
 BOARD_YMIN, BOARD_YMAX = 0.95, 24.45   # drawing 23.50, placed on the footprint courtyard (Y flipped)
 BOARD_R = 1.0                          # drawing R1.00 corners
-BOARD_T = 1.6                          # ASSUMED: user says standard thickness
+BOARD_T = 1.0                          # waveshare (their board solid is 1.09; 1.6 made ours 0.4 mm too tall)
 HOLE_D = 0.8                           # footprint drill; drawing: hole centres 1.38 from the edge
 PITCH = 2.54                           # drawing
 SIDE_PIN_Y = [2.54 + i * PITCH for i in range(9)]    # footprint pads 1-9 and 15-23; drawing: first 1.59 from top
@@ -41,10 +45,13 @@ PAD_W, PAD_T = 1.5, 0.035              # photo: gold pad from the edge to just p
 # USB-C receptacle (top-mount, overhanging the top edge)
 USB_W = 8.94                           # datasheet (16-pin top-mount USB-C); photo agrees within 0.2
 USB_XMAX = BOARD_XMAX - 4.67           # drawing: 4.67 from the right edge
-USB_OVERHANG = 1.0                     # footprint F.Fab (photo suggests 1.0 to 1.3)
+USB_OVERHANG = 1.2                     # waveshare 1.21 (footprint F.Fab says 1.0)
 USB_L = 7.35                           # datasheet (typical)
-USB_H = 3.16                           # datasheet (typical)
+USB_H = 3.25                           # waveshare: top 3.25 above the board
 USB_R = 1.2                            # ASSUMED end radius
+USB_WALL = 0.3                         # ASSUMED shell thickness; the opening is the shell minus this
+USB_DEPTH = 6.0                        # ASSUMED socket depth
+USB_TONGUE_W, USB_TONGUE_T = 6.7, 0.7  # datasheet (USB-C spec tongue)
 
 # Top side parts: (name, centre x, centre y, size x, size y, height)
 TOP_PARTS = [
@@ -57,6 +64,7 @@ BUTTONS = [                            # photo positions, between pins 26/15 and
 ]
 BTN_X, BTN_Y, BTN_H = 3.0, 4.0, 2.0    # photo footprint 3x4 (incl. legs ~3.2x4.3); height ASSUMED
 BTN_CAP_X, BTN_CAP_Y, BTN_CAP_H = 1.6, 2.6, 0.5  # photo: oval plunger; height ASSUMED
+BTN_LEG_X, BTN_LEG_Y, BTN_LEG_T = 0.6, 0.6, 0.15  # photo: four legs past the short ends
 
 # Bottom side parts, from Waveshare's back-view photo (mirrored into the top view).
 BOTTOM_PARTS = [
@@ -64,6 +72,17 @@ BOTTOM_PARTS = [
     ("Crystal_12MHz", 10.15, 5.48, 3.2, 2.5, 0.8),  # photo position; 3225 size (photo 3.3x2.7)
     ("LDO", 10.03, 21.69, 1.6, 2.9, 1.1),           # photo position; SOT-23-5 turned 90 deg, height ASSUMED
 ]
+# Ten SMD pads on the underside (GND, GP25..GP17), near the left edge in top view.
+BACK_PAD_X = 4.01                      # photo
+BACK_PAD_Y0, BACK_PAD_PITCH = 17.55, 1.27  # photo: first pad (GND) and spacing, going down
+BACK_PAD_W, BACK_PAD_L = 1.0, 0.6      # photo
+
+# Colours (RGB 0..1)
+BLUE = (0.05, 0.3, 0.7)                # Waveshare's blue solder mask
+GOLD = (0.85, 0.7, 0.3)
+METAL = (0.8, 0.8, 0.82)
+BLACK = (0.12, 0.12, 0.12)
+WHITE = (0.95, 0.95, 0.95)
 
 # --- Build ---
 doc = App.newDocument("RP2040_Zero")
@@ -85,6 +104,10 @@ def add(name, shape, colour):
     if App.GuiUp:
         obj.ViewObject.ShapeColor = colour
     return obj
+
+
+def along_y(shape):
+    return [e for e in shape.Edges if abs(e.Vertexes[0].Point.y - e.Vertexes[1].Point.y) > 1e-6]
 
 
 def vertical_edges(shape):
@@ -115,34 +138,49 @@ for c in cuts:
 pad_shape = Part.makeCompound(pads)
 for c in cuts:
     pad_shape = pad_shape.cut(c)
-add("PCB", pcb, (0.1, 0.25, 0.6))
-add("Pads", pad_shape, (0.85, 0.7, 0.3))
+add("PCB", pcb, BLUE)
+for i in range(10):
+    pad_shape = pad_shape.fuse(centred_box(BACK_PAD_X, BACK_PAD_Y0 - i * BACK_PAD_PITCH, Z_BOT - PAD_T, BACK_PAD_W, BACK_PAD_L, PAD_T))
+add("Pads", pad_shape, GOLD)
 
 # USB-C: box with rounded ends (rounded edges run along Y)
 usb_y1 = BOARD_YMAX + USB_OVERHANG
 usb = box(USB_XMAX - USB_W, usb_y1 - USB_L, Z_TOP, USB_W, USB_L, USB_H)
-usb = usb.makeFillet(USB_R, [e for e in usb.Edges if abs(e.Vertexes[0].Point.y - e.Vertexes[1].Point.y) > 1e-6])
-add("USB_C", usb, (0.8, 0.8, 0.82))
+usb = usb.makeFillet(USB_R, along_y(usb))
+opening = box(USB_XMAX - USB_W + USB_WALL, usb_y1 - USB_DEPTH, Z_TOP + USB_WALL, USB_W - 2 * USB_WALL, USB_DEPTH + 1, USB_H - 2 * USB_WALL)
+opening = opening.makeFillet(USB_R - USB_WALL, along_y(opening))
+add("USB_C", usb.cut(opening), METAL)
+usb_cx = USB_XMAX - USB_W / 2
+add("USB_C_Tongue", centred_box(usb_cx, usb_y1 - USB_DEPTH / 2 - 0.5, Z_TOP + USB_H / 2 - USB_TONGUE_T / 2, USB_TONGUE_W, USB_DEPTH - 1, USB_TONGUE_T), BLACK)
 
 for name, cx, cy, dx, dy, h in TOP_PARTS:
-    add(name, centred_box(cx, cy, Z_TOP, dx, dy, h), (0.95, 0.95, 0.95) if "LED" in name else (0.15, 0.15, 0.15))
+    add(name, centred_box(cx, cy, Z_TOP, dx, dy, h), WHITE if "LED" in name else BLACK)
 for name, cx, cy in BUTTONS:
     body = centred_box(cx, cy, Z_TOP, BTN_X, BTN_Y, BTN_H)
     # Oval plunger, long axis along Y (an XY ellipse has its major axis along X, so turn it)
     cap = Part.Face(Part.Wire(Part.Ellipse(V(cx, cy, Z_TOP + BTN_H), BTN_CAP_Y / 2, BTN_CAP_X / 2).toShape()))
     cap.rotate(V(cx, cy, 0), V(0, 0, 1), 90)
-    add(name, body.fuse(cap.extrude(V(0, 0, BTN_CAP_H))), (0.75, 0.75, 0.75))
+    legs = [centred_box(cx + sx * (BTN_X / 2 - BTN_LEG_X / 2), cy + sy * (BTN_Y / 2 + BTN_LEG_Y / 2), Z_TOP, BTN_LEG_X, BTN_LEG_Y, BTN_LEG_T)
+            for sx in (-1, 1) for sy in (-1, 1)]
+    add(name, body.fuse(legs), METAL)
+    add(name + "_Plunger", cap.extrude(V(0, 0, BTN_CAP_H)), WHITE)
 for name, cx, cy, dx, dy, h in BOTTOM_PARTS:
-    add(name, centred_box(cx, cy, Z_BOT - h, dx, dy, h), (0.15, 0.15, 0.15))
+    add(name, centred_box(cx, cy, Z_BOT - h, dx, dy, h), METAL if "Crystal" in name else BLACK)
 
 doc.recompute()
 objs = doc.Objects
-try:
-    import Import  # keeps one named solid per part (and colours when run in the GUI)
+if App.GuiUp:
+    import ImportGui  # writes each part's colour into the STEP
+    ImportGui.export(objs, OUT)
+else:
+    import Import
     Import.export(objs, OUT)
-except Exception:
-    Part.makeCompound([o.Shape for o in objs]).exportStep(OUT)
+    print("note: no GUI, so the STEP has no colours (see the header for the GUI command)")
 
 bb = Part.makeCompound([o.Shape for o in objs]).BoundBox
 print(f"wrote {OUT}")
 print(f"bbox x {bb.XMin:.2f}..{bb.XMax:.2f}  y {bb.YMin:.2f}..{bb.YMax:.2f}  z {bb.ZMin:.2f}..{bb.ZMax:.2f}")
+if App.GuiUp and os.environ.get("CADMATE_QUIT"):
+    import FreeCADGui
+    App.closeDocument(doc.Name)
+    FreeCADGui.getMainWindow().close()

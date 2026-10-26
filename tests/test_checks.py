@@ -61,3 +61,60 @@ def test_rotation_swaps_axes():
 def test_too_tall_and_sunk_model():
     r = check.check_model(SOIC, GOOD | {"zmin": -0.3, "zmax": 2.5}, expected={"height": 1.75})
     assert len(r["errors"]) == 2
+
+
+def test_y_up_model_is_stood_up_by_x_rotation():
+    # A Y-up model (height along +Y), as many vendor STEPs are; KiCad's rotate X = -90 stands it on the board.
+    y_up = {"xmin": -3.0, "xmax": 3.0, "ymin": 0.0, "ymax": 1.75, "zmin": -2.45, "zmax": 2.45}
+    r = check.check_model(SOIC, y_up, footprint.Model(path="", rotate=(-90, 0, 0)), {"length": 6.0, "width": 4.9, "height": 1.75})
+    assert r["ok"], r
+    assert r["measured"]["model_bbox_placed"]["zmin"] == 0.0
+
+
+def test_z_rotation_direction():
+    # KiCad's rotate Z = 90 turns the model clockwise seen from above: +X goes to -Y.
+    off_centre = {"xmin": 0.0, "xmax": 1.0, "ymin": 0.0, "ymax": 0.0, "zmin": 0.0, "zmax": 1.0}
+    b = check._apply_placement(off_centre, footprint.Model(path="", rotate=(0, 0, 90)))
+    assert (b["ymin"], b["ymax"], b["xmin"], b["xmax"]) == (-1.0, 0.0, 0.0, 0.0)
+
+
+def test_odd_angles_are_refused():
+    r = check.check_model(SOIC, GOOD, footprint.Model(path="", rotate=(0, 0, 45)))
+    assert not r["ok"]
+
+
+RP2040_ZERO = footprint.read(Path(__file__).parent.parent / "examples" / "rp2040-zero" / "RP2040-Zero.kicad_mod")
+# Generated model: board on the courtyard, USB-C 1 mm past the top edge, parts under the board.
+RP2040_MODEL = {"xmin": 1.16, "xmax": 19.16, "ymin": 0.95, "ymax": 25.45, "zmin": -1.1, "zmax": 4.76}
+
+
+def test_overhang_is_a_warning_not_silent():
+    r = check.check_model(RP2040_ZERO, RP2040_MODEL, expected={"length": 18, "width": 23.5})
+    assert r["ok"], r
+    assert any("width" in w and "over the datasheet" in w for w in r["warnings"])
+
+
+def test_through_hole_model_off_the_pads_is_caught():
+    shifted = RP2040_MODEL | {"xmin": 4.16, "xmax": 22.16}
+    r = check.check_model(RP2040_ZERO, shifted)
+    assert any("pads reach" in w for w in r["warnings"])
+    far = RP2040_MODEL | {"xmin": 31.16, "xmax": 49.16}
+    assert not check.check_model(RP2040_ZERO, far)["ok"]
+
+
+# The user's other RP2040-Zero STEP: Y-up, centred, linked with offset (10.25, 12.75, 0) and rotate (-90, 0, 0).
+# It shows the right way up in KiCad, which fixes the sign: a file value of -90 about X turns +Y into +Z.
+Y_UP_ZERO = {"xmin": -9.0, "xmax": 9.0, "ymin": -1.0, "ymax": 4.35, "zmin": -12.95, "zmax": 11.75}
+
+
+def test_kicad_rotation_sign_matches_a_real_footprint():
+    m = footprint.Model(path="", offset=(10.25, 12.75, 0), rotate=(-90, 0, 0))
+    b = check._apply_placement(Y_UP_ZERO, m)
+    assert (round(b["zmin"], 2), round(b["zmax"], 2)) == (-1.0, 4.35)
+    assert not any("upside down" in w for w in check.check_model(RP2040_ZERO, Y_UP_ZERO, m)["warnings"])
+
+
+def test_upside_down_module_is_flagged():
+    m = footprint.Model(path="", offset=(10.25, 12.75, 0), rotate=(90, 0, 0))
+    r = check.check_model(RP2040_ZERO, Y_UP_ZERO, m)
+    assert any("upside down" in w for w in r["warnings"])

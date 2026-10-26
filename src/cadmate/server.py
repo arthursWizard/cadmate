@@ -13,7 +13,7 @@ from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 
-from . import apps, check, footprint, packages
+from . import apps, check, footprint, generate, ipc, packages
 
 server = MCPServer("cadmate")
 
@@ -46,6 +46,9 @@ def environment() -> dict:
             "package_params": True,
             "link_model_to_footprint": True,
             "check_model_vs_footprint": freecad.available,
+            "generate_footprint": True,
+            "check_footprint": True,
+            "compare_footprints": True,
         },
     }
 
@@ -146,6 +149,93 @@ def link_model_to_footprint(
     shutil.copy2(path, backup)
     path.write_text(new_text, encoding="utf-8")
     return {"written": str(path), "backup": str(backup), "models": [m.__dict__ for m in footprint.parse(new_text).models]}
+
+
+@server.tool()
+def list_footprint_families() -> dict:
+    """List the footprint families cadmate can generate, the datasheet values each needs, and the density levels."""
+    return {"families": generate.FAMILIES, "densities": list(ipc.DENSITIES), "default_density": "nominal"}
+
+
+@server.tool()
+def generate_footprint(
+    family: str,
+    params: dict,
+    library_dir: str,
+    name: str | None = None,
+    density: str = "nominal",
+    courtyard_clearance: float | None = None,
+    datasheet: str | None = None,
+    model_path: str | None = None,
+    overwrite: bool = False,
+) -> dict:
+    """Generate a KiCad footprint from datasheet dimensions and write it into a .pretty library folder.
+
+    soic and qfn compute IPC-7351B pads from the package dimensions; give each
+    dimension as the datasheet does: a number, [min, max], [min, nom, max] or
+    "6.0+/-0.2". custom places pads exactly as the datasheet's recommended land
+    pattern gives them. The result is checked before it is written; nothing is
+    written when the check finds errors. An existing file is only replaced with
+    overwrite=True, and a .bak copy is kept.
+    """
+    lib = Path(library_dir).expanduser()
+    if lib.suffix != ".pretty":
+        return {"ok": False, "errors": ["library_dir must be a KiCad footprint library folder ending in .pretty"]}
+    result = generate.generate(family, params, name=name, density=density, courtyard_clearance=courtyard_clearance,
+                               datasheet=datasheet, model_path=model_path)
+    text = result.pop("text")
+    if not result["ok"]:
+        return result
+    path = lib / f"{result['name']}.kicad_mod"
+    if path.exists() and not overwrite:
+        result["ok"] = False
+        result["errors"] = [f"{path} exists; pass overwrite=True to replace it (a .bak copy is kept)"]
+        return result
+    lib.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        shutil.copy2(path, path.with_suffix(path.suffix + ".bak"))
+    path.write_text(text, encoding="utf-8")
+    result["written"] = str(path)
+    return result
+
+
+@server.tool()
+def check_footprint(
+    path: str,
+    family: str | None = None,
+    params: dict | None = None,
+    courtyard_clearance: float = check.COURTYARD_CLEARANCE,
+) -> dict:
+    """Review a KiCad footprint: touching pads, pads outside the courtyard, silkscreen on copper, and library conventions.
+
+    With family and params (as for generate_footprint), the footprint is also
+    compared pad by pad with the IPC-7351B footprint those datasheet values give.
+    """
+    fp = footprint.read(path)
+    result = check.check_footprint(fp, courtyard_clearance=courtyard_clearance)
+    if family and params:
+        expected = generate.generate(family, params)
+        if not expected["ok"]:
+            result["warnings"].append(f"could not build the expected footprint from params: {expected['errors']}")
+        else:
+            cmp = check.compare_footprints(fp, footprint.parse(expected["text"]))
+            result["vs_datasheet"] = cmp
+            if cmp["only_in_candidate"] or cmp["only_in_reference"]:
+                result["errors"].append("pad numbers differ from what the datasheet values give")
+            elif not cmp["same_pads"]:
+                result["warnings"].append(
+                    f"pads differ from the IPC-7351B result by up to {cmp['max_pad_difference']} mm; fine if they follow the datasheet's own land pattern"
+                )
+            if fp.pitch() is not None and expected["summary"]["pitch"] is not None and abs(fp.pitch() - expected["summary"]["pitch"]) > packages.PITCH_TOLERANCE:
+                result["errors"].append(f"pitch {fp.pitch()} mm differs from the datasheet's {expected['summary']['pitch']} mm")
+            result["ok"] = not result["errors"]
+    return result
+
+
+@server.tool()
+def compare_footprints(path: str, reference_path: str) -> dict:
+    """Compare a footprint pad by pad with a reference, for example KiCad's library footprint for the same package."""
+    return check.compare_footprints(footprint.read(path), footprint.read(reference_path))
 
 
 def main() -> None:

@@ -1,4 +1,8 @@
-"""Check a 3D model's placement against its footprint.
+"""Checks: a 3D model's placement against its footprint, and footprints themselves.
+
+check_footprint reviews any footprint, generated or not, against the rules the
+KiCad library follows (KLC) and the ones that make a board fail: pads that
+touch, pads outside the courtyard, silkscreen on copper.
 
 The model's bounding box (from FreeCAD, in the model's own frame) is moved by
 the footprint's model offset and compared with the pads and courtyard. KiCad's
@@ -9,7 +13,9 @@ handled here yet (they would need the rotated shape, not its box).
 
 from __future__ import annotations
 
-from .footprint import Footprint, Model
+import math
+
+from .footprint import BBox, Footprint, Model, Pad
 
 CENTER_TOLERANCE = 0.25  # mm
 Z_TOLERANCE = 0.05  # mm
@@ -119,3 +125,253 @@ def check_model(footprint: Footprint, bbox: dict, model: Model | None = None, ex
                     errors.append(f"model height {size[key]:.2f} mm exceeds the datasheet {expected[key]} mm")
 
     return {"ok": not errors, "errors": errors, "warnings": warnings, "measured": measured}
+
+
+MIN_PAD_GAP = 0.15  # mm of copper between pads; below this many fabs cannot keep a solder mask web
+SILK_PAD_CLEARANCE = 0.2  # KLC
+COURTYARD_CLEARANCE = 0.25  # KLC default; connectors and large parts often use 0.5
+COURTYARD_LINE = 0.05  # KLC
+GRID = 0.01  # KLC courtyard grid
+
+
+Point = tuple[float, float]
+Segment = tuple[Point, Point]
+
+
+def _edges(pts: list[Point], closed: bool) -> list[Segment]:
+    pairs = list(zip(pts, pts[1:]))
+    if closed and len(pts) > 2:
+        pairs.append((pts[-1], pts[0]))
+    return pairs
+
+
+def _graphic_edges(g) -> list[Segment]:
+    if g.kind == "line" and len(g.pts) >= 2:
+        return [(g.pts[0], g.pts[1])]
+    if g.kind == "rect" and len(g.pts) >= 2:
+        (x0, y0), (x1, y1) = g.pts[0], g.pts[1]
+        return _edges([(x0, y0), (x1, y0), (x1, y1), (x0, y1)], True)
+    if g.kind == "poly":
+        return _edges(g.pts, True)
+    if g.kind == "arc" and len(g.pts) >= 3:
+        return _edges(g.pts[:3], False)  # start, mid, end: close enough for clearances
+    if g.kind == "circle" and len(g.pts) >= 2:
+        (cx, cy), (ex, ey) = g.pts[0], g.pts[1]
+        r = math.hypot(ex - cx, ey - cy)
+        ring = [(cx + r * math.cos(a * math.pi / 16), cy + r * math.sin(a * math.pi / 16)) for a in range(32)]
+        return _edges(ring, True)
+    return []
+
+
+def _point_segment(p: Point, a: Point, b: Point) -> float:
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    L2 = dx * dx + dy * dy
+    t = 0.0 if L2 == 0 else max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2))
+    return math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy)
+
+
+def _point_box(p: Point, b: BBox) -> float:
+    dx = max(b.xmin - p[0], 0.0, p[0] - b.xmax)
+    dy = max(b.ymin - p[1], 0.0, p[1] - b.ymax)
+    return math.hypot(dx, dy)
+
+
+def _segments_cross(a: Point, b: Point, c: Point, d: Point) -> bool:
+    def orient(p, q, r):
+        v = (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+        return 0 if abs(v) < 1e-12 else (1 if v > 0 else -1)
+
+    return orient(a, b, c) * orient(a, b, d) < 0 and orient(c, d, a) * orient(c, d, b) < 0
+
+
+def _segment_box(a: Point, b: Point, box: BBox) -> float:
+    """Distance between a segment and a box; 0 if they touch or overlap."""
+    if _point_box(a, box) == 0 or _point_box(b, box) == 0:
+        return 0.0
+    corners = [(box.xmin, box.ymin), (box.xmax, box.ymin), (box.xmax, box.ymax), (box.xmin, box.ymax)]
+    if any(_segments_cross(a, b, c, d) for c, d in _edges(corners, True)):
+        return 0.0
+    return min([_point_box(a, box), _point_box(b, box)] + [_point_segment(c, a, b) for c in corners])
+
+
+def _inside(p: Point, edges: list[Segment]) -> bool:
+    """Even-odd test; points on an edge count as inside."""
+    if any(_point_segment(p, a, b) < 1e-6 for a, b in edges):
+        return True
+    hits = 0
+    for (x0, y0), (x1, y1) in edges:
+        if (y0 > p[1]) != (y1 > p[1]):
+            x = x0 + (p[1] - y0) * (x1 - x0) / (y1 - y0)
+            if x > p[0]:
+                hits += 1
+    return hits % 2 == 1
+
+
+def _box_gap(a: BBox, b: BBox) -> float:
+    """Gap between two boxes; negative when they overlap."""
+    dx = max(a.xmin - b.xmax, b.xmin - a.xmax)
+    dy = max(a.ymin - b.ymax, b.ymin - a.ymax)
+    if dx < 0 and dy < 0:
+        return max(dx, dy)
+    return math.hypot(max(dx, 0.0), max(dy, 0.0))
+
+
+def _copper(p: Pad) -> bool:
+    return any(layer.endswith(".Cu") for layer in p.layers) or (not p.layers and p.kind != "np_thru_hole")
+
+
+def _front(p: Pad) -> bool:
+    return any(layer in ("F.Cu", "*.Cu") for layer in p.layers) or not p.layers
+
+
+def check_footprint(fp: Footprint, courtyard_clearance: float = COURTYARD_CLEARANCE) -> dict:
+    """Review a footprint. Errors would make a bad board; warnings break library conventions or need a look."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    measured: dict = {}
+    if not fp.pads:
+        return {"ok": False, "errors": ["footprint has no pads"], "warnings": [], "measured": {}}
+
+    for p in fp.pads:
+        label = f"pad {p.number or '(unnumbered)'}"
+        if p.width <= 0 or p.height <= 0:
+            errors.append(f"{label} has no size")
+        if p.kind in ("thru_hole", "np_thru_hole") and p.drill is not None and p.kind == "thru_hole" and p.drill >= min(p.width, p.height) - 1e-9:
+            errors.append(f"{label}: drill {p.drill} mm leaves no copper ring on a {p.width}x{p.height} mm pad")
+        if p.kind == "smd" and p.layers and not any(layer.endswith(".Cu") for layer in p.layers) and p.number:
+            warnings.append(f"{label} has a number but no copper layer")
+
+    # Copper between differently numbered pads.
+    copper = [p for p in fp.pads if _copper(p)]
+    worst = None
+    for i, a in enumerate(copper):
+        for b in copper[i + 1 :]:
+            if a.number and a.number == b.number:
+                continue
+            gap = _box_gap(a.box, b.box)
+            if worst is None or gap < worst[0]:
+                worst = (gap, a.number, b.number)
+            if gap < -1e-6:
+                errors.append(f"pads {a.number or '?'} and {b.number or '?'} overlap")
+    if worst is not None:
+        measured["min_pad_gap"] = round(worst[0], 4)
+        if 0 <= worst[0] < MIN_PAD_GAP - 1e-6:
+            warnings.append(f"pads {worst[1]} and {worst[2]} are {worst[0]:.3f} mm apart; under {MIN_PAD_GAP} mm many fabs drop the solder mask between them")
+
+    numbers = [p.number for p in fp.pads if p.number]
+    if fp.pin1 is None:
+        warnings.append("no pad numbered 1 or A1")
+    ints = sorted({int(n) for n in numbers if n.isdigit()})
+    if ints and len(ints) == len(set(numbers)) and ints != list(range(1, len(ints) + 1)):
+        missing = sorted(set(range(1, ints[-1] + 1)) - set(ints))
+        warnings.append(f"pad numbers skip {missing[:10]}; fine only if the datasheet leaves those pins out")
+
+    # Courtyard.
+    court = [e for g in fp.on_layer("F.CrtYd") for e in _graphic_edges(g)]
+    if not court:
+        errors.append("no front courtyard (F.CrtYd)")
+    else:
+        outside = [p.number or "?" for p in fp.pads if _front(p) and not all(_inside(c, court) for c in _box_corners(p.box))]
+        if outside:
+            errors.append(f"pads outside the courtyard: {outside[:10]}")
+        else:
+            gap = min(min(_segment_box(a, b, p.box) for a, b in court) for p in fp.pads if _front(p))
+            measured["courtyard_to_pad"] = round(gap, 4)
+            if gap < courtyard_clearance - 0.005:
+                warnings.append(f"courtyard is {gap:.3f} mm from the nearest pad; expected at least {courtyard_clearance} mm")
+        fab_pts = [pt for g in fp.on_layer("F.Fab") for e in _graphic_edges(g) for pt in e]
+        if fab_pts and not all(_inside(pt, court) for pt in fab_pts):
+            warnings.append("the fabrication outline (body) reaches outside the courtyard")
+        off_grid = {v for g in fp.on_layer("F.CrtYd") for pt in g.pts for v in pt if abs(v / GRID - round(v / GRID)) > 1e-6}
+        if off_grid:
+            warnings.append(f"courtyard points off the {GRID} mm grid: {sorted(off_grid)[:5]}")
+        widths = {g.width for g in fp.on_layer("F.CrtYd")}
+        if widths - {COURTYARD_LINE}:
+            warnings.append(f"courtyard line width {sorted(widths)} mm; KiCad's library uses {COURTYARD_LINE} mm")
+
+    # Silkscreen against copper on the same side.
+    for side, cu in (("F.SilkS", "F.Cu"), ("B.SilkS", "B.Cu")):
+        pads = [p for p in fp.pads if cu in p.layers or "*.Cu" in p.layers or (not p.layers and cu == "F.Cu")]
+        close = None
+        for g in fp.on_layer(side):
+            for a, b in _graphic_edges(g):
+                for p in pads:
+                    d = _segment_box(a, b, p.box) - g.width / 2
+                    if close is None or d < close[0]:
+                        close = (d, p.number)
+        if close is None:
+            continue
+        measured[f"{side}_to_pad"] = round(close[0], 4)
+        if close[0] < -1e-6:
+            errors.append(f"{side} silkscreen lies on pad {close[1]}")
+        elif close[0] < SILK_PAD_CLEARANCE - 0.005:
+            warnings.append(f"{side} silkscreen is {close[0]:.3f} mm from pad {close[1]}; KiCad's library keeps {SILK_PAD_CLEARANCE} mm")
+
+    if not fp.on_layer("F.Fab", "B.Fab"):
+        warnings.append("no fabrication outline (F.Fab) showing the body")
+    names = {t[0] for t in fp.texts}
+    for field_name in ("Reference", "Value"):
+        if field_name not in names:
+            warnings.append(f"no {field_name} field")
+    if not any(t[1] == "${REFERENCE}" and t[2].endswith("Fab") for t in fp.texts):
+        warnings.append("no ${REFERENCE} text on the fabrication layer")
+
+    # Origin conventions.
+    ext = fp.pad_extents
+    if fp.smd and ext is not None:
+        cx, cy = ext.center
+        if math.hypot(cx, cy) > 0.01:
+            warnings.append(f"SMD footprint origin is ({-cx:+.3f}, {-cy:+.3f}) mm from the pad centre; KiCad's library puts it at the centre")
+    if not fp.smd and fp.pin1 is not None and (abs(fp.pin1.x) > 1e-3 or abs(fp.pin1.y) > 1e-3):
+        warnings.append("through-hole footprint whose pin 1 is not at the origin (KiCad library convention puts it there)")
+
+    return {"ok": not errors, "errors": errors, "warnings": warnings, "measured": measured}
+
+
+def _box_corners(b: BBox) -> list[Point]:
+    return [(b.xmin, b.ymin), (b.xmax, b.ymin), (b.xmax, b.ymax), (b.xmin, b.ymax)]
+
+
+def compare_footprints(a: Footprint, b: Footprint, tolerance: float = 0.005) -> dict:
+    """Compare two footprints pad by pad (a is the candidate, b the reference)."""
+
+    def by_number(fp: Footprint) -> dict[str, list[Pad]]:
+        out: dict[str, list[Pad]] = {}
+        for p in fp.pads:
+            if p.number:
+                out.setdefault(p.number, []).append(p)
+        for v in out.values():
+            v.sort(key=lambda p: (p.x, p.y))
+        return out
+
+    pa, pb = by_number(a), by_number(b)
+    only_a = sorted(set(pa) - set(pb), key=_natural)
+    only_b = sorted(set(pb) - set(pa), key=_natural)
+    diffs = []
+    worst = 0.0
+    for n in sorted(set(pa) & set(pb), key=_natural):
+        if len(pa[n]) != len(pb[n]):
+            diffs.append({"pad": n, "issue": f"{len(pa[n])} pads in the candidate, {len(pb[n])} in the reference"})
+            continue
+        for x, y in zip(pa[n], pb[n]):
+            (xw, xh), (yw, yh) = x.half_size, y.half_size
+            d = {"dx": x.x - y.x, "dy": x.y - y.y, "dwidth": 2 * (xw - yw), "dheight": 2 * (xh - yh)}
+            m = max(abs(v) for v in d.values())
+            worst = max(worst, m)
+            if m > tolerance:
+                diffs.append({"pad": n} | {k: round(v, 4) for k, v in d.items()} | ({"kind": f"{x.kind} vs {y.kind}"} if x.kind != y.kind else {}))
+    result = {
+        "same_pads": not only_a and not only_b and not diffs,
+        "max_pad_difference": round(worst, 4),
+        "only_in_candidate": only_a,
+        "only_in_reference": only_b,
+        "pad_differences": diffs[:50],
+    }
+    for key, box_a, box_b in (("courtyard", a.courtyard, b.courtyard), ("pad_extents", a.pad_extents, b.pad_extents)):
+        if box_a and box_b:
+            result[f"{key}_difference"] = {k: round(getattr(box_a, k) - getattr(box_b, k), 4) for k in ("xmin", "ymin", "xmax", "ymax")}
+    return result
+
+
+def _natural(s: str):
+    return (0, int(s), "") if s.isdigit() else (1, 0, s)

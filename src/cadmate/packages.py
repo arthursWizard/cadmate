@@ -22,7 +22,7 @@ FAMILIES: dict[str, dict] = {
         "optional": [],
     },
     "qfn": {
-        "description": "No-lead packages with pads on four sides: QFN, DFN (set pins_x/pins_y for non-square)",
+        "description": "No-lead packages: QFN, DFN. pins_x pads on each top and bottom edge, pins_y on each left and right edge (pins_x 0 for DFN)",
         "required": ["pins", "pitch", "body_length", "body_width", "height", "lead_width", "lead_length"],
         "optional": ["ep_length", "ep_width", "pins_x", "pins_y"],
     },
@@ -72,25 +72,7 @@ def check_params(family: str, params: dict, footprint: Footprint | None = None) 
     if errors:
         return {"ok": False, "family": family, "errors": errors, "warnings": warnings}
 
-    def rule(cond: bool, msg: str):
-        if not cond:
-            errors.append(msg)
-
-    if family in ("soic", "sot"):
-        rule(p["standoff"] < p["height"], "standoff must be below the total height")
-        rule(p["overall_width"] > p["body_width"], "overall_width (tip to tip) must exceed body_width")
-        rule(p["lead_width"] < p["pitch"], "lead_width must be smaller than pitch")
-        if family == "soic":
-            rule(int(p["pins"]) % 2 == 0, "soic needs an even pin count")
-            rule((p["pins"] / 2 - 1) * p["pitch"] < p["body_length"], "leads on one side do not fit along body_length")
-    if family == "qfn":
-        rule(p["lead_width"] < p["pitch"], "lead_width must be smaller than pitch")
-        if "ep_length" in p:
-            rule(p["ep_length"] < p["body_length"], "exposed pad longer than the body")
-        if "ep_width" in p:
-            rule(p["ep_width"] < p["body_width"], "exposed pad wider than the body")
-    if family == "radial_cap":
-        rule(p["lead_spacing"] < p["diameter"], "lead_spacing should be inside the can diameter")
+    errors += geometry_errors(family, p)
 
     expected_pins = None
     if family == "pin_header":
@@ -116,3 +98,28 @@ def check_params(family: str, params: dict, footprint: Footprint | None = None) 
             errors.append(f"footprint pad spacing {fp_pitch} mm differs from lead_spacing {p['lead_spacing']} mm")
 
     return {"ok": not errors, "family": family, "params": p, "errors": errors, "warnings": warnings}
+
+
+def geometry_errors(family: str, p: dict[str, float]) -> list[str]:
+    """Combinations of nominal dimensions that cannot be right. Rules whose values are missing are skipped."""
+    errors: list[str] = []
+
+    def rule(keys: tuple[str, ...], cond, msg: str):
+        if all(k in p for k in keys) and not cond():
+            errors.append(msg)
+
+    if family in ("soic", "sot"):
+        rule(("standoff", "height"), lambda: p["standoff"] < p["height"], "standoff must be below the total height")
+        rule(("overall_width", "body_width"), lambda: p["overall_width"] > p["body_width"], "overall_width (tip to tip) must exceed body_width")
+        rule(("lead_width", "pitch"), lambda: p["lead_width"] < p["pitch"], "lead_width must be smaller than pitch")
+        if family == "soic":
+            rule(("pins",), lambda: int(p["pins"]) % 2 == 0, "soic needs an even pin count")
+            rule(("pins", "pitch", "body_length"), lambda: (p["pins"] / 2 - 1) * p["pitch"] < p["body_length"], "leads on one side do not fit along body_length")
+            rule(("overall_width", "lead_length", "body_width"), lambda: p["overall_width"] - 2 * p["lead_length"] > p["body_width"], "the feet reach under the body: lead_length should be the flat foot on the board (JEDEC L), not the whole lead")
+    if family == "qfn":
+        rule(("lead_width", "pitch"), lambda: p["lead_width"] < p["pitch"], "lead_width must be smaller than pitch")
+        rule(("ep_length", "body_length"), lambda: p["ep_length"] < p["body_length"], "exposed pad longer than the body")
+        rule(("ep_width", "body_width"), lambda: p["ep_width"] < p["body_width"], "exposed pad wider than the body")
+    if family == "radial_cap":
+        rule(("lead_spacing", "diameter"), lambda: p["lead_spacing"] < p["diameter"], "lead_spacing should be inside the can diameter")
+    return errors

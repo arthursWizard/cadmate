@@ -267,17 +267,37 @@ def resolve(path: str, footprint_dir: Path | None = None, project_dir: Path | No
     return Path(_VAR.sub(sub, path)).expanduser()
 
 
-def check_file(fp: Footprint, model_file: Path, placement: Model, expected: dict | None = None, cutout: bool = False) -> dict:
-    """Check a STEP file placed on a footprint: read its box in FreeCAD, then check.check_model."""
+def inspect(model_file: Path, placement: Model | None = None, board_thickness: float = 1.6) -> dict:
+    """Read a STEP file in FreeCAD: its box, solid count and validity, and with a placement every solid placed as
+    KiCad places it, cut at the board's mid-plane (see freecad_scripts/inspect_model.py)."""
+    env = {"CADMATE_MODEL": str(model_file)}
+    if placement is not None:
+        env["CADMATE_PLACEMENT"] = json.dumps({"matrix": check.placement_matrix(placement), "section_z": -board_thickness / 2})
+    return apps.run_freecad_script(Path(__file__).parent / "freecad_scripts" / "inspect_model.py", env=env)
+
+
+def _step_for(model_file: Path) -> tuple[Path | None, str | None]:
     if model_file.suffix.lower() in (".wrl", ".vrml"):
         step = model_file.with_suffix(".step")
         if not step.exists():
-            return {"ok": False, "errors": [f"{model_file.name} is VRML; checks need the STEP next to it ({step.name})"], "warnings": []}
+            return None, f"{model_file.name} is VRML; checks need the STEP next to it ({step.name})"
         model_file = step
     if not model_file.exists():
-        return {"ok": False, "errors": [f"model file not found: {model_file}"], "warnings": []}
-    info = apps.run_freecad_script(Path(__file__).parent / "freecad_scripts" / "inspect_model.py", env={"CADMATE_MODEL": str(model_file)})
-    result = check.check_model(fp, info["bbox"], placement, expected or None, cutout)
+        return None, f"model file not found: {model_file}"
+    return model_file, None
+
+
+def check_file(fp: Footprint, model_file: Path, placement: Model, expected: dict | None = None, cutout: bool = False,
+               by_solid: bool = False, board_thickness: float = 1.6) -> dict:
+    """Check a STEP file placed on a footprint: read it in FreeCAD, then check.check_model.
+
+    With by_solid the result also carries "parts", every solid placed on the footprint, for review.review_footprint.
+    """
+    model_file, problem = _step_for(model_file)
+    if problem:
+        return {"ok": False, "errors": [problem], "warnings": []}
+    info = inspect(model_file, placement if by_solid else None, board_thickness)
+    result = check.check_model(fp, info["bbox"], placement, expected or None, cutout, by_solid=by_solid)
     if not info.get("valid", True):
         result["errors"].append("FreeCAD reports the shape as invalid")
     if info.get("solids", 1) == 0:
@@ -285,4 +305,6 @@ def check_file(fp: Footprint, model_file: Path, placement: Model, expected: dict
     result["ok"] = not result["errors"]
     result["model_file"] = str(model_file)
     result["solids"] = info.get("solids")
+    if by_solid:
+        result["parts"] = info.get("parts", [])
     return result

@@ -41,7 +41,7 @@ To review an existing symbol, run `check_symbol`, with `pins` from the datasheet
 ## Conventions (applied by cadmate)
 
 - mm, KiCad's symbol frame: Y points up.
-- Pins end on the 100 mil (2.54 mm) grid; 100 mil long, longer for 3-character pin numbers. Body centred on the origin, 10 mil outline filled with the background colour, pin names 20 mil inside.
+- Pins end on the 100 mil (2.54 mm) grid; 100 mil long, longer for 3-character pin numbers, and 200 mil when the part has stacked pins so the braces KiCad draws round their numbers clear the body. Stacked numbers are written as a comma list, never a range: KiCad draws a range as one line along the pin, into the body. Body centred on the origin, 10 mil outline filled with the background colour, pin names 20 mil inside.
 - Power and output pins that share a name become one pin numbered with all their pads, KiCad 10's native stack: IOVDD on pads 1, 10 and 22 is pin `[1,10,22]` (KLC S4.3). Pins that share a name but are passive (say two SW pins) stay separate.
 - A chip with an on-chip regulator output (power_out) but many signals keeps its supplies on top; cadmate records that as a `KLC_S4.2_<pin>` exception field, as KiCad's own library does, since KiCad's checker would otherwise take the part for a power converter.
 - NC pins are hidden, type no_connect, inside the body.

@@ -160,8 +160,8 @@ def test_table_errors():
 
 
 def test_native_stack_numbers():
-    assert symbol.stack_number(["4", "1", "2", "3", "9"]) == "[1-4,9]"
-    assert symbol.stack_number(["A1", "A2", "A3", "B1"]) == "[A1-A3,B1]"
+    assert symbol.stack_number(["4", "1", "2", "3", "9"]) == "[1,2,3,4,9]"
+    assert symbol.stack_number(["A1", "A2", "A3", "B1"]) == "[A1,A2,A3,B1]"
     assert symbol.expand_number("[1-4,9]") == ["1", "2", "3", "4", "9"]
     assert symbol.expand_number("[A1-A3, B1]") == ["A1", "A2", "A3", "B1"]
     assert symbol.expand_number("7") == ["7"]
@@ -292,7 +292,7 @@ def test_stacked_pins_get_room_for_their_numbers():
     _, rows = rp2040_table()
     r, s = build("RP2040", rows, datasheet="https://example.com/ds.pdf", description="MCU, QFN-56", keywords="mcu",
                  fp_filters=["QFN*7x7mm*"])
-    assert r["report"]["pin_length"] == 3.81
+    assert r["report"]["pin_length"] == 5.08
     top = sorted((p for p in s.pins if p.side == "top"), key=lambda p: p.x)
     iovdd = next(p for p in top if p.name == "IOVDD")
     gaps = [abs(p.x - iovdd.x) for p in top if p is not iovdd]

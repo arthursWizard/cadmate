@@ -285,7 +285,9 @@ def _pin_length(table: list[Pin], stacks: bool) -> float:
     length = GRID if longest <= 2 else 3.81 if longest == 3 else 5.08
     names = [(p.unit, p.name.lower()) for p in table if p.etype in ("power_in", "power_out", "output") and p.name]
     if stacks and len(names) != len(set(names)):
-        length = max(length, 3.81)  # room along the pin for a native stack's numbers and braces, as KiCad's RP2040 has
+        # KiCad draws a native stack's numbers as columns across the pin with braces 4.3 mm tall: on a 3.81 mm
+        # pin the braces reach into the body, on 5.08 mm they clear it.
+        length = max(length, 5.08)
     return length
 
 

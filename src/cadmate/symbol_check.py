@@ -123,6 +123,9 @@ def _check_fields(sym: Symbol, errors: list[str], warnings: list[str]) -> None:
         errors.append(f"keywords contain punctuation: {kw.value!r} (KLC S6.2)")
     if not (props.get("ki_fp_filters") and props["ki_fp_filters"].value):
         warnings.append("no footprint filters; give fp_filters (or a default footprint to derive them from) so KiCad offers the right footprints (KLC S5.2)")
+    filters = (props.get("ki_fp_filters").value.split() if props.get("ki_fp_filters") else [])
+    if len(filters) == 1 and not (fp and fp.value):
+        warnings.append("one footprint filter but no default footprint; give the footprint, or more filters for a part sold in several packages (KLC S5.1)")
     words = " ".join(p.value for k, p in props.items() if k in ("ki_keywords", "Description")).lower()
     tokens = set(re.split(r"[\s,-]+", words))
     keywords = (kw.value.lower() if kw else "")
@@ -319,7 +322,7 @@ def s42_exceptions_needed(sym: Symbol) -> dict[str, str]:
     out = {}
     for p in sym.pins:
         if not p.hidden and p.etype == "power_in" and _match(p.name, POSITIVE_POWER) and p.side != "left":
-            out[p.name] = "Not a power converter: its power output is an on-chip regulator, so the supplies stay on top"
+            out[p.name] = "Supply input of a chip with an on-chip regulator, not a power converter; supplies stay on top"
     for p in power_out:
         if p.side != "right":
             out[p.name] = "On-chip regulator output, placed with the supplies it feeds"

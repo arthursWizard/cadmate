@@ -128,3 +128,28 @@ def test_tails_that_stop_inside_the_board():
     r = review.Report()
     review.check_solids(FP, [lead(-3.0)], r)
     assert not any("stop" in w for w in r.warnings)
+
+
+def test_pegs_short_of_the_mid_plane_are_not_parts_in_the_board():
+    # A peg 0.6 mm into its NPTH hole has no section at the board's mid-plane (loops empty), like a lead cut short.
+    peg = next(p for p in FP.pads if p.kind == "np_thru_hole" and not p.drill_y)
+    solid = review.Solid("Peg", footprint.BBox(peg.x - 0.275, peg.y - 0.275, peg.x + 0.275, peg.y + 0.275), -0.6, 0.5, loops=[])
+    r = review.Report()
+    review.check_solids(FP, [solid], r)
+    assert not r.errors and "into_board" not in r.measured
+    # A part under the body still is one.
+    chip = review.Solid("Chip", footprint.BBox(2.0, 3.0, 4.0, 5.0), -0.6, 0.0, loops=[])
+    r = review.Report()
+    review.check_solids(FP, [chip], r)
+    assert r.errors and r.measured["into_board"][0]["solid"] == "Chip"
+
+
+def test_absolute_model_path_in_the_project_is_linked_through_kiprjmod(tmp_path):
+    from cadmate import part
+
+    fp_result = {"report": {"shifted_by": [0.0, 0.0]}}
+    warnings = []
+    m = part._existing_placement({"path": str(tmp_path / "lib.3dshapes" / "x.step")}, fp_result, warnings, tmp_path)
+    assert m.path == "${KIPRJMOD}/lib.3dshapes/x.step" and not warnings
+    m = part._existing_placement({"path": "/elsewhere/x.step"}, fp_result, warnings, tmp_path)
+    assert m.path == "/elsewhere/x.step" and "absolute path" in warnings[0]

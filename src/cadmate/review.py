@@ -363,7 +363,9 @@ def check_solids(fp: Footprint, solids: list[Solid], r: Report, cutout: bool = F
     tails: dict[int, float] = {}  # plated hole -> lowest point of the leads in it
     for s in solids:
         below = s.zmin < -Z_TOLERANCE
-        if s.loops is None:  # no section: a small solid centred in a hole is taken for a lead
+        if s.loops is None or (below and not s.loops):
+            # No section: a small solid centred in a hole is taken for a lead. That includes a lead or a peg
+            # cut short of the board's mid-plane, where the section is taken.
             hole = next((p for p in holes if _in_hole(p, s.box.center)), None)
             if below and hole is not None and max(s.box.width, s.box.height) < 2 * max(hole.drill, hole.drill_y or 0):
                 # A box cannot tell a round lead from a square one: take it as round, the kinder reading.

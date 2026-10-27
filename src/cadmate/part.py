@@ -90,7 +90,7 @@ def generate_part(
     built_tmp: tempfile.TemporaryDirectory | None = None
     if model_spec.get("path"):
         try:
-            placement = _existing_placement(model_spec, fp_result, warnings)
+            placement = _existing_placement(model_spec, fp_result, warnings, project)
         except ValueError as e:
             return _fail(errors + [f"model: {e}"], warnings)
         model_report = {"source": "given", "link": placement.path}
@@ -202,9 +202,19 @@ def _fail(errors: list[str], warnings: list[str] | None = None) -> dict:
     return {"ok": False, "errors": errors, "warnings": warnings or []}
 
 
-def _existing_placement(spec: dict, fp_result: dict, warnings: list[str]) -> Model:
+def _existing_placement(spec: dict, fp_result: dict, warnings: list[str], project: Path | None = None) -> Model:
     """Where a given model goes. frame "datasheet": it was built in the datasheet's coordinates (pads as given),
-    so it moves with the footprint when the generator shifted the origin (custom footprints, origin pin 1 or centre)."""
+    so it moves with the footprint when the generator shifted the origin (custom footprints, origin pin 1 or centre).
+    An absolute path inside the project is linked through ${KIPRJMOD}, so the project can move."""
+    path = str(spec["path"])
+    if project is not None and Path(path).expanduser().is_absolute():
+        try:
+            rel = Path(path).expanduser().resolve().relative_to(project.resolve())
+        except ValueError:
+            warnings.append(f"model: linked by its absolute path {path}, which breaks when the project moves or is shared; "
+                            "put the STEP in the project (e.g. the library's .3dshapes folder) to link it through ${KIPRJMOD}")
+        else:
+            path = f"${{KIPRJMOD}}/{rel.as_posix()}"
     offset = list(spec.get("offset") or (0.0, 0.0, 0.0))
     frame = spec.get("frame", "footprint")
     if frame == "datasheet":
@@ -215,7 +225,7 @@ def _existing_placement(spec: dict, fp_result: dict, warnings: list[str]) -> Mod
             warnings.append(f"model: moved by ({dx:+g}, {-dy:+g}) mm, as the footprint's origin moved from the datasheet's")
     elif frame != "footprint":
         raise ValueError("model frame must be footprint or datasheet")
-    return Model(path=spec["path"], offset=tuple(round(v, 6) for v in offset),
+    return Model(path=path, offset=tuple(round(v, 6) for v in offset),
                  rotate=tuple(spec.get("rotate") or (0.0, 0.0, 0.0)), scale=tuple(spec.get("scale") or (1.0, 1.0, 1.0)))
 
 

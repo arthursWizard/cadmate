@@ -6,10 +6,11 @@ cadmate is an [MCP](https://modelcontextprotocol.io) server. You talk to Claude 
 
 ## Status
 
-Early. Three workflows work end to end:
+Early. Four workflows work end to end:
 
 - **Make the missing 3D model**: point Claude at a footprint and the part's datasheet, and get a checked STEP model linked into that footprint.
 - **Make a footprint from a datasheet**: Claude reads the package drawing, cadmate computes IPC-7351B pads (or places the datasheet's recommended land pattern) and writes a checked `.kicad_mod`. For JEDEC packages the pads and courtyard match KiCad's own library footprints exactly.
+- **Make a whole part from one datasheet**: symbol, footprint and 3D model from one reading of the datasheet, linked to each other (the symbol's Footprint field, the footprint's model link), checked together and registered in the project's library tables.
 - **Make a symbol from a datasheet**: Claude reads the pin table, cadmate lays out the symbol per KiCad's library conventions (grid, sides by pin type, stacked power pins, hidden NC pins, fields) and writes it into a `.kicad_sym` library, checked against the pin table and the footprint's pads.
 
 | Tool | What it does | Needs |
@@ -28,6 +29,8 @@ Early. Three workflows work end to end:
 | `check_symbol` | Reviews any symbol against KiCad's library rules (KLC); optionally against the pin table and the footprint's pads | nothing |
 | `read_symbol` | Pins, sides, units and fields from a `.kicad_sym` file or `.kicad_symdir` folder | nothing |
 | `compare_symbols` | Pin-by-pin differences between two symbols | nothing |
+| `generate_part` | Writes a linked symbol, footprint and 3D model from one datasheet into a project, checked together first | FreeCAD for the model |
+| `check_part` | Follows a symbol to its footprint and model and checks all three and the links between them | FreeCAD for the model check |
 
 ## Version policy
 
@@ -36,7 +39,7 @@ cadmate requires **KiCad 10** and **FreeCAD 1.1** or later, and follows new rele
 - **KiCad files** are read directly: footprints from KiCad 5 (`module`) to current (`footprint`) formats, symbol libraries from KiCad 6 on, including KiCad 10's one-file-per-symbol `.kicad_symdir` folders. They are written in KiCad 10's format, as KiCad's own editors write it. No KiCad install is needed for footprint or symbol work.
 - **`kicad-cli`** (KiCad 7+) for exports and checks, in later milestones.
 - **KiCad IPC API** (KiCad 9+) only for live editing, switched on when present.
-- **FreeCAD** through `FreeCADCmd`, using the Part API that is stable across 0.20 to 1.1.
+- **FreeCAD** through `FreeCADCmd`, using the Part API that is stable across 0.20 to 1.1. Models it builds headless have no colours.
 
 Developed against KiCad 10.0 and FreeCAD 1.1 on macOS.
 
@@ -74,6 +77,7 @@ KiCad path variables in model paths (for example `${KICAD10_3DMODEL_DIR}`) are e
 - `kicad-3d-models`: how to build, check and link a 3D model for a KiCad footprint.
 - `kicad-footprints`: how to read a datasheet into a footprint, and review an existing one.
 - `kicad-symbols`: how to read a datasheet's pin table into a symbol, and review an existing one.
+- `kicad-parts`: how to make a whole part (symbol, footprint, model) in one go, and check an existing one.
 
 ## Roadmap
 

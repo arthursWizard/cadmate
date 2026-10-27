@@ -97,7 +97,7 @@ def test_overhang_is_a_warning_not_silent():
 def test_through_hole_model_off_the_pads_is_caught():
     shifted = RP2040_MODEL | {"xmin": 4.16, "xmax": 22.16}
     r = check.check_model(RP2040_ZERO, shifted)
-    assert any("pads reach" in w for w in r["warnings"])
+    assert any("holes lie" in w for w in r["warnings"])
     far = RP2040_MODEL | {"xmin": 31.16, "xmax": 49.16}
     assert not check.check_model(RP2040_ZERO, far)["ok"]
 

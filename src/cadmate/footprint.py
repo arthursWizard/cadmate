@@ -29,15 +29,26 @@ class Pad:
     drill: float | None
     layers: list[str] = field(default_factory=list)
     drill_y: float | None = None  # set for a slot: KiCad's (drill oval x y)
+    offset: tuple[float, float] = (0.0, 0.0)  # copper relative to the hole, in the pad's own frame: KiCad's (drill .. (offset x y))
 
     @property
     def half_size(self) -> tuple[float, float]:
         return _rotated_half_size(self.width, self.height, self.rotation)
 
     @property
+    def copper_center(self) -> tuple[float, float]:
+        """Centre of the pad's copper; differs from (x, y), the hole, when the pad is offset."""
+        ox, oy = self.offset
+        if not (ox or oy):
+            return self.x, self.y
+        r = math.radians(-self.rotation)  # KiCad rotates pads clockwise on screen (Y down)
+        return self.x + ox * math.cos(r) - oy * math.sin(r), self.y + ox * math.sin(r) + oy * math.cos(r)
+
+    @property
     def box(self) -> "BBox":
         hw, hh = self.half_size
-        return BBox(self.x - hw, self.y - hh, self.x + hw, self.y + hh)
+        cx, cy = self.copper_center
+        return BBox(cx - hw, cy - hh, cx + hw, cy + hh)
 
 
 @dataclass
@@ -184,6 +195,7 @@ def parse(text: str) -> Footprint:
                 drill=drill_vals[0] if drill_vals else None,
                 layers=p.child("layers").atoms() if p.child("layers") else [],
                 drill_y=drill_vals[1] if len(drill_vals) > 1 and drill_node and "oval" in drill_node.atoms() else None,
+                offset=_offset(drill_node),
             )
         )
     if attr is None:
@@ -202,6 +214,12 @@ def parse(text: str) -> Footprint:
 
 
 _GRAPHIC_KINDS = {"fp_line": "line", "fp_rect": "rect", "fp_poly": "poly", "fp_circle": "circle", "fp_arc": "arc"}
+
+
+def _offset(drill: sexpr.Node | None) -> tuple[float, float]:
+    node = drill.child("offset") if drill else None
+    v = node.floats() if node else []
+    return (v[0], v[1]) if len(v) >= 2 else (0.0, 0.0)
 
 
 def _graphics(root: sexpr.Node) -> list[Graphic]:

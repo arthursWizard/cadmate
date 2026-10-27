@@ -3,11 +3,13 @@
 `check_params` turns the numbers an agent read off a datasheet into a checked
 parameter set: missing values, impossible combinations, and mismatches with
 the footprint are reported before any 3D geometry is built.
-All dimensions are in mm.
+All dimensions are in mm, given as for the footprint generator: a number,
+[min, max], [min, nom, max] or "6.0+/-0.2"; the nominal is used.
 """
 
 from __future__ import annotations
 
+from . import ipc
 from .footprint import Footprint
 
 FAMILIES: dict[str, dict] = {
@@ -44,6 +46,8 @@ FAMILIES: dict[str, dict] = {
 }
 
 PITCH_TOLERANCE = 0.02
+# Footprint values that do not change the body; accepted so one parameter set serves both.
+FOOTPRINT_ONLY = {"package", "paste_coverage", "heel_reduction", "lead_thickness", "terminal_thickness"}
 
 
 def check_params(family: str, params: dict, footprint: Footprint | None = None) -> dict:
@@ -53,6 +57,9 @@ def check_params(family: str, params: dict, footprint: Footprint | None = None) 
     errors: list[str] = []
     warnings: list[str] = []
     p: dict[str, float] = {}
+    params = dict(params)
+    if family == "qfn" and params.get("pins") is None and params.get("pins_x") is not None and params.get("pins_y") is not None:
+        params["pins"] = 2 * (int(ipc.dim(params["pins_x"]).nom) + int(ipc.dim(params["pins_y"]).nom))
 
     for key in spec["required"] + spec["optional"]:
         if key not in params or params[key] is None:
@@ -60,13 +67,13 @@ def check_params(family: str, params: dict, footprint: Footprint | None = None) 
                 errors.append(f"missing {key}")
             continue
         try:
-            p[key] = float(params[key])
+            p[key] = ipc.dim(params[key]).nom  # the footprint's toleranced values work as they are
         except (TypeError, ValueError):
-            errors.append(f"{key} is not a number: {params[key]!r}")
+            errors.append(f"{key} is not a dimension: {params[key]!r}")
             continue
         if p[key] <= 0:
             errors.append(f"{key} must be positive, got {p[key]}")
-    unknown = sorted(set(params) - set(spec["required"]) - set(spec["optional"]))
+    unknown = sorted(set(params) - set(spec["required"]) - set(spec["optional"]) - FOOTPRINT_ONLY)
     if unknown:
         warnings.append(f"ignored unknown parameters: {unknown}")
     if errors:

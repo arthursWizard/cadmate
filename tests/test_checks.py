@@ -118,3 +118,14 @@ def test_upside_down_module_is_flagged():
     m = footprint.Model(path="", offset=(10.25, 12.75, 0), rotate=(90, 0, 0))
     r = check.check_model(RP2040_ZERO, Y_UP_ZERO, m)
     assert any("upside down" in w for w in r["warnings"])
+
+
+def test_older_apps_are_reported_unsupported():
+    from cadmate import apps
+
+    assert apps.AppInfo("kicad", "/x", "10.0.4").supported
+    assert apps.AppInfo("kicad", "/x", "11.0.0").supported
+    old = apps.AppInfo("kicad", "/x", "9.0.3").to_dict()
+    assert old["supported"] is False and "older than 10.0" in old["note"]
+    assert apps.AppInfo("freecad", "/x", "1.0.2").supported is False
+    assert apps.AppInfo("freecad", "/x", None).supported is None

@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from cadmate import apps, footprint, generate, model, packages, part, server, symbol
-from test_generate import QFN16, SOIC8
+from test_generate import QFN16, RGF40, SOIC8
 from test_symbols import NE555
 
 NE555_SYMBOL = {"name": "NE555D", "pins": NE555, "description": "Precision Timers, 555 compatible, SOIC-8", "keywords": "single timer 555"}
@@ -35,7 +35,7 @@ def test_soic_model_puts_a_lead_on_every_pad():
         assert min(foot_x) < p.x < max(foot_x) or p.box.xmin <= min(foot_x) <= p.box.xmax
         assert prism["y0"] == pytest.approx(-p.y - 0.41 / 2)
     assert plan["bbox"] == {"xmin": -3.0, "xmax": 3.0, "ymin": -2.45, "ymax": 2.45, "zmin": 0, "zmax": 1.75}
-    assert plan["expected"] == {"length": 6.0, "width": 4.9, "height": 1.75}
+    assert plan["expected"] == {"width": 6.0, "length": 4.9, "height": 1.75}
 
 
 def test_dimple_marks_pin_1():
@@ -156,7 +156,7 @@ def test_whole_part_with_model(tmp_path):
     step = tmp_path / "my_parts.3dshapes" / "SOIC-8_3.9x4.9mm_P1.27mm.step"
     assert step.exists()
     assert r["model"]["check"]["solids"] == 9
-    check = part.check_part(tmp_path / "my_parts.kicad_sym", "NE555D", expected={"length": 6.0, "width": 4.9, "height": 1.75})
+    check = part.check_part(tmp_path / "my_parts.kicad_sym", "NE555D", expected={"width": 6.0, "length": 4.9, "height": 1.75})
     assert check["ok"] and not check["warnings"], check
     assert check["model_check"]["center_offset"] == [0.0, 0.0] or check["model_check"]["center_offset"] == (0.0, 0.0)
 
@@ -231,3 +231,11 @@ def test_smd_module_with_pads_on_three_sides():
     assert check.check_model(fp, module, cutout=True)["ok"]
     off = check.check_model(fp, module | {"xmin": -4, "xmax": 14}, cutout=True)
     assert any("pads lie" in w for w in off["warnings"])
+
+
+def test_custom_no_lead_terminals_stop_at_the_body():
+    # TI's land pattern reaches 0.2 mm past a QFN's body; the terminals in the model must not.
+    r = generate.generate("custom", RGF40)
+    fp = footprint.parse(r["text"])
+    plan = model.plan("custom", RGF40 | {"height": 1.0}, fp, footprint.BBox(-2.5, -3.5, 2.5, 3.5))
+    assert plan["expected"] == {"width": 5.0, "length": 7.0, "height": 1.0}

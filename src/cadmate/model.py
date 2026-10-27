@@ -17,7 +17,7 @@ Families:
 - qfn:    body on the board, terminals and exposed pad flush with its underside
 - custom: a body box over the footprint's body outline, with a lead in every through-hole pad (round,
           or square/flat with lead_width and lead_thickness; leads beside the body, as on a DIP, get a
-          shoulder into its side; lead_above makes header posts) and a terminal under every SMD pad. A placeholder good enough for clearance and enclosure work;
+          shoulder into its side; lead_above makes header posts) and a terminal under every SMD pad (cut at the body's edge when the body sits on the board, as on a QFN or LGA). A placeholder good enough for clearance and enclosure work;
           model a module or connector properly in FreeCAD when its looks matter.
 """
 
@@ -132,7 +132,7 @@ def _soic(params: dict, b: BBox, pads: list[Pad], fp: Footprint):
         y = _fy(p.y)
         solids.append({"name": f"Lead_{p.number}", "colour": METAL, "prism": {"pts": [[round(x, 6), round(z, 6)] for x, z in pts],
                                                                             "y0": round(y - lead_w / 2, 6), "dy": round(lead_w, 6)}})
-    return solids, {"length": round(2 * tip, 4), "width": round(b.height, 4), "height": height}
+    return solids, {"width": round(2 * tip, 4), "length": round(b.height, 4), "height": height}
 
 
 def _qfn(params: dict, b: BBox, pads: list[Pad], fp: Footprint):
@@ -156,7 +156,7 @@ def _qfn(params: dict, b: BBox, pads: list[Pad], fp: Footprint):
     # The terminals are cut out of the body, so the solids touch without overlapping.
     cut = [{"box": s["box"]} for s in terminals] + [_dimple(b, fp.pin1, height)]
     body = _box("Body", b.xmin, b.ymin, 0, b.width, b.height, height, BODY, cut)
-    return [body] + terminals, {"length": round(b.width, 4), "width": round(b.height, 4), "height": height}
+    return [body] + terminals, {"width": round(b.width, 4), "length": round(b.height, 4), "height": height}
 
 
 def _custom(params: dict, b: BBox, pads: list[Pad], fp: Footprint):
@@ -204,7 +204,11 @@ def _custom(params: dict, b: BBox, pads: list[Pad], fp: Footprint):
         elif p.kind == "smd":
             hw, hh = p.half_size
             t = standoff if standoff > 0 else 0.1
-            box = _box(f"Lead_{p.number}", x - hw, y - hh, 0, 2 * hw, 2 * hh, t)
+            x0, y0, x1, y1 = x - hw, y - hh, x + hw, y + hh
+            if standoff == 0 and x0 < b.xmax and x1 > b.xmin and y0 < b.ymax and y1 > b.ymin:
+                # A no-lead terminal (QFN, LGA) ends at the body's edge; the land pattern reaches past it for the fillet.
+                x0, y0, x1, y1 = max(x0, b.xmin), max(y0, b.ymin), min(x1, b.xmax), min(y1, b.ymax)
+            box = _box(f"Lead_{p.number}", x0, y0, 0, x1 - x0, y1 - y0, t)
             leads.append(box)
             if standoff == 0:
                 cut.append({"box": box["box"]})
@@ -212,7 +216,7 @@ def _custom(params: dict, b: BBox, pads: list[Pad], fp: Footprint):
     solids = [body] + leads
     # Leads beside the body make the part wider than the body; the expected size is what the leads span.
     span = bbox(solids)
-    return solids, {"length": round(span["xmax"] - span["xmin"], 4), "width": round(span["ymax"] - span["ymin"], 4), "height": height + above}
+    return solids, {"width": round(span["xmax"] - span["xmin"], 4), "length": round(span["ymax"] - span["ymin"], 4), "height": height + above}
 
 
 def bbox(solids: list[dict]) -> dict:

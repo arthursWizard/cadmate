@@ -160,8 +160,8 @@ def test_table_errors():
 
 
 def test_native_stack_numbers():
-    assert symbol.stack_number(["4", "1", "2", "3", "9"]) == "[1-4,9]"
-    assert symbol.stack_number(["A1", "A2", "A3", "B1"]) == "[A1-A3,B1]"
+    assert symbol.stack_number(["4", "1", "2", "3", "9"]) == "[1,2,3,4,9]"
+    assert symbol.stack_number(["A1", "A2", "A3", "B1"]) == "[A1,A2,A3,B1]"
     assert symbol.expand_number("[1-4,9]") == ["1", "2", "3", "4", "9"]
     assert symbol.expand_number("[A1-A3, B1]") == ["A1", "A2", "A3", "B1"]
     assert symbol.expand_number("7") == ["7"]
@@ -292,11 +292,13 @@ def test_stacked_pins_get_room_for_their_numbers():
     _, rows = rp2040_table()
     r, s = build("RP2040", rows, datasheet="https://example.com/ds.pdf", description="MCU, QFN-56", keywords="mcu",
                  fp_filters=["QFN*7x7mm*"])
-    assert r["report"]["pin_length"] == 3.81
+    assert r["report"]["pin_length"] == 5.08
     top = sorted((p for p in s.pins if p.side == "top"), key=lambda p: p.x)
     iovdd = next(p for p in top if p.name == "IOVDD")
     gaps = [abs(p.x - iovdd.x) for p in top if p is not iovdd]
-    assert min(gaps) >= 2 * 2.54  # six numbers in braces need about 9.6 mm across the pin
+    assert min(gaps) >= 2 * 2.54
+    # KiCad draws the six number columns to the left of the pin, about 10 mm with the braces.
+    assert min((iovdd.x - p.x for p in top if p.x < iovdd.x), default=99) >= 4 * 2.54
     assert s.properties["Reference"].y > iovdd.y + 1.27
 
 
@@ -306,3 +308,14 @@ def test_fields_clear_a_bodiless_supply_unit():
     lowest = min(p.y for p in s.pins)
     value = s.properties["Value"]
     assert value.y > max(p.y for p in s.pins) or value.y <= lowest - 1.27
+
+
+def test_regulator_output_named_like_a_supply_may_be_power_out():
+    # DRV8316's AVDD is an on-chip LDO that can supply other parts: power_out, not power_in.
+    rows = [{"number": 1, "name": "VM", "type": "P"}, {"number": 2, "name": "AVDD", "type": "power_out"},
+            {"number": 3, "name": "AGND", "type": "G"}, {"number": 4, "name": "SCLK", "type": "I"},
+            {"number": 5, "name": "SDI", "type": "I"}, {"number": 6, "name": "SDO", "type": "O"},
+            {"number": 7, "name": "nSCS", "type": "I"}, {"number": 8, "name": "OUTA", "type": "O"}]
+    r, s = build("DRV_TEST", rows, footprint="Package_SO:SOIC-8_3.9x4.9mm_P1.27mm", description="Test part, SOIC-8", keywords="test")
+    assert not r["errors"], r["errors"]
+    assert next(p for p in s.pins if p.name == "AVDD").etype == "power_out"

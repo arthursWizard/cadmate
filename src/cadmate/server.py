@@ -13,7 +13,8 @@ from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 
-from . import apps, check, footprint, generate, ipc, packages
+from . import apps, check, footprint, generate, ipc, packages, symbol, symbol_check, symbol_generate
+from .footprint import read as _read_footprint  # generate_symbol's footprint argument shadows the module
 
 server = MCPServer("cadmate")
 
@@ -49,6 +50,10 @@ def environment() -> dict:
             "generate_footprint": True,
             "check_footprint": True,
             "compare_footprints": True,
+            "generate_symbol": True,
+            "check_symbol": True,
+            "read_symbol": True,
+            "compare_symbols": True,
         },
     }
 
@@ -236,6 +241,109 @@ def check_footprint(
 def compare_footprints(path: str, reference_path: str) -> dict:
     """Compare a footprint pad by pad with a reference, for example KiCad's library footprint for the same package."""
     return check.compare_footprints(footprint.read(path), footprint.read(reference_path))
+
+
+@server.tool()
+def generate_symbol(
+    name: str,
+    pins: list[dict],
+    library_path: str,
+    description: str | None = None,
+    keywords: str | None = None,
+    datasheet: str | None = None,
+    footprint: str | None = None,
+    footprint_path: str | None = None,
+    reference: str = "U",
+    fp_filters: list[str] | None = None,
+    pin_length: float | None = None,
+    overwrite: bool = False,
+) -> dict:
+    """Generate a KiCad schematic symbol from the datasheet's pin table and put it into a .kicad_sym library.
+
+    pins: one entry per package pin, [{number, name, type, side?, group?, shape?, unit?, alternates?}].
+    type is a KiCad electrical type (input, output, bidirectional, tri_state, passive, power_in,
+    power_out, open_collector, open_emitter, no_connect, ...) or datasheet shorthand (I, O, I/O, P,
+    G, OD, NC); it may be left out for pins named as power, ground or NC. Pins of one group sit
+    together on one side; side (left/right/top/bottom) overrides the placement worked out from the
+    type. unit splits a part into units (one per amplifier, plus one for power). Active-low names are
+    written ~{RST}; /RST, !RST and RST# are converted.
+
+    The layout follows KiCad's library conventions (100 mil grid, inputs left, outputs right, supplies
+    on top, grounds at the bottom, same-name power pins stacked, NC pins hidden). footprint is the
+    default footprint as Library:Name; footprint_path, a local .kicad_mod, also checks that every pad
+    has a pin and every pin a pad. The symbol is checked before it is written; nothing is written when
+    the check finds errors. An existing symbol of the same name is only replaced with overwrite=True,
+    and the library keeps a .bak copy. Other symbols in the library are left byte for byte.
+    """
+    lib = Path(library_path).expanduser()
+    if lib.suffix != ".kicad_sym":
+        return {"ok": False, "errors": ["library_path must be a KiCad symbol library file ending in .kicad_sym"]}
+    result = symbol_generate.generate(name, pins, reference=reference, footprint=footprint, datasheet=datasheet,
+                                      description=description, keywords=keywords, fp_filters=fp_filters, pin_length=pin_length)
+    text = result.pop("text")
+    if not result["ok"]:
+        return result
+    if footprint_path:
+        vs = symbol_check.compare_with_footprint(symbol.parse_symbol(text), _read_footprint(footprint_path))
+        result["vs_footprint"] = vs
+        if vs["errors"]:
+            result["ok"] = False
+            result["errors"] = vs["errors"]
+            return result
+    existing = lib.read_text(encoding="utf-8") if lib.exists() else None
+    try:
+        new_text = symbol.put_in_library(existing, text, name, replace=overwrite)
+    except FileExistsError:
+        result["ok"] = False
+        result["errors"] = [f"{lib.name} already has {name}; pass overwrite=True to replace it (a .bak copy is kept)"]
+        return result
+    symbol.parse_library(new_text)  # never write a library we cannot read back
+    lib.parent.mkdir(parents=True, exist_ok=True)
+    if existing is not None:
+        shutil.copy2(lib, lib.with_suffix(lib.suffix + ".bak"))
+    lib.write_text(new_text, encoding="utf-8")
+    result["written"] = str(lib)
+    return result
+
+
+@server.tool()
+def check_symbol(
+    path: str,
+    name: str | None = None,
+    pins: list[dict] | None = None,
+    footprint_path: str | None = None,
+) -> dict:
+    """Review a KiCad symbol against KiCad's library conventions (KLC): grid, pin lengths, stacking, types, power pin placement, fields.
+
+    path is a .kicad_sym library (give name when it holds several symbols) or a file in a
+    .kicad_symdir folder. With pins (the datasheet's pin table, as for generate_symbol) every pin is
+    checked against the datasheet; with footprint_path, pins and pads are matched by number.
+    """
+    sym = symbol.read(path, name)
+    result = symbol_check.check_symbol(sym)
+    if pins:
+        vs = symbol_check.compare_with_table(sym, pins)
+        result["vs_datasheet"] = vs
+        result["errors"] += vs["errors"]
+        result["warnings"] += vs["warnings"]
+    if footprint_path:
+        vs = symbol_check.compare_with_footprint(sym, _read_footprint(footprint_path))
+        result["vs_footprint"] = vs
+        result["errors"] += vs["errors"]
+    result["ok"] = not result["errors"]
+    return result
+
+
+@server.tool()
+def read_symbol(path: str, name: str | None = None) -> dict:
+    """Read a KiCad symbol: fields, pins (number, name, type, side, unit, hidden) and body. Units are mm, Y up."""
+    return symbol.read(path, name).to_dict()
+
+
+@server.tool()
+def compare_symbols(path: str, reference_path: str, name: str | None = None, reference_name: str | None = None) -> dict:
+    """Compare a symbol pin by pin with a reference, for example KiCad's library symbol for the same part."""
+    return symbol_check.compare_symbols(symbol.read(path, name), symbol.read(reference_path, reference_name))
 
 
 def main() -> None:

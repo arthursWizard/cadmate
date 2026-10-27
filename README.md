@@ -6,10 +6,11 @@ cadmate is an [MCP](https://modelcontextprotocol.io) server. You talk to Claude 
 
 ## Status
 
-Early. Two workflows work end to end:
+Early. Three workflows work end to end:
 
 - **Make the missing 3D model**: point Claude at a footprint and the part's datasheet, and get a checked STEP model linked into that footprint.
 - **Make a footprint from a datasheet**: Claude reads the package drawing, cadmate computes IPC-7351B pads (or places the datasheet's recommended land pattern) and writes a checked `.kicad_mod`. For JEDEC packages the pads and courtyard match KiCad's own library footprints exactly.
+- **Make a symbol from a datasheet**: Claude reads the pin table, cadmate lays out the symbol per KiCad's library conventions (grid, sides by pin type, stacked power pins, hidden NC pins, fields) and writes it into a `.kicad_sym` library, checked against the pin table and the footprint's pads.
 
 | Tool | What it does | Needs |
 | --- | --- | --- |
@@ -23,12 +24,16 @@ Early. Two workflows work end to end:
 | `generate_footprint` | Writes a footprint from datasheet dimensions into a `.pretty` library, checked first | nothing |
 | `check_footprint` | Reviews any footprint: touching pads, courtyard, silkscreen on copper, KiCad library rules; optionally against the datasheet | nothing |
 | `compare_footprints` | Pad-by-pad differences between two footprints | nothing |
+| `generate_symbol` | Writes a symbol from the datasheet's pin table into a `.kicad_sym` library, checked first | nothing |
+| `check_symbol` | Reviews any symbol against KiCad's library rules (KLC); optionally against the pin table and the footprint's pads | nothing |
+| `read_symbol` | Pins, sides, units and fields from a `.kicad_sym` file or `.kicad_symdir` folder | nothing |
+| `compare_symbols` | Pin-by-pin differences between two symbols | nothing |
 
 ## Version policy
 
 cadmate uses the most stable interface that does the job, so it is not tied to one release:
 
-- **KiCad files** are read directly, from KiCad 5 (`module`) to current (`footprint`) formats, and written in the KiCad 8 format so KiCad 8 and later open them. No KiCad install is needed for footprint work.
+- **KiCad files** are read directly: footprints from KiCad 5 (`module`) to current (`footprint`) formats, symbol libraries from KiCad 6 on, including KiCad 10's one-file-per-symbol `.kicad_symdir` folders. They are written in the KiCad 8 format so KiCad 8 and later open them. No KiCad install is needed for footprint or symbol work.
 - **`kicad-cli`** (KiCad 7+) for exports and checks, in later milestones.
 - **KiCad IPC API** (KiCad 9+) only for live editing, switched on when present.
 - **FreeCAD** through `FreeCADCmd`, using the Part API that is stable across 0.20 to 1.1.
@@ -68,12 +73,13 @@ KiCad path variables in model paths (for example `${KICAD10_3DMODEL_DIR}`) are e
 
 - `kicad-3d-models`: how to build, check and link a 3D model for a KiCad footprint.
 - `kicad-footprints`: how to read a datasheet into a footprint, and review an existing one.
+- `kicad-symbols`: how to read a datasheet's pin table into a symbol, and review an existing one.
 
 ## Roadmap
 
 1. Missing 3D model for a footprint (done)
 2. Footprints from datasheets (gull-wing, QFN/DFN, custom land patterns, through-hole holes and slots sized from the leads; SOT, chip parts and DIP/header families next)
-3. Symbols from datasheets
+3. Symbols from datasheets (rectangular bodies, multi-unit, alternate pin functions; opamp and gate shapes next)
 4. Board review: ERC/DRC with explanations and fixes
 5. Fab export per fab house
 6. Enclosure from the board

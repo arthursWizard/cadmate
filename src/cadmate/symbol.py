@@ -80,6 +80,15 @@ class Rect:
 
 
 @dataclass
+class Polyline:
+    pts: list[tuple[float, float]]
+    width: float = 0.254
+    fill: str = "background"
+    unit: int = 0
+    style: int = 0
+
+
+@dataclass
 class Property:
     value: str
     x: float = 0.0
@@ -94,7 +103,8 @@ class Symbol:
     properties: dict[str, Property] = field(default_factory=dict)
     pins: list[Pin] = field(default_factory=list)
     rects: list[Rect] = field(default_factory=list)
-    other_graphics: int = 0  # polylines, circles, arcs, text
+    polylines: list[Polyline] = field(default_factory=list)
+    other_graphics: int = 0  # circles, arcs, text
     pin_names_offset: float = 0.508
     hide_pin_names: bool = False
     hide_pin_numbers: bool = False
@@ -109,7 +119,7 @@ class Symbol:
 
     @property
     def unit_count(self) -> int:
-        units = {p.unit for p in self.pins} | {r.unit for r in self.rects}
+        units = {p.unit for p in self.pins} | {r.unit for r in self.rects} | {g.unit for g in self.polylines}
         return max([u for u in units if u > 0], default=1)
 
     def pins_of(self, unit: int) -> list[Pin]:
@@ -216,7 +226,14 @@ def _symbol(node: sexpr.Node, version: str | None) -> Symbol:
                 fill = item.child("fill")
                 ftype = fill.child("type").atoms()[0] if fill and fill.child("type") else "none"
                 sym.rects.append(Rect(min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2), width, ftype, unit, style))
-            elif item.head in ("polyline", "circle", "arc", "text", "bezier", "text_box"):
+            elif item.head == "polyline":
+                pts = [tuple(xy.floats()[:2]) for xy in item.child("pts").children("xy")] if item.child("pts") else []
+                stroke = item.child("stroke")
+                width = stroke.child("width").floats()[0] if stroke and stroke.child("width") else 0.0
+                fill = item.child("fill")
+                ftype = fill.child("type").atoms()[0] if fill and fill.child("type") else "none"
+                sym.polylines.append(Polyline(pts, width, ftype, unit, style))
+            elif item.head in ("circle", "arc", "text", "bezier", "text_box"):
                 sym.other_graphics += 1
     return sym
 
@@ -244,6 +261,7 @@ def _resolve(sym: Symbol, lookup) -> Symbol:
         seen.add(parent_name)
         if not sym.pins and not sym.rects:
             sym.pins, sym.rects, sym.other_graphics = list(parent.pins), list(parent.rects), parent.other_graphics
+            sym.polylines = list(parent.polylines)
             sym.pin_names_offset, sym.hide_pin_names, sym.hide_pin_numbers = parent.pin_names_offset, parent.hide_pin_names, parent.hide_pin_numbers
             sym.units_locked = sym.units_locked or parent.units_locked
         for k, p in parent.properties.items():

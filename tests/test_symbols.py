@@ -242,3 +242,27 @@ def test_fields_clear_the_pins_of_every_unit():
     top = max(p.y for p in s.pins)
     bottom = min(p.y for p in s.pins)
     assert ref.y > top and (value.y > top or value.y < bottom)
+
+
+def test_opamp_units_are_drawn_like_kicads():
+    pins = [
+        {"number": 1, "name": "OUT1", "type": "O", "unit": 1}, {"number": 2, "name": "IN1-", "type": "I", "unit": 1},
+        {"number": 3, "name": "IN1+", "type": "I", "unit": 1}, {"number": 5, "name": "IN2+", "type": "I", "unit": 2},
+        {"number": 6, "name": "IN2-", "type": "I", "unit": 2}, {"number": 7, "name": "OUT2", "type": "O", "unit": 2},
+        {"number": 4, "name": "V-", "type": "P", "unit": 3}, {"number": 8, "name": "V+", "type": "P", "unit": 3},
+    ]
+    r, s = build("LM358", pins, unit_shapes={1: "opamp", 2: "opamp"}, datasheet="http://www.ti.com/lit/ds/symlink/lm2904-n.pdf",
+                 description="Low-Power, Dual Operational Amplifiers, DIP-8/SOIC-8/TO-99-8", keywords="dual opamp")
+    ref = symbol.read(LIB, "LM358")
+    assert [(p.number, p.name, p.x, p.y, p.rotation) for p in s.pins_of(1)] == [
+        (p.number, p.name, p.x, p.y, p.rotation) for p in ref.pins_of(1)]
+    assert s.polylines[0].pts == ref.polylines[0].pts and s.polylines[0].fill == "background"
+    assert symbol_check.compare_symbols(s, ref)["same_pins"]
+    assert symbol_check.compare_with_table(s, pins)["ok"]  # + / - / unnamed output still match the datasheet names
+    assert r["summary"]["bodies"][0]["shape"] == "opamp"
+    single = [{"number": 1, "name": "OUT", "type": "O"}, {"number": 2, "name": "V-", "type": "P"}, {"number": 3, "name": "+IN", "type": "I"},
+              {"number": 4, "name": "-IN", "type": "I"}, {"number": 5, "name": "V+", "type": "P"}]
+    r, s = build("LMV321", single, unit_shapes={1: "opamp"}, datasheet="https://example.com/a.pdf", description="Opamp, SOT-23-5", keywords="opamp")
+    assert {p.name: (p.x, p.y, p.side) for p in s.pins}["V+"] == (-2.54, 7.62, "top")
+    bad = symbol_generate.generate("X", single + [{"number": 6, "name": "SHDN", "type": "I"}], unit_shapes={1: "opamp"})
+    assert not bad["ok"] and "rectangle" in bad["errors"][0]

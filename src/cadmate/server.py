@@ -256,6 +256,7 @@ def generate_symbol(
     reference: str = "U",
     fp_filters: list[str] | None = None,
     pin_length: float | None = None,
+    unit_shapes: dict[str, str] | None = None,
     overwrite: bool = False,
 ) -> dict:
     """Generate a KiCad schematic symbol from the datasheet's pin table and put it into a .kicad_sym library.
@@ -265,7 +266,9 @@ def generate_symbol(
     power_out, open_collector, open_emitter, no_connect, ...) or datasheet shorthand (I, O, I/O, P,
     G, OD, NC); it may be left out for pins named as power, ground or NC. Pins of one group sit
     together on one side; side (left/right/top/bottom) overrides the placement worked out from the
-    type. unit splits a part into units (one per amplifier, plus one for power). Active-low names are
+    type. unit splits a part into units (one per amplifier, plus one for power); unit_shapes
+    {"1": "opamp", ...} draws those units as KiCad's opamp triangle (one +, one -, one output, and
+    optionally a supply each way), the rest are rectangles. Active-low names are
     written ~{RST}; /RST, !RST and RST# are converted.
 
     The layout follows KiCad's library conventions (100 mil grid, inputs left, outputs right, supplies
@@ -279,7 +282,8 @@ def generate_symbol(
     if lib.suffix != ".kicad_sym":
         return {"ok": False, "errors": ["library_path must be a KiCad symbol library file ending in .kicad_sym"]}
     result = symbol_generate.generate(name, pins, reference=reference, footprint=footprint, datasheet=datasheet,
-                                      description=description, keywords=keywords, fp_filters=fp_filters, pin_length=pin_length)
+                                      description=description, keywords=keywords, fp_filters=fp_filters, pin_length=pin_length,
+                                      unit_shapes=unit_shapes)
     text = result.pop("text")
     if not result["ok"]:
         return result

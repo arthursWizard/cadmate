@@ -368,6 +368,16 @@ def _norm(name: str) -> str:
     return n.upper()
 
 
+def _same_name(datasheet: str, name: str) -> bool:
+    d = _norm(datasheet).replace(" ", "_")
+    if d == _norm(name):
+        return True
+    # Opamp units show + and - and leave the output unnamed, as KiCad's do.
+    if name in ("", "~"):
+        return True
+    return (name == "+" and ("+" in d or d in ("INP", "IN_P"))) or (name == "-" and ("-" in d or d in ("INN", "IN_N")))
+
+
 def compare_with_table(sym: Symbol, table: list[dict]) -> dict:
     """Check a symbol against the datasheet pin table: every pin present, with the datasheet's name and type."""
     from .symbol_generate import _pin_type  # the same type shorthand the generator accepts
@@ -388,7 +398,7 @@ def compare_with_table(sym: Symbol, table: list[dict]) -> dict:
             errors.append(f"datasheet pin {number} ({row.get('name', '')}) is missing from the symbol")
             continue
         p = found[0]
-        if row.get("name") is not None and _norm(str(row["name"])) != _norm(p.name) and _norm(str(row["name"])).replace(" ", "_") != _norm(p.name):
+        if row.get("name") is not None and not _same_name(str(row["name"]), p.name):
             errors.append(f"pin {number} is {p.name!r} in the symbol but {row['name']!r} in the datasheet")
         try:
             etype = _pin_type(row.get("type"), str(row.get("name") or ""), number) if row.get("type") or row.get("name") else None

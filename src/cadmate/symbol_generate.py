@@ -18,7 +18,7 @@ import re
 from dataclasses import dataclass, field
 
 from . import sexpr, symbol, symbol_check
-from .symbol import GRID, PIN_SHAPES, PIN_TYPES, Pin, Rect, Symbol
+from .symbol import GRID, PIN_SHAPES, PIN_TYPES, Pin, Polyline, Rect, Symbol
 
 FONT = 1.27  # 50 mil, KLC S3.2
 CHAR_WIDTH = 1.2  # mm per character of KiCad's stroke font at 1.27 mm, measured on kicad-cli renders, plus a little
@@ -84,6 +84,14 @@ class _Unit:
     number: int
     pins: list[Pin] = field(default_factory=list)
     rect: Rect | None = None
+    outline: Polyline | None = None  # the opamp triangle, drawn instead of a rectangle
+
+    @property
+    def box(self) -> Rect:
+        if self.rect is not None:
+            return self.rect
+        xs, ys = [x for x, _ in self.outline.pts], [y for _, y in self.outline.pts]
+        return Rect(min(xs), min(ys), max(xs), max(ys))
 
 
 def generate(
@@ -97,6 +105,7 @@ def generate(
     fp_filters: list[str] | str | None = None,
     pin_length: float | None = None,
     stack_power_pins: bool = True,
+    unit_shapes: dict | None = None,
 ) -> dict:
     """Build a symbol. Returns {"ok", "name", "text", "report", "errors", "warnings", "summary"}; text is set only when ok."""
     warnings: list[str] = []
@@ -114,15 +123,30 @@ def generate(
     if length < GRID or abs(length / 1.27 - round(length / 1.27)) > 1e-6:
         return _fail([f"pin_length {length} mm must be at least {GRID} mm and a multiple of 1.27 mm (50 mil)"], warnings)
 
+    shapes = {int(k): str(v) for k, v in (unit_shapes or {}).items()}
+    bad = {k: v for k, v in shapes.items() if v not in ("rectangle", "opamp")}
+    if bad:
+        return _fail([f"unit_shapes must be rectangle or opamp, got {bad}"], warnings)
+    types = {p.number: p.etype for p in table}  # before stacking turns some into passives
     sym = Symbol(name=name, pin_names_offset=PIN_NAME_OFFSET)
     report: dict = {"pin_length": length, "units": {}}
     units = sorted({p.unit for p in table})
     laid_out: list[_Unit] = []
     for u in units:
-        unit = _layout(u, [p for p in table if p.unit == u], length, stack_power_pins, report, warnings)
+        pins_u = [p for p in table if p.unit == u]
+        try:
+            if shapes.get(u) == "opamp":
+                unit = _layout_opamp(u, pins_u, report, warnings)
+            else:
+                unit = _layout(u, pins_u, length, stack_power_pins, report, warnings)
+        except ValueError as e:
+            return _fail([str(e)], warnings)
         laid_out.append(unit)
         sym.pins += unit.pins
-        sym.rects.append(unit.rect)
+        if unit.rect is not None:
+            sym.rects.append(unit.rect)
+        if unit.outline is not None:
+            sym.polylines.append(unit.outline)
 
     filters = _filters(fp_filters, footprint)
     sym.properties = _fields(sym, reference, footprint, datasheet, description, keywords, filters, laid_out, length)
@@ -133,7 +157,8 @@ def generate(
     text = to_kicad_sym(sym)
     parsed = symbol.parse_symbol(text)  # never hand out a symbol we cannot read back
     review = symbol_check.check_symbol(parsed)
-    review_vs = symbol_check.compare_with_table(parsed, pins)
+    # Against the table as read (overbars converted, opamp inputs named + and -).
+    review_vs = symbol_check.compare_with_table(parsed, [{"number": p.number, "name": p.name, "type": types[p.number]} for p in table])
     errors = review["errors"] + review_vs["errors"]
     warnings += review["warnings"] + review_vs["warnings"]
     return {
@@ -147,7 +172,8 @@ def generate(
             "pins": len(parsed.pins),
             "visible_pins": sum(not p.hidden for p in parsed.pins),
             "units": parsed.unit_count,
-            "bodies": [{"unit": r.unit, "width": round(r.xmax - r.xmin, 4), "height": round(r.ymax - r.ymin, 4)} for r in parsed.rects],
+            "bodies": [{"unit": u.number, "shape": "rectangle" if u.rect else "opamp", "width": round(u.box.xmax - u.box.xmin, 4),
+                        "height": round(u.box.ymax - u.box.ymin, 4)} for u in laid_out],
         },
     }
 
@@ -454,6 +480,48 @@ def _layout(number: int, pins: list[Pin], length: float, stack_power: bool, repo
     return _Unit(number, sorted(placed, key=_num_key), rect)
 
 
+OPAMP = [(-5.08, 5.08), (5.08, 0.0), (-5.08, -5.08), (-5.08, 5.08)]  # KiCad's opamp triangle
+
+
+def _layout_opamp(number: int, pins: list[Pin], report: dict, warnings: list[str]) -> _Unit:
+    """An amplifier unit drawn as KiCad's opamps are: + and - in on the left, out on the right, supplies above and below."""
+    plus, minus, out, sup_pos, sup_neg = [], [], [], [], []
+    for p in pins:
+        n = p.name.replace(" ", "").upper()
+        if p.etype == "power_in":
+            (sup_neg if GROUND.match(p.name) or "-" in n or n.startswith(("VEE", "VSS")) else sup_pos).append(p)
+        elif p.etype in ("output", "tri_state", "open_collector", "open_emitter"):
+            out.append(p)
+        elif n.endswith("+") or n.startswith("+") or n in ("INP", "IN_P", "NONINV"):
+            plus.append(p)
+        elif n.endswith("-") or n.startswith("-") or n in ("INN", "IN_N", "INV"):
+            minus.append(p)
+        else:
+            raise ValueError(f"unit {number} is drawn as an opamp, which only takes +, - and output pins and supplies; "
+                             f"pin {p.number} ({p.name}) fits none. Draw this unit as a rectangle")
+    if len(plus) != 1 or len(minus) != 1 or len(out) != 1 or len(sup_pos) > 1 or len(sup_neg) > 1:
+        raise ValueError(f"unit {number}: an opamp unit needs one +, one - and one output pin, and at most one supply each way; "
+                         f"got + {[p.number for p in plus]}, - {[p.number for p in minus]}, out {[p.number for p in out]}")
+    renamed = []
+    for p, new in ((plus[0], "+"), (minus[0], "-"), (out[0], "")):
+        if p.name != new:
+            renamed.append(f"{p.number} {p.name or '(none)'} -> {new}")
+            p.name = new
+    if renamed:
+        warnings.append(f"unit {number}: pin names shown as KiCad's opamps show them: {', '.join(renamed)}")
+    # Positions from KiCad's own (LM2904): inputs 100 mil above and below the axis, supplies 100 mil left of centre.
+    for p, x, y, rot, length in ((plus[0], -7.62, 2.54, 0, 2.54), (minus[0], -7.62, -2.54, 0, 2.54), (out[0], 7.62, 0.0, 180, 2.54)):
+        p.x, p.y, p.rotation, p.length = x, y, rot, length
+    for group, y, rot in ((sup_pos, 7.62, 270), (sup_neg, -7.62, 90)):
+        for p in group:
+            p.x, p.y, p.rotation, p.length = -2.54, y, rot, 3.81
+    report["units"][number] = {"shape": "opamp", "plus": plus[0].number, "minus": minus[0].number, "output": out[0].number,
+                               "supplies": [p.number for p in sup_pos + sup_neg]}
+    for p in pins:
+        p.unit = number
+    return _Unit(number, sorted(pins, key=_num_key), outline=Polyline(list(OPAMP), OUTLINE_WIDTH, "background", number, 1))
+
+
 def _interchangeable(units: list[_Unit]) -> bool:
     def shape(u: _Unit):
         return sorted((p.name, p.etype, p.side, round(p.y, 3)) for p in u.pins)
@@ -489,9 +557,9 @@ def _fields(sym: Symbol, reference, footprint, datasheet, description, keywords,
     def ends(u: _Unit, side: str) -> float:
         return length if any(p.side == side and p.unit == u.number and not p.hidden for p in sym.pins) else 0.0
 
-    top = max(u.rect.ymax + ends(u, "top") for u in units)
-    bottom = min(u.rect.ymin - ends(u, "bottom") for u in units)
-    narrow = min((u.rect for u in units), key=lambda r: r.xmax - r.xmin)
+    top = max(u.box.ymax + ends(u, "top") for u in units)
+    bottom = min(u.box.ymin - ends(u, "bottom") for u in units)
+    narrow = min((u.box for u in units), key=lambda r: r.xmax - r.xmin)
     rect = symbol.Rect(narrow.xmin, bottom, narrow.xmax, top)
     ref_y = _ceil_grid(top + 1.27, 1.27)
     width = rect.xmax - rect.xmin
@@ -542,12 +610,16 @@ def to_kicad_sym(sym: Symbol) -> str:
         add("\t\t)\n")
     if sym.units_locked:
         add(f'\t\t(property "ki_locked" ""\n\t\t\t(at 0 0 0)\n{_effects(chr(9) * 3)}\t\t)\n')
-    for unit in sorted({r.unit for r in sym.rects} | {p.unit for p in sym.pins}):
+    for unit in sorted({r.unit for r in sym.rects} | {g.unit for g in sym.polylines} | {p.unit for p in sym.pins}):
         add(f"\t\t(symbol {q(f'{sym.name}_{unit}_1')}\n")
         for r in (r for r in sym.rects if r.unit == unit):
             add(f"\t\t\t(rectangle\n\t\t\t\t(start {_f(r.xmin)} {_f(r.ymax)})\n\t\t\t\t(end {_f(r.xmax)} {_f(r.ymin)})\n"
                 f"\t\t\t\t(stroke\n\t\t\t\t\t(width {_f(r.width)})\n\t\t\t\t\t(type default)\n\t\t\t\t)\n"
                 f"\t\t\t\t(fill\n\t\t\t\t\t(type {r.fill})\n\t\t\t\t)\n\t\t\t)\n")
+        for g in (g for g in sym.polylines if g.unit == unit):
+            pts = " ".join(f"(xy {_f(x)} {_f(y)})" for x, y in g.pts)
+            add(f"\t\t\t(polyline\n\t\t\t\t(pts {pts})\n\t\t\t\t(stroke\n\t\t\t\t\t(width {_f(g.width)})\n\t\t\t\t\t(type default)\n\t\t\t\t)\n"
+                f"\t\t\t\t(fill\n\t\t\t\t\t(type {g.fill})\n\t\t\t\t)\n\t\t\t)\n")
         for p in (p for p in sym.pins if p.unit == unit):
             add(f"\t\t\t(pin {p.etype} {p.shape}\n\t\t\t\t(at {_f(p.x)} {_f(p.y)} {p.rotation})\n\t\t\t\t(length {_f(p.length)})\n")
             if p.hidden:

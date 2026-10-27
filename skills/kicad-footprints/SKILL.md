@@ -24,6 +24,16 @@ Most parts in standard packages (SOIC, TSSOP, QFN, SOT-23, 0603...) already have
 
 To review an existing footprint, run `check_footprint`. Give it `family` and `params` from the datasheet to also compare it pad by pad with what IPC-7351B gives.
 
+## Through-hole parts
+
+Use `custom`. For each pin, give the **lead** rather than guessing a hole: `lead_diameter` for round leads, or `lead_width` and `lead_thickness` for square or flat ones, as `[min, max]` when the datasheet gives a range. cadmate works out the hole (maximum lead + 0.15/0.2/0.25 mm for least/nominal/most) and the pad (hole + 0.5/0.6/0.7 mm) per IPC-7251, rounded up to 0.05 mm. A rectangular lead gets a round hole that clears its diagonal.
+
+- Flat tabs (DC jacks, USB shells, power connectors): add `slot: true` to get a slotted (oval) hole along X; `rotation: 90` for one along Y. Slots cost extra at some fabs, so only use them for tabs a round hole would make too big.
+- If the datasheet gives a recommended hole size, use its `drill` (a number, or `[x, y]` for a slot) and pad `width`/`height` instead; the manufacturer wins.
+- Mounting holes and pegs without copper: `kind: np_thru_hole` with `drill`.
+- Pin 1 gets a rectangular pad, the others round or oval; the origin goes on pin 1. Use `courtyard_clearance: 0.5` for connectors.
+- The report lists every hole size it worked out (`ipc7251_holes`); show it to the user.
+
 ## Reading the drawing (JEDEC letters)
 
 | cadmate | JEDEC | What it is |

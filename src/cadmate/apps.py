@@ -11,6 +11,7 @@ import glob
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import tempfile
@@ -36,6 +37,16 @@ _FREECAD_CANDIDATES = {
 }
 
 
+# The versions cadmate is built and tested against. Older ones are reported, not refused;
+# newer ones are expected to work, since KiCad and FreeCAD read their older files.
+MIN_VERSIONS = {"kicad": (10, 0), "freecad": (1, 1)}
+
+
+def _version_tuple(version: str | None) -> tuple[int, ...] | None:
+    m = re.match(r"\s*(\d+)\.(\d+)", version or "")
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
 @dataclass
 class AppInfo:
     name: str
@@ -47,8 +58,18 @@ class AppInfo:
     def available(self) -> bool:
         return self.path is not None
 
+    @property
+    def supported(self) -> bool | None:
+        """True from the minimum version on; None when the version is unknown."""
+        v = _version_tuple(self.version)
+        return None if v is None else v >= MIN_VERSIONS[self.name]
+
     def to_dict(self) -> dict:
-        return asdict(self) | {"available": self.available}
+        d = asdict(self) | {"available": self.available, "supported": self.supported,
+                            "minimum": ".".join(map(str, MIN_VERSIONS[self.name]))}
+        if self.supported is False:
+            d["note"] = f"{self.name} {self.version} is older than {d['minimum']}, the oldest version cadmate supports; files it writes may not open"
+        return d
 
 
 def _find(env_var: str, names: list[str], candidates: dict[str, list[str]]) -> str | None:

@@ -56,7 +56,7 @@ The same values feed `package_params` for the 3D model (`kicad-3d-models` skill)
 - Courtyard 0.25 mm around body and pads on a 0.01 mm grid; use `courtyard_clearance: 0.5` for connectors and large parts.
 - Silkscreen 0.2 mm clear of pads, with an arrow at pin 1. Body outline on F.Fab with the pin 1 corner chamfered.
 - Exposed pads get split paste openings (about 65% coverage), and the signal pads are kept 0.2 mm from the exposed pad.
-- Files are written in the KiCad 8 format, so KiCad 8 and later open them.
+- Files are written in KiCad 10's format; cadmate needs KiCad 10 or later.
 
 ## Files
 

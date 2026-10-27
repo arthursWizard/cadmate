@@ -72,7 +72,7 @@ KiCad path variables in model paths (for example `${KICAD10_3DMODEL_DIR}`) are e
 ## Roadmap
 
 1. Missing 3D model for a footprint (done)
-2. Footprints from datasheets (first version: gull-wing, QFN/DFN, custom land patterns; SOT, chip parts and through-hole families next)
+2. Footprints from datasheets (gull-wing, QFN/DFN, custom land patterns, through-hole holes and slots sized from the leads; SOT, chip parts and DIP/header families next)
 3. Symbols from datasheets
 4. Board review: ERC/DRC with explanations and fixes
 5. Fab export per fab house

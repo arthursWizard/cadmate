@@ -170,3 +170,62 @@ def test_server_writes_into_a_pretty_folder(tmp_path):
     assert not server.generate_footprint("soic", SOIC8, str(tmp_path / "plain"))["ok"]
     review = server.check_footprint(r["written"], "soic", SOIC8)
     assert review["ok"] and review["vs_datasheet"]["same_pads"]
+
+
+def test_ipc7251_hole_and_pad_from_lead():
+    # Worked example published with the IPC-7251 / IPC-2222 rules: 0.55 mm lead.
+    for density, hole, pad in (("most", 0.8, 1.5), ("nominal", 0.75, 1.35), ("least", 0.7, 1.2)):
+        h = ipc.tht_hole(density, lead_diameter=ipc.dim(0.55))
+        assert (h.drill, h.pad_w, h.pad_h, h.drill_y) == (hole, pad, pad, None)
+    # Square 0.64 mm header pin: the round hole has to clear the diagonal.
+    h = ipc.tht_hole("nominal", lead_width=ipc.dim(0.64), lead_thickness=ipc.dim(0.64))
+    assert h.drill == 1.15 and h.drill > 0.64 * 2**0.5
+    with pytest.raises(ValueError):
+        ipc.tht_hole("nominal", lead_diameter=ipc.dim(0.6), slot=True)
+
+
+def test_slot_for_a_flat_tab():
+    h = ipc.tht_hole("nominal", lead_width=ipc.dim([1.9, 2.0]), lead_thickness=ipc.dim(0.5), slot=True)
+    assert (h.drill, h.drill_y, h.pad_w, h.pad_h) == (2.2, 0.7, 2.8, 1.3)
+
+
+JACK = {"body_width": 9, "body_length": 14, "pads": [
+    {"number": 1, "x": 0, "y": 0, "lead_width": 2.0, "lead_thickness": 0.5, "slot": True},
+    {"number": 2, "x": 0, "y": 6, "lead_width": 2.0, "lead_thickness": 0.5, "slot": True},
+    {"number": 3, "x": 4.7, "y": 3, "lead_width": 2.0, "lead_thickness": 0.5, "slot": True, "rotation": 90},
+    {"number": "MP", "kind": "np_thru_hole", "x": 0, "y": 10, "drill": 1.6},
+]}
+
+
+def test_custom_through_hole_from_lead_sizes_round_trips():
+    r, fp = build("custom", JACK, name="Jack", courtyard_clearance=0.5)
+    assert r["warnings"] == [], r
+    p1, p3 = fp.pads[0], fp.pads[2]
+    assert (p1.drill, p1.drill_y, p1.width, p1.height, p1.shape) == (2.2, 0.7, 2.8, 1.3, "roundrect")
+    assert "(drill oval 2.2 0.7)" in r["text"]
+    assert p3.rotation == 90 and p3.box.height == pytest.approx(2.8)
+    assert fp.pads[3].kind == "np_thru_hole" and fp.pads[3].number == "" and fp.pads[3].width == 1.6
+    assert r["report"]["ipc7251_holes"][0]["pads"] == ["1", "2", "3"]
+    review = check.check_footprint(fp, courtyard_clearance=0.5)
+    assert review["ok"] and review["warnings"] == [] and review["measured"]["min_annular_ring"] == pytest.approx(0.3)
+
+
+def test_terminal_from_round_leads_at_each_density():
+    row = {"first": 1, "count": 2, "x": 0, "y": 0, "dx": 5.08, "lead_diameter": [1.0, 1.1]}
+    _, nominal = build("custom", {"body_width": 10, "body_length": 8, "pad_rows": [row]})
+    _, most = build("custom", {"body_width": 10, "body_length": 8, "pad_rows": [row]}, density="most")
+    assert (nominal.pads[0].drill, nominal.pads[0].width) == (1.3, 1.9)
+    assert most.pads[0].drill > nominal.pads[0].drill and most.pads[0].shape == "rect"
+
+
+def test_review_flags_thin_rings_and_compare_sees_drills():
+    params = {"body_width": 3, "body_length": 3, "pads": [{"number": 1, "x": 0, "y": 0, "width": 1.2, "height": 1.2, "drill": 1.0}]}
+    r, fp = build("custom", params)
+    assert any("copper ring 0.100" in w for w in r["warnings"])
+    _, other = build("custom", JACK, name="Jack", courtyard_clearance=0.5)
+    _, same = build("custom", JACK | {"pads": [dict(p) for p in JACK["pads"]]}, name="Jack", courtyard_clearance=0.5)
+    moved = JACK | {"pads": [JACK["pads"][0] | {"lead_thickness": 0.8}] + JACK["pads"][1:]}
+    _, changed = build("custom", moved, name="Jack", courtyard_clearance=0.5)
+    assert check.compare_footprints(other, same)["same_pads"]
+    diff = check.compare_footprints(changed, other)["pad_differences"]
+    assert diff[0]["pad"] == "1" and "drill" in diff[0]

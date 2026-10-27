@@ -160,3 +160,48 @@ def land(lead_span: Dim, lead_length: Dim, lead_width: Dim, fillets: tuple[float
     g = s.max_rms - 2 * heel + 2 * heel_reduction - _rss(s.tol_rms)
     x = lead_width.min_rms + 2 * side + _rss(lead_width.tol_rms)
     return Land(round_to(z), round_to(g), round_to(x))
+
+
+# Through-hole: IPC-7251 / IPC-2222 hole allowance over the maximum lead size, and the pad
+# addition over the hole (2 x 0.05 mm minimum annular ring plus the IPC-2221 fabrication allowance).
+HOLE_ALLOWANCE = {"least": 0.15, "nominal": 0.2, "most": 0.25}
+PAD_ADDITION = {"least": 0.5, "nominal": 0.6, "most": 0.7}
+DRILL_STEP = 0.05  # holes and pads rounded up to this
+
+
+@dataclass
+class Hole:
+    """A plated hole and its pad. drill_y is set for a slot (KiCad oval drill), long axis along X unless rotated."""
+
+    drill: float
+    pad_w: float
+    pad_h: float
+    drill_y: float | None = None
+
+
+def tht_hole(density: str, lead_diameter: Dim | None = None, lead_width: Dim | None = None,
+             lead_thickness: Dim | None = None, slot: bool = False) -> Hole:
+    """Hole and pad for a through-hole lead.
+
+    A round lead gets a round hole. A rectangular lead (width x thickness) gets a
+    round hole that clears its diagonal, or with slot=True a slot that clears
+    each side, which suits flat tabs much better.
+    """
+    allow, add = HOLE_ALLOWANCE[density], PAD_ADDITION[density]
+    if lead_diameter is not None:
+        if slot:
+            raise ValueError("a slot needs a rectangular lead: give lead_width and lead_thickness")
+        d = ceil_to(lead_diameter.max + allow, DRILL_STEP)
+        p = ceil_to(d + add, DRILL_STEP)
+        return Hole(d, p, p)
+    if lead_width is None or lead_thickness is None:
+        raise ValueError("give lead_diameter, or lead_width and lead_thickness")
+    if slot:
+        dx = ceil_to(lead_width.max + allow, DRILL_STEP)
+        dy = ceil_to(lead_thickness.max + allow, DRILL_STEP)
+        dx, dy = max(dx, dy), min(dx, dy)
+        # The pad grows by the same ring all round the slot.
+        return Hole(dx, ceil_to(dx + add, DRILL_STEP), ceil_to(dy + add, DRILL_STEP), dy if dy < dx else None)
+    d = ceil_to(math.hypot(lead_width.max, lead_thickness.max) + allow, DRILL_STEP)
+    p = ceil_to(d + add, DRILL_STEP)
+    return Hole(d, p, p)

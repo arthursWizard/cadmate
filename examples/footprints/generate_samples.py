@@ -24,6 +24,16 @@ SAMPLES = [
     ("custom", {"body_width": 2.54, "body_length": 10.16,
                 "pad_rows": [{"first": 1, "count": 4, "x": 0, "y": 0, "dy": 2.54, "width": 1.7, "height": 1.7, "drill": 1.0}]},
      {"name": "cadmate_Header_1x04_P2.54mm", "courtyard_clearance": 0.5}),
+    # Holes and pads worked out from the lead sizes (IPC-7251): round leads, and flat tabs in slots.
+    ("custom", {"body_width": 10, "body_length": 8,
+                "pad_rows": [{"first": 1, "count": 2, "x": 0, "y": 0, "dx": 5.08, "lead_diameter": [1.0, 1.1]}]},
+     {"name": "cadmate_Terminal_1x02_P5.08mm", "courtyard_clearance": 0.5}),
+    ("custom", {"body_width": 9, "body_length": 14, "pads": [
+        {"number": 1, "x": 0, "y": 0, "lead_width": 2.0, "lead_thickness": 0.5, "slot": True},
+        {"number": 2, "x": 0, "y": 6, "lead_width": 2.0, "lead_thickness": 0.5, "slot": True},
+        {"number": 3, "x": 4.7, "y": 3, "lead_width": 2.0, "lead_thickness": 0.5, "slot": True, "rotation": 90},
+        {"number": "MP", "kind": "np_thru_hole", "x": 0, "y": 10, "drill": 1.6}]},
+     {"name": "cadmate_SlottedTabs_Example", "courtyard_clearance": 0.5}),
 ]
 
 

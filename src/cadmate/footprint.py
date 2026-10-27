@@ -30,6 +30,7 @@ class Pad:
     layers: list[str] = field(default_factory=list)
     drill_y: float | None = None  # set for a slot: KiCad's (drill oval x y)
     offset: tuple[float, float] = (0.0, 0.0)  # copper relative to the hole, in the pad's own frame: KiCad's (drill .. (offset x y))
+    castellated: bool = False  # KiCad's (property pad_prop_castellated): a hole cut in half by the board edge
 
     @property
     def half_size(self) -> tuple[float, float]:
@@ -196,6 +197,7 @@ def parse(text: str) -> Footprint:
                 layers=p.child("layers").atoms() if p.child("layers") else [],
                 drill_y=drill_vals[1] if len(drill_vals) > 1 and drill_node and "oval" in drill_node.atoms() else None,
                 offset=_offset(drill_node),
+                castellated=bool(p.child("property") and "pad_prop_castellated" in p.child("property").atoms()),
             )
         )
     if attr is None:

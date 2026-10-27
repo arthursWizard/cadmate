@@ -56,6 +56,20 @@ def _apply_placement(bbox: dict, model: Model) -> dict:
     }
 
 
+def placement_matrix(model: Model) -> list[float]:
+    """KiCad's model placement as a 4x4 matrix, row by row: scale, rotate X, Y, Z (each by -angle), then offset."""
+    m = [[model.scale[0], 0.0, 0.0], [0.0, model.scale[1], 0.0], [0.0, 0.0, model.scale[2]]]
+    for axis in (0, 1, 2):
+        a = math.radians(-model.rotate[axis])
+        c, s = math.cos(a), math.sin(a)
+        i, j = [(1, 2), (2, 0), (0, 1)][axis]
+        r = [[1.0 if p == q else 0.0 for q in range(3)] for p in range(3)]
+        r[i][i], r[i][j], r[j][i], r[j][j] = c, -s, s, c
+        m = [[sum(r[p][k] * m[k][q] for k in range(3)) for q in range(3)] for p in range(3)]
+    rows = [[round(v, 12) for v in m[p]] + [model.offset[p]] for p in range(3)]
+    return [v for row in rows for v in row] + [0.0, 0.0, 0.0, 1.0]
+
+
 def _covers_holes(footprint: Footprint, b: dict, pad_box: dict, errors: list[str], warnings: list[str], what: str) -> None:
     """The model should reach every pad centre (hole, castellation, lead); pad edges may stick out."""
     out = max(b["xmin"] - pad_box["xmax"], pad_box["xmin"] - b["xmax"], b["ymin"] - pad_box["ymax"], pad_box["ymin"] - b["ymax"])
@@ -73,7 +87,8 @@ def _symmetric_pads(footprint: Footprint, cx: float, cy: float) -> bool:
     return all(any(abs(2 * cx - x - u) < 0.05 and abs(2 * cy - y - v) < 0.05 for u, v in pts) for x, y in pts)
 
 
-def check_model(footprint: Footprint, bbox: dict, model: Model | None = None, expected: dict | None = None, cutout: bool = False) -> dict:
+def check_model(footprint: Footprint, bbox: dict, model: Model | None = None, expected: dict | None = None, cutout: bool = False,
+                by_solid: bool = False) -> dict:
     """Compare a model bounding box with the footprint.
 
     bbox: xmin..zmax of the model as read from its STEP file.
@@ -81,6 +96,8 @@ def check_model(footprint: Footprint, bbox: dict, model: Model | None = None, ex
     expected: optional body size from the datasheet, keys length/width/height (mm).
     cutout: the board has a cutout under the part, so an SMD model may reach below the board
     (a module with parts on its underside, soldered flat).
+    by_solid: leave out the courtyard and below-the-board checks, because review.review_footprint makes
+    them solid by solid (the overall box cannot tell a lead from a part under a module).
     """
     model = model or Model(path="")
     if any(abs(r - 90 * round(r / 90)) > 1e-6 for r in model.rotate):
@@ -104,7 +121,7 @@ def check_model(footprint: Footprint, bbox: dict, model: Model | None = None, ex
             _covers_holes(footprint, b, pad_box, errors, warnings, "pads")
         elif abs(mcx - pcx) > CENTER_TOLERANCE or abs(mcy - pcy) > CENTER_TOLERANCE:
             errors.append(f"model centre is ({mcx - pcx:+.2f}, {mcy - pcy:+.2f}) mm from the pad centre")
-        if b["zmin"] < -Z_TOLERANCE:
+        if b["zmin"] < -Z_TOLERANCE and not by_solid:
             msg = f"SMD model goes {-b['zmin']:.2f} mm below the board surface"
             if cutout:
                 warnings.append(msg + "; the board needs a cutout there")
@@ -124,7 +141,7 @@ def check_model(footprint: Footprint, bbox: dict, model: Model | None = None, ex
             _covers_holes(footprint, b, pad_box, errors, warnings, "holes")
 
     court = footprint.courtyard
-    if court is not None:
+    if court is not None and not by_solid:
         c3 = {"xmin": court.xmin, "xmax": court.xmax, "ymin": -court.ymax, "ymax": -court.ymin}
         over = max(c3["xmin"] - b["xmin"], b["xmax"] - c3["xmax"], c3["ymin"] - b["ymin"], b["ymax"] - c3["ymax"])
         measured["courtyard_3d"] = c3

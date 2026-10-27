@@ -229,3 +229,12 @@ def test_review_flags_thin_rings_and_compare_sees_drills():
     assert check.compare_footprints(other, same)["same_pads"]
     diff = check.compare_footprints(changed, other)["pad_differences"]
     assert diff[0]["pad"] == "1" and "drill" in diff[0]
+
+
+def test_slot_for_a_nearly_round_lead_is_questioned():
+    params = {"body_width": 4, "body_length": 4, "pads": [
+        {"number": 1, "x": 0, "y": 0, "lead_width": 1.0, "lead_thickness": 0.6, "slot": True}]}
+    r, _ = build("custom", params)
+    assert any("KLC F7.7" in w for w in r["warnings"])
+    r, _ = build("custom", JACK, name="Jack", courtyard_clearance=0.5)  # 2.0 x 0.5 tabs: a slot is right
+    assert r["warnings"] == []

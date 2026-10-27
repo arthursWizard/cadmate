@@ -162,8 +162,11 @@ def land(lead_span: Dim, lead_length: Dim, lead_width: Dim, fillets: tuple[float
     return Land(round_to(z), round_to(g), round_to(x))
 
 
-# Through-hole: IPC-7251 / IPC-2222 hole allowance over the maximum lead size, and the pad
-# addition over the hole (2 x 0.05 mm minimum annular ring plus the IPC-2221 fabrication allowance).
+# Through-hole (IPC-7251 / IPC-2222 / IPC-2221): the hole is the maximum lead size plus an
+# allowance, and the pad is the hole plus 2 x 0.05 mm minimum ring and a fabrication allowance.
+# The nominal level is what KiCad's library rules ask for: maximum lead + 0.2 mm for round
+# holes and for each side length of a slot (KLC F7.6, F7.7), and at least 0.15 mm of copper
+# ring (KLC F7.5), where nominal pads here leave 0.3 mm.
 HOLE_ALLOWANCE = {"least": 0.15, "nominal": 0.2, "most": 0.25}
 PAD_ADDITION = {"least": 0.5, "nominal": 0.6, "most": 0.7}
 DRILL_STEP = 0.05  # holes and pads rounded up to this

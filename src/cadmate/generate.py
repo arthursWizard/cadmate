@@ -40,6 +40,9 @@ FAMILIES: dict[str, dict] = {
         "optional": ["pads", "pad_rows", "body_center", "origin"],
         "notes": (
             "pads: [{number, x, y, width, height, shape?, kind?, drill?, rotation?}], kind smd (default), thru_hole or np_thru_hole. "
+            "Through-hole pads may give the lead instead of drill and size: lead_diameter for round leads, or lead_width and "
+            "lead_thickness for flat ones (add slot: true for a slotted hole, long axis along X; rotate 90 for Y). Holes and pads "
+            "then follow IPC-7251 for the density; give leads as [min, max] where the datasheet has a range. "
             "pad_rows: [{first, count, x, y, dx, dy, width, height, ...}] numbers pads first, first+1, ... stepping by (dx, dy). "
             "Coordinates in KiCad's frame, Y down. origin: auto (SMD centre of the pads, through-hole pin 1), center, pin1 or as_given."
         ),
@@ -102,7 +105,7 @@ def generate(
         elif family == "qfn":
             design = _qfn(params, density)
         else:
-            design = _custom(params)
+            design = _custom(params, density)
     except (ValueError, TypeError, KeyError) as e:
         return _fail([str(e)], warnings)
 
@@ -327,18 +330,19 @@ def _paste_grid(w: float, h: float, coverage: float) -> list[Pad]:
     return out
 
 
-def _custom(params: dict) -> Design:
+def _custom(params: dict, density: str = "nominal") -> Design:
     pads: list[Pad] = []
+    sizing: dict[str, dict] = {}  # lead -> computed hole and pad, for the report
     for row in params.get("pad_rows") or []:
-        for k in ("first", "count", "x", "y", "width", "height"):
+        for k in ("first", "count", "x", "y"):
             if row.get(k) is None:
                 raise ValueError(f"pad_rows entry needs {k}")
         for i in range(int(row["count"])):
             spec = {k: v for k, v in row.items() if k not in ("first", "count", "dx", "dy")}
             spec |= {"number": str(int(row["first"]) + i), "x": row["x"] + i * row.get("dx", 0), "y": row["y"] + i * row.get("dy", 0)}
-            pads.append(_custom_pad(spec))
+            pads.append(_custom_pad(spec, density, sizing))
     for spec in params.get("pads") or []:
-        pads.append(_custom_pad(spec))
+        pads.append(_custom_pad(spec, density, sizing))
     if not pads:
         raise ValueError("custom needs pads or pad_rows")
 
@@ -373,32 +377,54 @@ def _custom(params: dict) -> Design:
         cx, cy = body.center
         corner = (-1 if pin1.x <= cx else 1, -1 if pin1.y <= cy else 1)
     report = {"origin": origin, "shifted_by": [round(-sx, 6), round(-sy, 6)], "through_hole": tht}
+    if sizing:
+        report["ipc7251_holes"] = list(sizing.values())
     return Design(name="Custom", descr="Custom land pattern from the datasheet", tags="", pads=pads, body=body,
                   pin1_corner=corner, report=report, courtyard_rects=[])
 
 
-def _custom_pad(spec: dict) -> Pad:
-    for k in ("number", "x", "y", "width", "height"):
+def _custom_pad(spec: dict, density: str = "nominal", sizing: dict | None = None) -> Pad:
+    for k in ("number", "x", "y"):
         if spec.get(k) is None:
             raise ValueError(f"pad needs {k}: {spec}")
-    kind = spec.get("kind", "thru_hole" if spec.get("drill") else "smd")
+    leads = {k: spec[k] for k in ("lead_diameter", "lead_width", "lead_thickness") if spec.get(k) is not None}
+    kind = spec.get("kind", "thru_hole" if spec.get("drill") or leads else "smd")
     if kind not in ("smd", "thru_hole", "np_thru_hole"):
         raise ValueError(f"pad kind must be smd, thru_hole or np_thru_hole, got {kind!r}")
-    w, h = float(spec["width"]), float(spec["height"])
     number = "" if kind == "np_thru_hole" else str(spec["number"])
-    if kind == "smd":
-        shape, layers, drill = spec.get("shape", "roundrect"), ["F.Cu", "F.Paste", "F.Mask"], None
-    else:
+    drill = drill_y = None
+    w, h = spec.get("width"), spec.get("height")
+    if kind == "thru_hole" and leads and spec.get("drill") is None:
+        try:
+            hole = ipc.tht_hole(density, slot=bool(spec.get("slot")), **{k: ipc.dim(v) for k, v in leads.items()})
+        except ValueError as e:
+            raise ValueError(f"pad {number}: {e}") from None
+        drill, drill_y = hole.drill, hole.drill_y
+        if w is None and h is None:
+            w, h = hole.pad_w, hole.pad_h
+        if sizing is not None:
+            key = repr(sorted(leads.items())) + repr(bool(spec.get("slot")))
+            sizing.setdefault(key, {"lead": leads, "drill": [drill, drill_y] if drill_y else drill, "pad": [w, h], "pads": []})["pads"].append(number)
+    elif kind != "smd":
         if spec.get("drill") is None:
-            raise ValueError(f"through-hole pad {number!r} needs drill")
-        drill = float(spec["drill"])
+            raise ValueError(f"through-hole pad {number!r} needs drill, or the lead size to work it out from")
+        d = spec["drill"]
+        drill, drill_y = (float(d[0]), float(d[1])) if isinstance(d, (list, tuple)) else (float(d), None)
+        if w is None and h is None and kind == "np_thru_hole":
+            w, h = drill, drill_y or drill
+    if w is None or h is None:
+        raise ValueError(f"pad {number!r} needs width and height")
+    w, h = float(w), float(h)
+    if kind == "smd":
+        shape, layers = spec.get("shape", "roundrect"), ["F.Cu", "F.Paste", "F.Mask"]
+    else:
         default = "circle" if abs(w - h) < 1e-9 else "oval"
         if number in ("1", "A1") and kind == "thru_hole":
             default = "rect" if abs(w - h) < 1e-9 else "roundrect"
         shape, layers = spec.get("shape", default), ["*.Cu", "*.Mask"]
     if shape not in ("rect", "roundrect", "circle", "oval"):
         raise ValueError(f"pad shape must be rect, roundrect, circle or oval, got {shape!r}")
-    return Pad(number, kind, shape, float(spec["x"]), float(spec["y"]), float(spec.get("rotation", 0.0)), w, h, drill, layers)
+    return Pad(number, kind, shape, float(spec["x"]), float(spec["y"]), float(spec.get("rotation", 0.0)), w, h, drill, layers, drill_y)
 
 
 def _extents(pads: list[Pad]) -> BBox:
@@ -621,7 +647,9 @@ def to_kicad_mod(design: Design) -> str:
     for p in design.pads:
         at = _xy((p.x, p.y)) + (f" {_f(p.rotation)}" if p.rotation else "")
         line = f"\t(pad {sexpr.quote(p.number)} {p.kind} {p.shape} (at {at}) (size {_f(p.width)} {_f(p.height)})"
-        if p.drill is not None:
+        if p.drill is not None and p.drill_y is not None:
+            line += f" (drill oval {_f(p.drill)} {_f(p.drill_y)})"
+        elif p.drill is not None:
             line += f" (drill {_f(p.drill)})"
         line += " (layers " + " ".join(sexpr.quote(layer) for layer in p.layers) + ")"
         if p.shape == "roundrect":

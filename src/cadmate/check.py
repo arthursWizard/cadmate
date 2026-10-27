@@ -127,6 +127,7 @@ def check_model(footprint: Footprint, bbox: dict, model: Model | None = None, ex
     return {"ok": not errors, "errors": errors, "warnings": warnings, "measured": measured}
 
 
+MIN_ANNULAR_RING = 0.15  # mm of copper around a plated hole; IPC-7251 nominal pads give 0.25 or more
 MIN_PAD_GAP = 0.15  # mm of copper between pads; below this many fabs cannot keep a solder mask web
 SILK_PAD_CLEARANCE = 0.2  # KLC
 COURTYARD_CLEARANCE = 0.25  # KLC default; connectors and large parts often use 0.5
@@ -236,8 +237,17 @@ def check_footprint(fp: Footprint, courtyard_clearance: float = COURTYARD_CLEARA
         label = f"pad {p.number or '(unnumbered)'}"
         if p.width <= 0 or p.height <= 0:
             errors.append(f"{label} has no size")
-        if p.kind in ("thru_hole", "np_thru_hole") and p.drill is not None and p.kind == "thru_hole" and p.drill >= min(p.width, p.height) - 1e-9:
-            errors.append(f"{label}: drill {p.drill} mm leaves no copper ring on a {p.width}x{p.height} mm pad")
+        if p.kind == "thru_hole" and p.drill is not None:
+            hole = f"{p.drill}x{p.drill_y}" if p.drill_y else f"{p.drill}"
+            ring = min((p.width - p.drill) / 2, (p.height - (p.drill_y or p.drill)) / 2)
+            measured.setdefault("min_annular_ring", ring)
+            measured["min_annular_ring"] = round(min(measured["min_annular_ring"], ring), 4)
+            if ring <= 1e-9:
+                errors.append(f"{label}: drill {hole} mm leaves no copper ring on a {p.width}x{p.height} mm pad")
+            elif ring < MIN_ANNULAR_RING - 1e-6:
+                warnings.append(f"{label}: copper ring {ring:.3f} mm around the hole; most fabs want at least {MIN_ANNULAR_RING} mm")
+        if p.drill_y is not None and p.shape not in ("oval", "roundrect", "rect"):
+            warnings.append(f"{label}: slotted hole in a {p.shape} pad; use an oval pad")
         if p.kind == "smd" and p.layers and not any(layer.endswith(".Cu") for layer in p.layers) and p.number:
             warnings.append(f"{label} has a number but no copper layer")
 
@@ -358,8 +368,15 @@ def compare_footprints(a: Footprint, b: Footprint, tolerance: float = 0.005) -> 
             d = {"dx": x.x - y.x, "dy": x.y - y.y, "dwidth": 2 * (xw - yw), "dheight": 2 * (xh - yh)}
             m = max(abs(v) for v in d.values())
             worst = max(worst, m)
-            if m > tolerance:
-                diffs.append({"pad": n} | {k: round(v, 4) for k, v in d.items()} | ({"kind": f"{x.kind} vs {y.kind}"} if x.kind != y.kind else {}))
+            extra = {}
+            if x.kind != y.kind:
+                extra["kind"] = f"{x.kind} vs {y.kind}"
+            if x.shape != y.shape:
+                extra["shape"] = f"{x.shape} vs {y.shape}"
+            if (x.drill, x.drill_y) != (y.drill, y.drill_y):
+                extra["drill"] = f"{_hole(x)} vs {_hole(y)}"
+            if m > tolerance or extra:
+                diffs.append({"pad": n} | {k: round(v, 4) for k, v in d.items()} | extra)
     result = {
         "same_pads": not only_a and not only_b and not diffs,
         "max_pad_difference": round(worst, 4),
@@ -371,6 +388,12 @@ def compare_footprints(a: Footprint, b: Footprint, tolerance: float = 0.005) -> 
         if box_a and box_b:
             result[f"{key}_difference"] = {k: round(getattr(box_a, k) - getattr(box_b, k), 4) for k in ("xmin", "ymin", "xmax", "ymax")}
     return result
+
+
+def _hole(p: Pad) -> str:
+    if p.drill is None:
+        return "none"
+    return f"{p.drill}x{p.drill_y}" if p.drill_y else f"{p.drill}"
 
 
 def _natural(s: str):

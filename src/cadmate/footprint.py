@@ -28,6 +28,7 @@ class Pad:
     height: float
     drill: float | None
     layers: list[str] = field(default_factory=list)
+    drill_y: float | None = None  # set for a slot: KiCad's (drill oval x y)
 
     @property
     def half_size(self) -> tuple[float, float]:
@@ -182,6 +183,7 @@ def parse(text: str) -> Footprint:
                 height=size[1],
                 drill=drill_vals[0] if drill_vals else None,
                 layers=p.child("layers").atoms() if p.child("layers") else [],
+                drill_y=drill_vals[1] if len(drill_vals) > 1 and drill_node and "oval" in drill_node.atoms() else None,
             )
         )
     if attr is None:

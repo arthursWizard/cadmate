@@ -14,6 +14,7 @@ handled here yet (they would need the rotated shape, not its box).
 from __future__ import annotations
 
 import math
+import statistics
 
 from .footprint import BBox, Footprint, Model, Pad
 
@@ -130,7 +131,7 @@ def check_model(footprint: Footprint, bbox: dict, model: Model | None = None, ex
                 errors.append(msg + " (pass cutout if the board has a cutout under it)")
         if b["zmin"] > Z_TOLERANCE:
             warnings.append(f"model floats {b['zmin']:.2f} mm above the board; fine only if the leads are separate solids that touch the pads")
-    if not footprint.smd:
+    if not any(p.kind == "smd" for p in footprint.pads):  # mixed parts (USB-C) are centred in KiCad's library
         pin1 = footprint.pin1
         if pin1 is not None and (abs(pin1.x) > 1e-3 or abs(pin1.y) > 1e-3) and not by_solid:  # check_footprint says it then
             warnings.append("through-hole footprint whose pin 1 is not at the origin (KiCad library convention puts it there)")
@@ -264,7 +265,43 @@ def _box_gap(a: BBox, b: BBox) -> float:
     return math.hypot(max(dx, 0.0), max(dy, 0.0))
 
 
+def _seg_dist(p, a, b) -> float:
+    ax, ay = a
+    dx, dy = b[0] - ax, b[1] - ay
+    t = 0.0 if dx == dy == 0 else max(0.0, min(1.0, ((p[0] - ax) * dx + (p[1] - ay) * dy) / (dx * dx + dy * dy)))
+    return math.hypot(p[0] - ax - t * dx, p[1] - ay - t * dy)
+
+
+def _separated(a: list, b: list) -> bool:
+    """Separating-axis test for two convex polygons."""
+    for poly in (a, b):
+        for i in range(len(poly)):
+            (x1, y1), (x2, y2) = poly[i], poly[(i + 1) % len(poly)]
+            nx, ny = y1 - y2, x2 - x1
+            if nx == ny == 0:
+                continue
+            pa = [nx * x + ny * y for x, y in a]
+            pb = [nx * x + ny * y for x, y in b]
+            if max(pa) < min(pb) or max(pb) < min(pa):
+                return True
+    return False
+
+
+def pad_gap(a: Pad, b: Pad) -> float:
+    """Copper to copper between two pads, by their real shapes (round and oval pads, rotation); negative when they overlap."""
+    box = _box_gap(a.box, b.box)
+    if box > 0.5:  # far apart: the boxes say enough
+        return box
+    pa, pb = a.outline(), b.outline()
+    if not _separated(pa, pb):
+        return box if box < 0 else 0.0
+    edges = lambda poly: [(poly[i], poly[(i + 1) % len(poly)]) for i in range(len(poly))]
+    return min(min(_seg_dist(p, *e) for p in pa for e in edges(pb)), min(_seg_dist(p, *e) for p in pb for e in edges(pa)))
+
+
 def _copper(p: Pad) -> bool:
+    if p.kind == "np_thru_hole" and p.drill is not None and p.width <= p.drill + 1e-6 and p.height <= (p.drill_y or p.drill) + 1e-6:
+        return False  # a bare hole: KiCad lists *.Cu on it but there is no copper round it
     return any(layer.endswith(".Cu") for layer in p.layers) or (not p.layers and p.kind != "np_thru_hole")
 
 
@@ -280,6 +317,7 @@ def check_footprint(fp: Footprint, courtyard_clearance: float = COURTYARD_CLEARA
     if not fp.pads:
         return {"ok": False, "errors": ["footprint has no pads"], "warnings": [], "measured": {}}
 
+    thin_rings: dict[float, list[str]] = {}
     for p in fp.pads:
         label = f"pad {p.number or '(unnumbered)'}"
         if p.width <= 0 or p.height <= 0:
@@ -292,11 +330,15 @@ def check_footprint(fp: Footprint, courtyard_clearance: float = COURTYARD_CLEARA
             if ring <= 1e-9:
                 errors.append(f"{label}: drill {hole} mm leaves no copper ring on a {p.width}x{p.height} mm pad")
             elif ring < MIN_ANNULAR_RING - 1e-6:
-                warnings.append(f"{label}: copper ring {ring:.3f} mm around the hole; most fabs want at least {MIN_ANNULAR_RING} mm")
+                thin_rings.setdefault(round(ring, 3), []).append(p.number or "(unnumbered)")
         if p.drill_y is not None and p.shape not in ("oval", "roundrect", "rect"):
             warnings.append(f"{label}: slotted hole in a {p.shape} pad; use an oval pad")
         if p.kind == "smd" and p.layers and not any(layer.endswith(".Cu") for layer in p.layers) and p.number:
             warnings.append(f"{label} has a number but no copper layer")
+    for ring, numbers in sorted(thin_rings.items()):
+        which = f"pad {numbers[0]}" if len(numbers) == 1 else f"pads {', '.join(numbers)}"
+        warnings.append(f"{which}: copper ring {ring:.3f} mm around the hole; most fabs want at least {MIN_ANNULAR_RING} mm. "
+                        "Keep it if the datasheet's land pattern draws it so, and check the fab's minimum")
 
     # A big pad with one full paste opening (an exposed pad as drawn) floats the part and voids; IPC-7093 wants it split.
     paste_only = [p for p in fp.pads if "F.Paste" in p.layers and not _copper(p)]
@@ -310,20 +352,26 @@ def check_footprint(fp: Footprint, courtyard_clearance: float = COURTYARD_CLEARA
 
     # Copper between differently numbered pads.
     copper = [p for p in fp.pads if _copper(p)]
-    worst = None
+    worst, close = None, []
     for i, a in enumerate(copper):
         for b in copper[i + 1 :]:
             if a.number and a.number == b.number:
                 continue
-            gap = _box_gap(a.box, b.box)
-            if worst is None or gap < worst[0]:
-                worst = (gap, a.number, b.number)
+            gap = pad_gap(a, b)
+            if worst is None or gap < worst:
+                worst = gap
             if gap < -1e-6:
                 errors.append(f"pads {a.number or '?'} and {b.number or '?'} overlap")
+            elif gap < MIN_PAD_GAP - 1e-6:
+                close.append((gap, a.number or "?", b.number or "?"))
     if worst is not None:
-        measured["min_pad_gap"] = round(worst[0], 4)
-        if 0 <= worst[0] < MIN_PAD_GAP - 1e-6:
-            warnings.append(f"pads {worst[1]} and {worst[2]} are {worst[0]:.3f} mm apart; under {MIN_PAD_GAP} mm many fabs drop the solder mask between them")
+        measured["min_pad_gap"] = round(worst, 4)
+    if close:
+        close.sort()
+        shown = ", ".join(f"{a} and {b} ({g:.3f} mm)" for g, a, b in close[:8])
+        more = f" and {len(close) - 8} more pairs" if len(close) > 8 else ""
+        warnings.append(f"{len(close)} pad pair{'s are' if len(close) > 1 else ' is'} closer than {MIN_PAD_GAP} mm, where many fabs "
+                        f"drop the solder mask between them: {shown}{more}")
 
     numbers = [p.number for p in fp.pads if p.number]
     if fp.pin1 is None:
@@ -389,7 +437,7 @@ def check_footprint(fp: Footprint, courtyard_clearance: float = COURTYARD_CLEARA
         cx, cy = ext.center
         if math.hypot(cx, cy) > 0.01:
             warnings.append(f"SMD footprint origin is ({-cx:+.3f}, {-cy:+.3f}) mm from the pad centre; KiCad's library puts it at the centre")
-    if not fp.smd and fp.pin1 is not None and (abs(fp.pin1.x) > 1e-3 or abs(fp.pin1.y) > 1e-3):
+    if not any(p.kind == "smd" for p in fp.pads) and fp.pin1 is not None and (abs(fp.pin1.x) > 1e-3 or abs(fp.pin1.y) > 1e-3):
         warnings.append("through-hole footprint whose pin 1 is not at the origin (KiCad library convention puts it there)")
 
     return {"ok": not errors, "errors": errors, "warnings": warnings, "measured": measured}
@@ -399,8 +447,12 @@ def _box_corners(b: BBox) -> list[Point]:
     return [(b.xmin, b.ymin), (b.xmax, b.ymin), (b.xmax, b.ymax), (b.xmin, b.ymax)]
 
 
-def compare_footprints(a: Footprint, b: Footprint, tolerance: float = 0.005) -> dict:
-    """Compare two footprints pad by pad (a is the candidate, b the reference)."""
+def compare_footprints(a: Footprint, b: Footprint, tolerance: float = 0.005, align: bool = False) -> dict:
+    """Compare two footprints pad by pad (a is the candidate, b the reference).
+
+    With align, a footprint whose origin sits elsewhere (pin 1 against the pads' centre, say) is first moved by
+    the median offset of the pads both number alike, and that offset is reported as origin_offset.
+    """
 
     def by_number(fp: Footprint) -> dict[str, list[Pad]]:
         out: dict[str, list[Pad]] = {}
@@ -412,6 +464,16 @@ def compare_footprints(a: Footprint, b: Footprint, tolerance: float = 0.005) -> 
         return out
 
     pa, pb = by_number(a), by_number(b)
+    ox = oy = 0.0
+    if align:
+        single = [n for n in set(pa) & set(pb) if len(pa[n]) == len(pb[n]) == 1]
+        if single:
+            ox = statistics.median(pa[n][0].x - pb[n][0].x for n in single)
+            oy = statistics.median(pa[n][0].y - pb[n][0].y for n in single)
+            if math.hypot(ox, oy) <= tolerance:
+                ox = oy = 0.0
+    if ox or oy:
+        pa = {n: sorted(v, key=lambda p: (p.x - ox, p.y - oy)) for n, v in pa.items()}
     only_a = sorted(set(pa) - set(pb), key=_natural)
     only_b = sorted(set(pb) - set(pa), key=_natural)
     diffs = []
@@ -422,7 +484,7 @@ def compare_footprints(a: Footprint, b: Footprint, tolerance: float = 0.005) -> 
             continue
         for x, y in zip(pa[n], pb[n]):
             (xw, xh), (yw, yh) = x.half_size, y.half_size
-            d = {"dx": x.x - y.x, "dy": x.y - y.y, "dwidth": 2 * (xw - yw), "dheight": 2 * (xh - yh)}
+            d = {"dx": x.x - ox - y.x, "dy": x.y - oy - y.y, "dwidth": 2 * (xw - yw), "dheight": 2 * (xh - yh)}
             m = max(abs(v) for v in d.values())
             worst = max(worst, m)
             extra = {}
@@ -443,9 +505,14 @@ def compare_footprints(a: Footprint, b: Footprint, tolerance: float = 0.005) -> 
         "only_in_reference": only_b,
         "pad_differences": diffs[:50],
     }
+    if ox or oy:
+        result["origin_offset"] = [round(ox, 4), round(oy, 4)]
+        result["note"] = (f"the origins differ: the reference's origin is at ({-ox:g}, {-oy:g}) in the candidate's frame. "
+                          "Pads and boxes are compared with the footprints aligned")
     for key, box_a, box_b in (("courtyard", a.courtyard, b.courtyard), ("pad_extents", a.pad_extents, b.pad_extents)):
         if box_a and box_b:
-            result[f"{key}_difference"] = {k: round(getattr(box_a, k) - getattr(box_b, k), 4) for k in ("xmin", "ymin", "xmax", "ymax")}
+            shift = {"xmin": ox, "ymin": oy, "xmax": ox, "ymax": oy}
+            result[f"{key}_difference"] = {k: round(getattr(box_a, k) - shift[k] - getattr(box_b, k), 4) for k in ("xmin", "ymin", "xmax", "ymax")}
     return result
 
 

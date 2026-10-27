@@ -27,7 +27,7 @@ from .footprint import BBox, Model
 
 LIB_TABLE_VERSION = 7
 SYMBOL_KEYS = {"name", "pins", "description", "keywords", "reference", "fp_filters", "pin_length", "unit_shapes"}
-FOOTPRINT_KEYS = {"family", "params", "name", "density", "courtyard_clearance"}
+FOOTPRINT_KEYS = {"family", "params", "name", "density", "courtyard_clearance", "description", "tags"}
 
 
 def generate_part(
@@ -55,7 +55,8 @@ def generate_part(
     family = footprint_spec.get("family")
     params = dict(footprint_spec.get("params") or {})
     fp_result = generate.generate(family, params, name=footprint_spec.get("name"), density=footprint_spec.get("density", "nominal"),
-                                  courtyard_clearance=footprint_spec.get("courtyard_clearance"), datasheet=datasheet)
+                                  courtyard_clearance=footprint_spec.get("courtyard_clearance"), datasheet=datasheet,
+                                  description=footprint_spec.get("description"), tags=footprint_spec.get("tags"))
     warnings += [f"footprint: {w}" for w in fp_result["warnings"]]
     if not fp_result["ok"]:
         return _fail([f"footprint: {e}" for e in fp_result["errors"]], warnings)

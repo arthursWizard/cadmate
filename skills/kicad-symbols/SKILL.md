@@ -28,6 +28,16 @@ KiCad's library has symbols for most common parts, often as derived symbols for 
 6. Show the user the `report` (which pins went where, which pins stacked) and every warning. If KiCad's library has the same part, run `compare_symbols` against it and report the differences.
 7. Ask the user to open the symbol in KiCad's symbol editor and confirm the pinout against the datasheet before using it.
 
+## Connectors
+
+KiCad's connector symbols (reference `J`) differ from ICs:
+
+- Every pin is `passive`, supplies and grounds included: the connector passes power through, it neither takes nor drives it. cadmate accepts passive GND and VBUS on a `J` (or `P`) symbol.
+- Pins that share a name stack, passive ones too, so a USB-C receptacle's four GND and four VBUS pins each become one pin (`[A1,A12,B1,B12]`), as in KiCad's `USB_C_Receptacle`. Give them the same name.
+- The shield or shell is its own pin, `SHIELD` (KiCad's name), numbered as the footprint's shell pads (often `S1` or `SH`), at the bottom beside GND.
+- Layout as KiCad's: VBUS first on the right, then the signals in their pairs (D+ and D- together, each SuperSpeed pair together, CC and SBU), GND and SHIELD at the bottom (`side: bottom`).
+- A pin-numbered header (Conn_01x04) needs no generated symbol: use KiCad's generic one.
+
 To review an existing symbol, run `check_symbol`, with `pins` from the datasheet to compare it pin by pin, and `footprint_path` to match its pins to the footprint's pads.
 
 ## Fields (KLC S6)

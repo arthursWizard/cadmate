@@ -36,7 +36,7 @@ FAMILIES: dict[str, dict] = {
     "custom": {
         "description": "Any part whose datasheet gives a recommended land pattern: modules, connectors, odd packages. Pads are placed as given.",
         "required": ["body_width", "body_length"],
-        "optional": ["pads", "pad_rows", "body_center", "origin"],
+        "optional": ["pads", "pad_rows", "body_center", "origin", "board_edge"],
         "notes": (
             "pads: [{number, x, y, width, height, shape?, kind?, drill?, rotation?}], kind smd (default), thru_hole or np_thru_hole. "
             "Through-hole pads may give the lead instead of drill and size: lead_diameter for round leads, or lead_width and "
@@ -46,7 +46,9 @@ FAMILIES: dict[str, dict] = {
             "pad_rows: [{first, count, x, y, dx, dy, width, height, ...}] numbers pads first, first+1, ... stepping by (dx, dy). "
             "An exposed or thermal pad takes paste_coverage (0.65 typical, or the datasheet's stencil figure) and optionally "
             "paste_grid [columns, rows], to split its solder paste into openings as the qfn family does. "
-            "Coordinates in KiCad's frame, Y down. origin: auto (SMD centre of the pads, through-hole pin 1), center, pin1 or as_given."
+            "Coordinates in KiCad's frame, Y down. origin: auto (the pads' centre, or pin 1 when every pad is through-hole), "
+            "center, pin1 or as_given. board_edge: y of the board's edge for a part that sits on it (a USB or card-edge "
+            "connector, as the datasheet's PCB layout draws it), drawn as a PCB Edge line on Dwgs.User as KiCad's library does."
         ),
     },
 }
@@ -81,6 +83,7 @@ class Design:
     courtyard_rects: list[BBox] = field(default_factory=list)  # union is the courtyard; defaults to body and pads
     report: dict = field(default_factory=dict)
     model: Model | None = None
+    board_edge: float | None = None  # y of a PCB Edge line on Dwgs.User
 
 
 def generate(
@@ -91,8 +94,12 @@ def generate(
     courtyard_clearance: float | None = None,
     datasheet: str | None = None,
     model_path: str | None = None,
+    description: str | None = None,
+    tags: str | None = None,
 ) -> dict:
-    """Build a footprint. Returns {"ok", "name", "text", "report", "errors", "warnings"}; text is set only when ok."""
+    """Build a footprint. Returns {"ok", "name", "text", "report", "errors", "warnings"}; text is set only when ok.
+
+    description replaces the family's own description (the datasheet URL is still added); tags replace its keywords."""
     if family not in FAMILIES:
         return _fail([f"unknown family {family!r}; known: {sorted(FAMILIES)}"])
     if density not in ipc.DENSITIES:
@@ -122,6 +129,10 @@ def generate(
         design.courtyard_clearance = courtyard_clearance
     elif family != "custom":
         design.courtyard_clearance = ipc.COURTYARD[density]
+    if description:
+        design.descr = description
+    if tags is not None:
+        design.tags = tags
     if datasheet:
         design.descr = f"{design.descr}, {datasheet}"
     if model_path:
@@ -381,8 +392,8 @@ def _custom(params: dict, density: str = "nominal") -> Design:
     tht = any(p.kind != "smd" for p in pads)
     origin = params.get("origin") or "auto"
     pin1 = next((p for p in pads if p.number in ("1", "A1")), None)
-    if origin == "auto":
-        origin = "pin1" if tht else "center"
+    if origin == "auto":  # KiCad's library: pin 1 for through-hole parts, the centre for SMD and mixed ones (USB-C, card sockets)
+        origin = "pin1" if all(p.kind != "smd" for p in pads) else "center"
     if origin == "center":
         shift = ext.center
     elif origin == "pin1":
@@ -397,6 +408,8 @@ def _custom(params: dict, density: str = "nominal") -> Design:
     for p in pads:
         p.x, p.y = round(p.x - sx, 6), round(p.y - sy, 6)
     body = BBox(body.xmin - sx, body.ymin - sy, body.xmax - sx, body.ymax - sy)
+    edge = params.get("board_edge")
+    edge = round(float(edge) - sy, 6) if edge is not None else None
 
     corner = (-1, -1)
     if pin1 is not None:
@@ -409,7 +422,7 @@ def _custom(params: dict, density: str = "nominal") -> Design:
         report["ipc7251_holes"] = [{k: v for k, v in s.items() if k != "warning"} for s in sizing.values()]
         report["warnings"] = [f"pads {s['pads']}: {s['warning']}" for s in sizing.values() if "warning" in s]
     return Design(name="Custom", descr="Custom land pattern from the datasheet", tags="", pads=pads, body=body,
-                  pin1_corner=corner, report=report, courtyard_rects=[])
+                  pin1_corner=corner, report=report, courtyard_rects=[], board_edge=edge)
 
 
 def _custom_pad(spec: dict, density: str = "nominal", sizing: dict | None = None) -> Pad:
@@ -688,6 +701,12 @@ def to_kicad_mod(design: Design) -> str:
         add(f'\t(fp_poly (pts {pts}) {_stroke(SILK_WIDTH)} (fill yes) (layer "F.SilkS"))')
     size = min(1.0, max(0.5, round(min(design.body.width, design.body.height) / 4, 2)))
     cx, cy = design.body.center
+    if design.board_edge is not None:
+        xs = [p[0] for loop in court for p in loop]
+        y = design.board_edge
+        add(f'\t(fp_line (start {_xy((min(xs), y))}) (end {_xy((max(xs), y))}) {_stroke(FAB_WIDTH)} (layer "Dwgs.User"))')
+        add(f'\t(fp_text user "PCB Edge" (at {_xy((round((min(xs) + max(xs)) / 2, 4), round(y - 0.6, 4)))} 0) (layer "Dwgs.User")\n'
+            '\t\t(effects (font (size 0.5 0.5) (thickness 0.08)))\n\t)')
     add(f'\t(fp_text user "${{REFERENCE}}" (at {_xy((round(cx, 4), round(cy, 4)))} 0) (layer "F.Fab")\n\t\t(effects (font (size {_f(size)} {_f(size)}) (thickness {_f(round(size * 0.15, 3))})))\n\t)')
 
     for p in design.pads:

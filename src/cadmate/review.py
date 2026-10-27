@@ -21,6 +21,7 @@ frame (mm, Y down), so the coordinates in messages are the ones the footprint ed
 
 from __future__ import annotations
 
+import collections
 import math
 import statistics
 from dataclasses import dataclass, field, replace
@@ -158,13 +159,21 @@ def compare_pad_positions(fp: Footprint, table: list[dict], sym: Symbol | None =
     drawing), in any origin and with Y up or down: the frame that fits best is used. With sym, and names in the
     table, a wrong number is also said in signal terms (which net would reach which pin).
     """
-    pads = {p.number: _fp_position(p) for p in fp.signal_pads()}
-    ds = {str(row["number"]): (float(row["x"]), float(row["y"])) for row in table}
+    fp_rows = [(p.number, _fp_position(p)) for p in fp.pads if p.number and p.kind != "np_thru_hole"]
+    ds_rows = [(str(row["number"]), (float(row["x"]), float(row["y"]))) for row in table]
+    fp_count = collections.Counter(n for n, _ in fp_rows)
+    ds_count = collections.Counter(n for n, _ in ds_rows)
+    # Numbers on several pads (a connector's shell legs, split thermal pads) are matched as a set, after the frame is fitted on the rest.
+    repeated = {n for n in set(fp_count) & set(ds_count) if fp_count[n] > 1 or ds_count[n] > 1}
+    pads = {n: xy for n, xy in fp_rows if n not in repeated}
+    ds = {n: xy for n, xy in ds_rows if n not in repeated}
     names = {str(row["number"]): row.get("name") for row in table}
     shared = sorted(set(pads) & set(ds), key=symbol_check._sort_key)
     errors: list[str] = []
     if not shared:
-        return {"ok": False, "errors": ["no pad number of the footprint is in the datasheet table"], "warnings": []}
+        msg = "no pad number of the footprint is in the datasheet table" if not repeated else \
+            "every pad number in the datasheet table is on several pads; give at least two single pins so the frame can be fitted"
+        return {"ok": False, "errors": [msg], "warnings": []}
 
     best = None
     for flip in (1.0, -1.0):  # datasheet Y down as KiCad, or Y up
@@ -176,11 +185,25 @@ def compare_pad_positions(fp: Footprint, table: list[dict], sym: Symbol | None =
             best = (hits, flip, (dx, dy), place)
     _, flip, (dx, dy), place = best
 
-    def pad_at(pt):
-        near = [(math.dist(pt, xy), n) for n, xy in pads.items()]
+    def pad_at(pt, among=None):
+        near = [(math.dist(pt, xy), n) for n, xy in (among or fp_rows)]
         d, n = min(near)
         return n if d <= tolerance else None
 
+    group_matched = 0
+    for n in sorted(repeated, key=symbol_check._sort_key):
+        at = [xy for m, xy in fp_rows if m == n]
+        for x, y in (xy for m, xy in ds_rows if m == n):
+            pt = (x + dx, flip * y + dy)
+            if any(math.dist(pt, q) <= tolerance for q in at):
+                group_matched += 1
+                continue
+            other = pad_at(pt)
+            where = f"; pad {other} is there" if other else ""
+            d = min(math.dist(pt, q) for q in at)
+            errors.append(f"the datasheet puts a pin {n} where the footprint has no pad {n} (nearest is {d:.2f} mm away){where}")
+        if fp_count[n] < ds_count[n]:
+            errors.append(f"the datasheet has {ds_count[n]} pins numbered {n}, the footprint {fp_count[n]} pads")
     pin_names = {}
     if sym is not None:
         for pin in sym.pins:
@@ -205,15 +228,17 @@ def compare_pad_positions(fp: Footprint, table: list[dict], sym: Symbol | None =
     for n, other, d in moved:
         where = f"; pad {other} is there" if other else ""
         errors.append(f"pad {n} is {d:.2f} mm from where the datasheet puts pin {n}{where}")
-    only_ds = sorted(set(ds) - set(pads), key=symbol_check._sort_key)
-    only_fp = sorted(set(pads) - set(ds), key=symbol_check._sort_key)
+    only_ds = sorted(set(ds_count) - set(fp_count), key=symbol_check._sort_key)
+    only_fp = sorted(set(fp_count) - set(ds_count), key=symbol_check._sort_key)
     if only_ds:
         errors.append(f"datasheet pins with no pad: {only_ds[:15]}")
     warnings = [f"pads not in the datasheet table: {only_fp[:15]}"] if only_fp else []
+    warnings += [f"the footprint has {fp_count[n]} pads numbered {n}, the datasheet {ds_count[n]} pins; fine for extra shield or "
+                 "thermal pads the drawing leaves out" for n in sorted(repeated, key=symbol_check._sort_key) if fp_count[n] > ds_count[n]]
     return {
         "ok": not errors, "errors": errors, "warnings": warnings,
         "frame": {"datasheet_y": "down" if flip > 0 else "up", "offset": [round(dx, 4), round(dy, 4)]},
-        "matched": len(shared) - len(moved) - 2 * len(swapped),
+        "matched": len(shared) - len(moved) - 2 * len(swapped) + group_matched,
     }
 
 
@@ -291,7 +316,7 @@ def check_leads(fp: Footprint, leads: dict, r: Report) -> None:
     """Holes against the datasheet's leads: {lead_diameter} or {lead_width, lead_thickness} for every plated hole,
     or {pad number or "*": {...}} per pad. Values as the datasheet gives them; the maximum is what must fit."""
     per_pad = leads if not any(k in leads for k in LEAD_KEYS) else {"*": leads}
-    fits = []
+    fits, incomplete = [], []
     for p in fp.pads:
         if p.kind != "thru_hole" or not p.drill:
             continue
@@ -307,8 +332,13 @@ def check_leads(fp: Footprint, leads: dict, r: Report) -> None:
                 w, t = t, w  # the slot runs along Y: so does the lead's width
             box, area, label = BBox(p.x - w / 2, p.y - t / 2, p.x + w / 2, p.y + t / 2), None, f"{max(w, t):g} x {min(w, t):g} mm"
         else:
+            incomplete.append(p.number or "(unnumbered)")
             continue
         fits.append((p, _fit(p, _lead_outline(box, area)), label))
+    if incomplete:
+        nums = sorted(set(incomplete), key=symbol_check._sort_key)
+        r.skipped.append(f"holes of pads {_some(nums)} against their leads: a flat lead needs both lead_width and lead_thickness, "
+                         "a round one lead_diameter")
     if fits:
         _judge_fits(fits, r, "datasheet")
         r.checked.append("holes against the datasheet's leads")
@@ -330,6 +360,7 @@ def check_solids(fp: Footprint, solids: list[Solid], r: Report, cutout: bool = F
     cuts = [e for g in fp.on_layer("Edge.Cuts") for e in check._graphic_edges(g)]
     into_board: list[tuple[Solid, float]] = []
     fits = []
+    tails: dict[int, float] = {}  # plated hole -> lowest point of the leads in it
     for s in solids:
         below = s.zmin < -Z_TOLERANCE
         if s.loops is None:  # no section: a small solid centred in a hole is taken for a lead
@@ -337,6 +368,7 @@ def check_solids(fp: Footprint, solids: list[Solid], r: Report, cutout: bool = F
             if below and hole is not None and max(s.box.width, s.box.height) < 2 * max(hole.drill, hole.drill_y or 0):
                 # A box cannot tell a round lead from a square one: take it as round, the kinder reading.
                 fits.append((hole, _fit(hole, _lead_outline(s.box, 0.0)), f"{max(s.box.width, s.box.height):.2f} mm"))
+                tails[id(hole)] = min(tails.get(id(hole), 0.0), s.zmin)
             elif below:
                 into_board.append((s, -s.zmin))
         else:
@@ -349,6 +381,7 @@ def check_solids(fp: Footprint, solids: list[Solid], r: Report, cutout: bool = F
                     label = f"{max(box.width, box.height):.2f} mm round" if area is not None and area < 0.85 * box.width * box.height \
                         else f"{box.width:.2f} x {box.height:.2f} mm"
                     fits.append((hole, _fit(hole, _lead_outline(box, area)), label))
+                    tails[id(hole)] = min(tails.get(id(hole), 0.0), s.zmin)
             if below and (foreign or not s.loops):
                 into_board.append((s, -s.zmin))
         if court and s.zmax > Z_TOLERANCE:
@@ -364,6 +397,15 @@ def check_solids(fp: Footprint, solids: list[Solid], r: Report, cutout: bool = F
     if fits:
         _judge_fits(fits, r, "model")
         r.checked.append("model leads in their holes")
+    short = sorted({p.number or "(unnumbered)" for p in holes if p.kind == "thru_hole" and id(p) in tails
+                    and tails[id(p)] > -board_thickness + Z_TOLERANCE}, key=symbol_check._sort_key)
+    if short:
+        stop = max(-tails[id(p)] for p in holes if id(p) in tails and (p.number or "(unnumbered)") in short)
+        r.warnings.append(f"model: the leads in pads {_some(short)} stop {stop:.2f} mm below the board's top, inside a "
+                          f"{board_thickness:g} mm board; a through-hole lead should come out of the underside so the joint "
+                          "can be inspected (IPC-A-610). Check the datasheet's tail length, or the board_thickness given")
+    if tails:
+        r.checked.append("through-hole leads coming out of the board")
     r.checked.append("model parts going into the board")
 
     if not into_board:

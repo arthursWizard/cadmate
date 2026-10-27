@@ -31,6 +31,7 @@ class Pad:
     drill_y: float | None = None  # set for a slot: KiCad's (drill oval x y)
     offset: tuple[float, float] = (0.0, 0.0)  # copper relative to the hole, in the pad's own frame: KiCad's (drill .. (offset x y))
     castellated: bool = False  # KiCad's (property pad_prop_castellated): a hole cut in half by the board edge
+    rratio: float = 0.25  # KiCad's roundrect_rratio: corner radius over the shorter side
 
     @property
     def half_size(self) -> tuple[float, float]:
@@ -50,6 +51,37 @@ class Pad:
         hw, hh = self.half_size
         cx, cy = self.copper_center
         return BBox(cx - hw, cy - hh, cx + hw, cy + hh)
+
+    def outline(self, segments: int = 64) -> list[tuple[float, float]]:
+        """The copper as a convex polygon in the footprint's frame. Arcs are drawn just outside the true
+        curve, so a gap measured between outlines is never larger than the real one (at most about 0.001 mm
+        smaller). Shapes other than rect, roundrect, oval and circle fall back to their box."""
+        w, h = self.width, self.height
+        if self.shape == "circle":
+            r = w / 2
+        elif self.shape == "oval":
+            r = min(w, h) / 2
+        elif self.shape == "roundrect":
+            r = min(w, h) * min(max(self.rratio, 0.0), 0.5)
+        elif self.shape == "rect":
+            r = 0.0
+        else:
+            b = self.box
+            return [(b.xmin, b.ymin), (b.xmax, b.ymin), (b.xmax, b.ymax), (b.xmin, b.ymax)]
+        ix, iy = max(w / 2 - r, 0.0), max(h / 2 - r, 0.0)  # half size of the rectangle the corner arcs are centred on
+        local = []
+        if r <= 0:
+            local = [(-ix, -iy), (ix, -iy), (ix, iy), (-ix, iy)]
+        else:
+            n = max(segments // 4, 2)
+            rr = r / math.cos(math.pi / (4 * n))  # vertices outside the arc, so the polygon contains it
+            for qx, qy, a0 in ((ix, iy, 0), (-ix, iy, 90), (-ix, -iy, 180), (ix, -iy, 270)):
+                pts = [(a0, r)] + [(a0 + 90 * (k + 0.5) / n, rr) for k in range(n)] + [(a0 + 90, r)]
+                local += [(qx + rad * math.cos(math.radians(a)), qy + rad * math.sin(math.radians(a))) for a, rad in pts]
+        rot = math.radians(-self.rotation)  # as copper_center
+        c, s = math.cos(rot), math.sin(rot)
+        cx, cy = self.copper_center
+        return [(cx + x * c - y * s, cy + x * s + y * c) for x, y in local]
 
 
 @dataclass
@@ -198,6 +230,7 @@ def parse(text: str) -> Footprint:
                 drill_y=drill_vals[1] if len(drill_vals) > 1 and drill_node and "oval" in drill_node.atoms() else None,
                 offset=_offset(drill_node),
                 castellated=bool(p.child("property") and "pad_prop_castellated" in p.child("property").atoms()),
+                rratio=(p.child("roundrect_rratio").floats() or [0.25])[0] if p.child("roundrect_rratio") else 0.25,
             )
         )
     if attr is None:

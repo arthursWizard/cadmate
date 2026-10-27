@@ -15,8 +15,9 @@ on the board, through-hole leads go below it.
 Families:
 - soic:   body from the standoff to the height, gull-wing leads from the lead tip (overall_width) to the body
 - qfn:    body on the board, terminals and exposed pad flush with its underside
-- custom: a body box over the footprint's body outline, with a lead in every through-hole pad and a
-          terminal under every SMD pad. A placeholder good enough for clearance and enclosure work;
+- custom: a body box over the footprint's body outline, with a lead in every through-hole pad (round,
+          or square/flat with lead_width and lead_thickness; leads beside the body, as on a DIP, get a
+          shoulder into its side; lead_above makes header posts) and a terminal under every SMD pad. A placeholder good enough for clearance and enclosure work;
           model a module or connector properly in FreeCAD when its looks matter.
 """
 
@@ -42,7 +43,7 @@ DIMPLE_DEPTH = 0.1
 FAMILIES: dict[str, dict] = {
     "soic": {"required": ["height", "standoff"], "optional": ["lead_thickness"]},
     "qfn": {"required": ["height"], "optional": ["terminal_thickness"]},
-    "custom": {"required": ["height"], "optional": ["standoff", "lead_below", "lead_diameter"]},
+    "custom": {"required": ["height"], "optional": ["standoff", "lead_below", "lead_above", "lead_diameter", "lead_width", "lead_thickness"]},
 }
 
 _VAR = re.compile(r"\$\{([A-Za-z0-9_]+)\}")
@@ -162,24 +163,44 @@ def _custom(params: dict, b: BBox, pads: list[Pad], fp: Footprint):
     height = _nom(params, "height")
     standoff = _nom(params, "standoff", 0.0)
     below = _nom(params, "lead_below", LEAD_BELOW)
+    above = _nom(params, "lead_above", 0.0)
     lead_d = _nom(params, "lead_diameter")
+    lead_w, lead_t = _nom(params, "lead_width"), _nom(params, "lead_thickness")
     if not 0 <= standoff < height:
         raise ValueError("standoff must be at least 0 and below the height")
     leads, cut = [], [_dimple(b, fp.pin1, height)]
+    shoulder_z = standoff + min(0.5, (height - standoff) / 3)  # where leads outside the body (DIP) leave its side
     for p in pads:
         x, y = p.x, _fy(p.y)
         if p.kind == "thru_hole" and p.drill:
             if below <= 0:
                 continue
-            top = standoff  # the lead reaches the body's underside
+            inside = b.xmin < x < b.xmax and b.ymin < y < b.ymax
+            # A lead under the body reaches its underside, or through it for header posts; one beside the body
+            # rises to a shoulder that runs into the body's side.
+            top = (height + above) if inside and above > 0 else (standoff if inside else shoulder_z)
             if p.drill_y:  # slot: a flat lead
                 w, h = max(0.2, p.drill - 0.2), max(0.2, p.drill_y - 0.2)
                 if p.rotation % 180:
                     w, h = h, w
+            elif lead_w is not None and lead_t is not None:  # square or flat leads
+                w, h = lead_w, lead_t
+            else:
+                w = h = None
+            if w is not None:
                 leads.append(_box(f"Lead_{p.number}", x - w / 2, y - h / 2, -below, w, h, below + top))
             else:
                 d = lead_d if lead_d is not None else max(0.3, p.drill - 0.2)  # IPC-7251 nominal hole is lead + 0.2
+                w = h = d
                 leads.append({"name": f"Lead_{p.number}", "colour": METAL, "cyl": [round(x, 6), round(y, 6), -below, round(d / 2, 6), round(below + top, 6)]})
+            if not inside:
+                t = min(w, h)
+                if x <= b.xmin or x >= b.xmax:
+                    x0, x1 = (x - w / 2, b.xmin) if x <= b.xmin else (b.xmax, x + w / 2)
+                    leads.append(_box(f"Shoulder_{p.number}", x0, y - h / 2, top - t, x1 - x0, h, t))
+                else:
+                    y0, y1 = (y - h / 2, b.ymin) if y <= b.ymin else (b.ymax, y + h / 2)
+                    leads.append(_box(f"Shoulder_{p.number}", x - w / 2, y0, top - t, w, y1 - y0, t))
         elif p.kind == "smd":
             hw, hh = p.half_size
             t = standoff if standoff > 0 else 0.1
@@ -188,7 +209,10 @@ def _custom(params: dict, b: BBox, pads: list[Pad], fp: Footprint):
             if standoff == 0:
                 cut.append({"box": box["box"]})
     body = _box("Body", b.xmin, b.ymin, standoff, b.width, b.height, height - standoff, BODY, cut)
-    return [body] + leads, {"length": round(b.width, 4), "width": round(b.height, 4), "height": height}
+    solids = [body] + leads
+    # Leads beside the body make the part wider than the body; the expected size is what the leads span.
+    span = bbox(solids)
+    return solids, {"length": round(span["xmax"] - span["xmin"], 4), "width": round(span["ymax"] - span["ymin"], 4), "height": height + above}
 
 
 def bbox(solids: list[dict]) -> dict:

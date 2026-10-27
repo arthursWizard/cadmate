@@ -94,13 +94,15 @@ def check_model(footprint: Footprint, bbox: dict, model: Model | None = None, ex
         if -b["zmin"] > b["zmax"]:
             warnings.append(f"model is mostly below the board (z {b['zmin']:.2f}..{b['zmax']:.2f}); it may be upside down, check the rotation")
         if pad_box:
-            # Leads or castellations sit on the pads, so the model should cover every pad.
+            # Leads or castellations sit in the holes, so the model should reach every hole centre;
+            # the copper ring around a lead is wider than the lead, so pad edges may stick out.
             out = max(b["xmin"] - pad_box["xmax"], pad_box["xmin"] - b["xmax"], b["ymin"] - pad_box["ymax"], pad_box["ymin"] - b["ymax"])
-            uncovered = max(b["xmin"] - pad_box["xmin"], pad_box["xmax"] - b["xmax"], b["ymin"] - pad_box["ymin"], pad_box["ymax"] - b["ymax"])
+            holes = [(p.x, -p.y) for p in footprint.pads if p.drill] or [(p.x, -p.y) for p in footprint.pads]
+            uncovered = max(max(b["xmin"] - x, x - b["xmax"], b["ymin"] - y, y - b["ymax"]) for x, y in holes)
             if out > 0:
                 errors.append("model does not overlap the pads at all; check the offset")
             elif uncovered > PAD_COVER_TOLERANCE:
-                warnings.append(f"pads reach {uncovered:.2f} mm beyond the model; check the offset")
+                warnings.append(f"holes lie {uncovered:.2f} mm beyond the model; check the offset")
 
     court = footprint.courtyard
     if court is not None:

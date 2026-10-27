@@ -159,3 +159,58 @@ def test_whole_part_with_model(tmp_path):
     check = part.check_part(tmp_path / "my_parts.kicad_sym", "NE555D", expected={"length": 6.0, "width": 4.9, "height": 1.75})
     assert check["ok"] and not check["warnings"], check
     assert check["model_check"]["center_offset"] == [0.0, 0.0] or check["model_check"]["center_offset"] == (0.0, 0.0)
+
+
+DIP_LEAD = {"lead_width": [0.36, 0.56], "lead_thickness": [0.20, 0.36]}
+DIP8 = {"body_width": 6.35, "body_length": 9.81,
+        "pad_rows": [{"first": 1, "count": 4, "x": 0, "y": 0, "dy": 2.54} | DIP_LEAD,
+                     {"first": 5, "count": 4, "x": 7.62, "y": 7.62, "dy": -2.54} | DIP_LEAD]}
+DIP_MODEL = {"height": 5.33, "standoff": 0.38, "lead_below": 3.3, "lead_width": 0.46, "lead_thickness": 0.28}
+
+
+def test_dip_part_matches_kicads_ne555p(tmp_path, no_freecad):
+    sym = NE555_SYMBOL | {"name": "NE555P", "description": "Precision Timers, 555 compatible, PDIP-8"}
+    r = part.generate_part(tmp_path, "my_parts", sym, {"family": "custom", "name": "DIP-8_W7.62mm", "params": DIP8}, DIP_MODEL, datasheet=DATASHEET)
+    assert r["ok"], r
+    fp = footprint.read(tmp_path / "my_parts.pretty" / "DIP-8_W7.62mm.kicad_mod")
+    # KiCad's DIP-8_W7.62mm: pin 1 at the origin, rows 7.62 mm apart, counted down then up, pin 1 square.
+    assert [(p.number, p.x, p.y) for p in fp.pads] == [("1", 0, 0), ("2", 0, 2.54), ("3", 0, 5.08), ("4", 0, 7.62),
+                                                       ("5", 7.62, 7.62), ("6", 7.62, 5.08), ("7", 7.62, 2.54), ("8", 7.62, 0)]
+    assert fp.pads[0].shape == "rect" and {p.shape for p in fp.pads[1:]} == {"circle"}
+    assert fp.pads[0].drill == 0.9  # the lead's diagonal + 0.2 (IPC-7251 nominal); KiCad's library uses 0.8
+    from cadmate import symbol_check
+    kicad = symbol.read(Path(__file__).parent / "fixtures" / "Symbols.kicad_symdir", "NE555P")
+    assert symbol_check.compare_symbols(symbol.read(tmp_path / "my_parts.kicad_sym", "NE555P"), kicad)["same_connections"]
+
+
+def test_dip_model_has_shoulders_into_the_body():
+    r = generate.generate("custom", DIP8)
+    fp, body = footprint.parse(r["text"]), footprint.BBox(**r["summary"]["body"])
+    plan = model.plan("custom", DIP8 | DIP_MODEL, fp, body)
+    leads = [s for s in plan["solids"] if s["name"].startswith("Lead_")]
+    shoulders = [s for s in plan["solids"] if s["name"].startswith("Shoulder_")]
+    assert len(leads) == len(shoulders) == 8
+    for s in shoulders:  # each runs from its lead to the body's side
+        x, _, _, dx, _, _ = s["box"]
+        assert x == pytest.approx(body.xmax) or x + dx == pytest.approx(body.xmin)
+    assert plan["bbox"]["zmin"] == -3.3 and plan["bbox"]["zmax"] == 5.33
+    assert check_model_ok(fp, plan)
+
+
+def test_header_posts_stand_above_the_body():
+    params = {"body_width": 2.54, "body_length": 10.16,
+              "pad_rows": [{"first": 1, "count": 4, "x": 0, "y": 0, "dy": 2.54, "lead_width": 0.64, "lead_thickness": 0.64}]}
+    r = generate.generate("custom", params)
+    fp, body = footprint.parse(r["text"]), footprint.BBox(**r["summary"]["body"])
+    assert fp.pads[0].drill == 1.15
+    plan = model.plan("custom", params | {"height": 2.5, "lead_above": 6, "lead_width": 0.64, "lead_thickness": 0.64}, fp, body)
+    assert plan["bbox"]["zmax"] == pytest.approx(8.5) and plan["expected"]["height"] == pytest.approx(8.5)
+    assert not [s for s in plan["solids"] if s["name"].startswith("Shoulder_")]
+    assert check_model_ok(fp, plan)
+
+
+def check_model_ok(fp, plan):
+    from cadmate import check
+    r = check.check_model(fp, plan["bbox"], footprint.Model(path=""), plan["expected"])
+    assert r["ok"] and not r["warnings"], r
+    return True

@@ -27,6 +27,16 @@ class Pad:
     width: float
     height: float
     drill: float | None
+    layers: list[str] = field(default_factory=list)
+
+    @property
+    def half_size(self) -> tuple[float, float]:
+        return _rotated_half_size(self.width, self.height, self.rotation)
+
+    @property
+    def box(self) -> "BBox":
+        hw, hh = self.half_size
+        return BBox(self.x - hw, self.y - hh, self.x + hw, self.y + hh)
 
 
 @dataclass
@@ -35,6 +45,17 @@ class Model:
     offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
     scale: tuple[float, float, float] = (1.0, 1.0, 1.0)
     rotate: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+
+@dataclass
+class Graphic:
+    """A drawn shape: kind is line, rect, poly, circle or arc; pts are its defining points."""
+
+    kind: str
+    layer: str
+    pts: list[tuple[float, float]]
+    width: float
+    filled: bool = False
 
 
 @dataclass
@@ -65,6 +86,11 @@ class Footprint:
     pads: list[Pad]
     courtyard: BBox | None
     models: list[Model] = field(default_factory=list)
+    graphics: list[Graphic] = field(default_factory=list)
+    texts: list[tuple[str, str, str]] = field(default_factory=list)  # (field or "user", text, layer)
+
+    def on_layer(self, *layers: str) -> list[Graphic]:
+        return [g for g in self.graphics if g.layer in layers]
 
     @property
     def pin1(self) -> Pad | None:
@@ -77,12 +103,8 @@ class Footprint:
     def pad_extents(self) -> BBox | None:
         if not self.pads:
             return None
-        xs, ys = [], []
-        for p in self.pads:
-            hw, hh = _rotated_half_size(p.width, p.height, p.rotation)
-            xs += [p.x - hw, p.x + hw]
-            ys += [p.y - hh, p.y + hh]
-        return BBox(min(xs), min(ys), max(xs), max(ys))
+        boxes = [p.box for p in self.pads]
+        return BBox(min(b.xmin for b in boxes), min(b.ymin for b in boxes), max(b.xmax for b in boxes), max(b.ymax for b in boxes))
 
     def signal_pads(self) -> list[Pad]:
         """Numbered, distinct pins: skips mounting holes and repeats of the same number (split thermal pads)."""
@@ -109,6 +131,7 @@ class Footprint:
 
     def to_dict(self) -> dict:
         d = asdict(self)
+        del d["graphics"], d["texts"]
         d["pin1"] = asdict(self.pin1) if self.pin1 else None
         d["pad_extents"] = asdict(self.pad_extents) if self.pad_extents else None
         d["pitch"] = self.pitch()
@@ -158,6 +181,7 @@ def parse(text: str) -> Footprint:
                 width=size[0],
                 height=size[1],
                 drill=drill_vals[0] if drill_vals else None,
+                layers=p.child("layers").atoms() if p.child("layers") else [],
             )
         )
     if attr is None:
@@ -170,7 +194,51 @@ def parse(text: str) -> Footprint:
         pads=pads,
         courtyard=_courtyard(root),
         models=[_model(m) for m in root.children("model")],
+        graphics=_graphics(root),
+        texts=_texts(root),
     )
+
+
+_GRAPHIC_KINDS = {"fp_line": "line", "fp_rect": "rect", "fp_poly": "poly", "fp_circle": "circle", "fp_arc": "arc"}
+
+
+def _graphics(root: sexpr.Node) -> list[Graphic]:
+    out = []
+    for item in root.items:
+        if not isinstance(item, sexpr.Node) or item.head not in _GRAPHIC_KINDS:
+            continue
+        layer = item.child("layer")
+        pts = []
+        for key in ("start", "center", "mid", "end"):
+            n = item.child(key)
+            if n and len(n.floats()) >= 2:
+                pts.append(tuple(n.floats()[:2]))
+        if item.child("pts"):
+            pts += [tuple(xy.floats()[:2]) for xy in item.child("pts").children("xy")]
+        stroke = item.child("stroke")
+        width_node = (stroke.child("width") if stroke else None) or item.child("width")
+        fill = item.child("fill")
+        out.append(
+            Graphic(
+                kind=_GRAPHIC_KINDS[item.head],
+                layer=layer.atoms()[0] if layer and layer.atoms() else "",
+                pts=pts,
+                width=width_node.floats()[0] if width_node and width_node.floats() else 0.0,
+                filled=bool(fill and fill.atoms() and fill.atoms()[0] in ("solid", "yes")),
+            )
+        )
+    return out
+
+
+def _texts(root: sexpr.Node) -> list[tuple[str, str, str]]:
+    out = []
+    for item in root.children("property") + root.children("fp_text"):
+        a = item.atoms()
+        layer = item.child("layer")
+        if len(a) >= 2:
+            name = {"reference": "Reference", "value": "Value"}.get(a[0], a[0])
+            out.append((name, a[1], layer.atoms()[0] if layer and layer.atoms() else ""))
+    return out
 
 
 def _model(m: sexpr.Node) -> Model:

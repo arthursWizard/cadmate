@@ -180,7 +180,7 @@ def test_checker_catches_broken_symbols():
     assert any("points the wrong way" in e for e in symbol_check.check_symbol(wrong_way)["errors"])
     gnd_input = _mutate(text, "(pin power_in line\n\t\t\t\t(at 0 -10.16 90)", "(pin input line\n\t\t\t\t(at 0 -10.16 90)")
     assert any("use power_in" in e for e in symbol_check.check_symbol(gnd_input)["errors"])
-    shown_fp = _mutate(text, "(justify left)\n\t\t\t\thide", "(justify left)")
+    shown_fp = _mutate(text, "(do_not_autoplace no)\n\t\t\t(hide yes)", "(do_not_autoplace no)")
     assert any("Footprint field must be hidden" in e for e in symbol_check.check_symbol(shown_fp)["errors"])
 
 
@@ -204,6 +204,12 @@ def test_pins_against_table_and_footprint():
     assert symbol_check.compare_with_footprint(s, footprint.read(SOIC))["ok"]
     ch = symbol_check.compare_with_footprint(symbol.read(LIB, "CH340G"), footprint.read(SOIC))
     assert not ch["ok"] and "no pad" in ch["errors"][0]
+
+
+def test_written_in_kicad10_syntax():
+    r, _ = build("NE555D", NE555, **NE555_FIELDS)
+    assert symbol.parse_library(symbol.put_in_library(None, r["text"], "NE555D"))[0].format_version == "20251024"
+    assert "\thide\n" not in r["text"] and "(embedded_fonts no)" in r["text"] and "(in_pos_files yes)" in r["text"]
 
 
 def test_put_in_library_keeps_other_symbols_byte_for_byte():

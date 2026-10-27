@@ -43,7 +43,7 @@ To review an existing symbol, run `check_symbol`, with `pins` from the datasheet
 - Pins end on the 100 mil (2.54 mm) grid; 100 mil long, longer for 3-character pin numbers. Body centred on the origin, 10 mil outline filled with the background colour, pin names 20 mil inside.
 - Power pins that share a name stack under the lowest-numbered one, the rest hidden passive (KLC S4.3). Pins that share a name but are not power (say two SW outputs of type passive) stay separate.
 - NC pins are hidden, type no_connect, inside the body.
-- Files are written in the KiCad 8 format, so KiCad 8 and later open them.
+- Files are written in KiCad 10's format; cadmate needs KiCad 10 or later.
 
 ## Files
 

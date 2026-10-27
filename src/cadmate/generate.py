@@ -4,8 +4,7 @@ The agent reads the datasheet; everything from there on is deterministic:
 pads from IPC-7351B (see ipc.py) or from the datasheet's own land pattern,
 then courtyard, fabrication outline, silkscreen and text per the KiCad
 library conventions (KLC). Coordinates are mm in KiCad's footprint frame
-(Y points down). The file is written in the KiCad 8 format, which KiCad 8
-and every later version opens.
+(Y points down). The file is written in KiCad 10's format.
 
 Families:
 - soic:   gull-wing leads on two sides (SOIC, SOP, SSOP, TSSOP, MSOP)
@@ -60,6 +59,7 @@ SILK_PAD_CLEARANCE = 0.2
 COURTYARD_GRID = 0.01
 EP_PAD_CLEARANCE = 0.2  # copper gap between the exposed pad and the signal pads
 MAX_RADIUS = 0.25  # roundrect corner radius cap
+FORMAT_VERSION = "20260206"  # KiCad 10, the oldest version cadmate supports
 SLOT_MIN_RATIO = 2.0  # KLC F7.7: oval holes only for leads longer than twice their width
 
 
@@ -625,7 +625,7 @@ def to_kicad_mod(design: Design) -> str:
     smd = all(p.kind == "smd" for p in design.pads)
 
     add(f"(footprint {sexpr.quote(design.name)}")
-    add("\t(version 20240108)")
+    add(f"\t(version {FORMAT_VERSION})")
     add('\t(generator "cadmate")')
     add('\t(generator_version "0.1")')
     add('\t(layer "F.Cu")')
@@ -635,19 +635,20 @@ def to_kicad_mod(design: Design) -> str:
     add(f'\t(property "Reference" "REF**" (at 0 {_f(round(cy_min - 0.7, 4))} 0) (layer "F.SilkS")\n\t\t(effects (font (size 1 1) (thickness 0.15)))\n\t)')
     add(f'\t(property "Value" {sexpr.quote(design.name)} (at 0 {_f(round(cy_max + 0.7, 4))} 0) (layer "F.Fab")\n\t\t(effects (font (size 1 1) (thickness 0.15)))\n\t)')
     add(f"\t(attr {'smd' if smd else 'through_hole'})")
+    add("\t(duplicate_pad_numbers_are_jumpers no)")
 
     for loop in court:
         for k, a in enumerate(loop):
             b = loop[(k + 1) % len(loop)]
             add(f'\t(fp_line (start {_xy(a)}) (end {_xy(b)}) {_stroke(COURTYARD_WIDTH)} (layer "F.CrtYd"))')
     pts = " ".join(f"(xy {_xy(p)})" for p in _fab_outline(design))
-    add(f'\t(fp_poly (pts {pts}) {_stroke(FAB_WIDTH)} (fill none) (layer "F.Fab"))')
+    add(f'\t(fp_poly (pts {pts}) {_stroke(FAB_WIDTH)} (fill no) (layer "F.Fab"))')
     segments, arrow = _silk(design)
     for a, b in segments:
         add(f'\t(fp_line (start {_xy(a)}) (end {_xy(b)}) {_stroke(SILK_WIDTH)} (layer "F.SilkS"))')
     if arrow:
         pts = " ".join(f"(xy {_xy(p)})" for p in arrow)
-        add(f'\t(fp_poly (pts {pts}) {_stroke(SILK_WIDTH)} (fill solid) (layer "F.SilkS"))')
+        add(f'\t(fp_poly (pts {pts}) {_stroke(SILK_WIDTH)} (fill yes) (layer "F.SilkS"))')
     size = min(1.0, max(0.5, round(min(design.body.width, design.body.height) / 4, 2)))
     cx, cy = design.body.center
     add(f'\t(fp_text user "${{REFERENCE}}" (at {_xy((round(cx, 4), round(cy, 4)))} 0) (layer "F.Fab")\n\t\t(effects (font (size {_f(size)} {_f(size)}) (thickness {_f(round(size * 0.15, 3))})))\n\t)')
@@ -664,6 +665,7 @@ def to_kicad_mod(design: Design) -> str:
             line += f" (roundrect_rratio {_f(_rratio(p.width, p.height))})"
         add(line + ")")
 
+    add("\t(embedded_fonts no)")
     if design.model:
         add(footprint.model_block(design.model))
     add(")")

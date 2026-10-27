@@ -7,8 +7,8 @@ outputs on the right, positive supplies on top and grounds at the bottom (a
 regulator's input on the left and output on the right), power pins of the same
 name stacked under one visible pin, no-connect pins hidden, the body a
 background-filled rectangle centred on the origin, and the Footprint, Datasheet
-and Description fields filled in and hidden. The file is written in the KiCad 8
-format, which KiCad 8 and every later version opens.
+and Description fields filled in and hidden. The file is written in KiCad 10's
+format, as its symbol editor writes it.
 """
 
 from __future__ import annotations
@@ -614,29 +614,35 @@ def _f(v: float) -> str:
     return "0" if s in ("", "-0") else s
 
 
-def _effects(indent: str, hidden: bool = False, justify: str = "") -> str:
+def _effects(indent: str, justify: str = "") -> str:
     out = f"{indent}(effects\n{indent}\t(font\n{indent}\t\t(size 1.27 1.27)\n{indent}\t)\n"
     if justify:
         out += f"{indent}\t(justify {justify})\n"
-    if hidden:
-        out += f"{indent}\thide\n"
     return out + f"{indent})\n"
 
 
+def _property(key: str, value: str, x: float, y: float, hidden: bool, justify: str = "") -> str:
+    q = sexpr.quote
+    out = f"\t\t(property {q(key)} {q(value)}\n\t\t\t(at {_f(x)} {_f(y)} 0)\n\t\t\t(show_name no)\n\t\t\t(do_not_autoplace no)\n"
+    if hidden:
+        out += "\t\t\t(hide yes)\n"
+    return out + _effects("\t\t\t", justify) + "\t\t)\n"
+
+
 def to_kicad_sym(sym: Symbol) -> str:
-    """The symbol block, KiCad 8 syntax, indented to sit inside a kicad_symbol_lib."""
+    """The symbol block in KiCad 10 syntax, as KiCad's symbol editor writes it, indented to sit inside a kicad_symbol_lib."""
     q = sexpr.quote
     out = [f"\t(symbol {q(sym.name)}\n"]
     add = out.append
     if sym.pin_names_offset != 0.508:
         add(f"\t\t(pin_names\n\t\t\t(offset {_f(sym.pin_names_offset)})\n\t\t)\n")
-    add("\t\t(exclude_from_sim no)\n\t\t(in_bom yes)\n\t\t(on_board yes)\n")
+    add("\t\t(exclude_from_sim no)\n\t\t(in_bom yes)\n\t\t(on_board yes)\n\t\t(in_pos_files yes)\n\t\t(duplicate_pin_numbers_are_jumpers no)\n")
     for key, p in sym.properties.items():
-        add(f"\t\t(property {q(key)} {q(p.value)}\n\t\t\t(at {_f(p.x)} {_f(p.y)} 0)\n")
-        add(_effects("\t\t\t", p.hidden, p.justify))
-        add("\t\t)\n")
-    if sym.units_locked:
-        add(f'\t\t(property "ki_locked" ""\n\t\t\t(at 0 0 0)\n{_effects(chr(9) * 3)}\t\t)\n')
+        if key == "ki_fp_filters" and sym.units_locked:
+            add(_property("ki_locked", "", 0, 0, False))  # where KiCad puts it
+        add(_property(key, p.value, p.x, p.y, p.hidden, p.justify))
+    if sym.units_locked and "ki_fp_filters" not in sym.properties:
+        add(_property("ki_locked", "", 0, 0, False))
     for unit in sorted({r.unit for r in sym.rects} | {g.unit for g in sym.polylines} | {p.unit for p in sym.pins}):
         add(f"\t\t(symbol {q(f'{sym.name}_{unit}_1')}\n")
         for r in (r for r in sym.rects if r.unit == unit):
@@ -650,12 +656,12 @@ def to_kicad_sym(sym: Symbol) -> str:
         for p in (p for p in sym.pins if p.unit == unit):
             add(f"\t\t\t(pin {p.etype} {p.shape}\n\t\t\t\t(at {_f(p.x)} {_f(p.y)} {p.rotation})\n\t\t\t\t(length {_f(p.length)})\n")
             if p.hidden:
-                add("\t\t\t\thide\n")
+                add("\t\t\t\t(hide yes)\n")
             add(f"\t\t\t\t(name {q(p.name)}\n{_effects(chr(9) * 5)}\t\t\t\t)\n")
             add(f"\t\t\t\t(number {q(p.number)}\n{_effects(chr(9) * 5)}\t\t\t\t)\n")
             for name, etype, shape in p.alternates:
                 add(f"\t\t\t\t(alternate {q(name)} {etype} {shape})\n")
             add("\t\t\t)\n")
         add("\t\t)\n")
-    add("\t)\n")
+    add("\t\t(embedded_fonts no)\n\t)\n")
     return "".join(out)

@@ -31,9 +31,9 @@ Early. Three workflows work end to end:
 
 ## Version policy
 
-cadmate uses the most stable interface that does the job, so it is not tied to one release:
+cadmate requires **KiCad 10** and **FreeCAD 1.1** or later, and follows new releases rather than old ones: it writes the file formats of these versions, which later versions keep reading. `environment` reports an older install as unsupported.
 
-- **KiCad files** are read directly: footprints from KiCad 5 (`module`) to current (`footprint`) formats, symbol libraries from KiCad 6 on, including KiCad 10's one-file-per-symbol `.kicad_symdir` folders. They are written in the KiCad 8 format so KiCad 8 and later open them. No KiCad install is needed for footprint or symbol work.
+- **KiCad files** are read directly: footprints from KiCad 5 (`module`) to current (`footprint`) formats, symbol libraries from KiCad 6 on, including KiCad 10's one-file-per-symbol `.kicad_symdir` folders. They are written in KiCad 10's format, as KiCad's own editors write it. No KiCad install is needed for footprint or symbol work.
 - **`kicad-cli`** (KiCad 7+) for exports and checks, in later milestones.
 - **KiCad IPC API** (KiCad 9+) only for live editing, switched on when present.
 - **FreeCAD** through `FreeCADCmd`, using the Part API that is stable across 0.20 to 1.1.

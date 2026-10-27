@@ -140,6 +140,7 @@ def generate(
             "pitch": fp.pitch(),
             "pad_extents": vars(fp.pad_extents) if fp.pad_extents else None,
             "courtyard": vars(fp.courtyard) if fp.courtyard else None,
+            "body": {k: round(v, 6) for k, v in vars(design.body).items()},
         },
     }
 

@@ -131,7 +131,7 @@ def check_model(footprint: Footprint, bbox: dict, model: Model | None = None, ex
             warnings.append(f"model floats {b['zmin']:.2f} mm above the board; fine only if the leads are separate solids that touch the pads")
     if not footprint.smd:
         pin1 = footprint.pin1
-        if pin1 is not None and (abs(pin1.x) > 1e-3 or abs(pin1.y) > 1e-3):
+        if pin1 is not None and (abs(pin1.x) > 1e-3 or abs(pin1.y) > 1e-3) and not by_solid:  # check_footprint says it then
             warnings.append("through-hole footprint whose pin 1 is not at the origin (KiCad library convention puts it there)")
         if b["zmin"] > Z_TOLERANCE:
             warnings.append("through-hole model has no part below the board; leads may be missing")

@@ -371,21 +371,24 @@ def check_solids(fp: Footprint, solids: list[Solid], r: Report, cutout: bool = F
     r.measured["into_board"] = [{"solid": s.name, "depth": round(d, 4), "box": [round(v, 4) for v in (s.box.xmin, s.box.ymin, s.box.xmax, s.box.ymax)]}
                                 for s, d in into_board]
     uncovered = [(s, d) for s, d in into_board if not (cuts and all(check._inside(c, cuts) for c in check._box_corners(s.box)))]
-    for s, d in into_board:
-        if (s, d) not in uncovered:
-            r.warnings.append(f"model: {s.describe()} goes {d:.2f} mm into the board, inside the footprint's Edge.Cuts cutout")
+    for s, d, small in _group([sd for sd in into_board if sd not in uncovered]):
+        r.warnings.append(f"model: {s.describe()}{_beside(small)} goes {d:.2f} mm into the board, inside the footprint's Edge.Cuts cutout")
     if not uncovered:
         return
     depth = max(d for _, d in uncovered)
     u = BBox(min(s.box.xmin for s, _ in uncovered) - CUTOUT_CLEARANCE, min(s.box.ymin for s, _ in uncovered) - CUTOUT_CLEARANCE,
              max(s.box.xmax for s, _ in uncovered) + CUTOUT_CLEARANCE, max(s.box.ymax for s, _ in uncovered) + CUTOUT_CLEARANCE)
     r.measured["suggested_cutout"] = [round(v, 2) for v in (u.xmin, u.ymin, u.xmax, u.ymax)]
-    what = "; ".join(f"{s.describe()} goes {d:.2f} mm{' through' if d > board_thickness else ''} into the board" for s, d in uncovered)
+    groups = _group(uncovered)
+    what = "; ".join(f"{s.describe()}{_beside(small)} goes {d:.2f} mm{' through' if d > board_thickness else ''} into the board"
+                     for s, d, small in groups[:6])
+    if len(groups) > 6:
+        what += f"; and {len(groups) - 6} more parts"
     if cutout:
         r.warnings.append(f"model: {what}; you said the board is cut out there, so check the cutout covers "
                           f"({u.xmin:.2f}, {u.ymin:.2f}) to ({u.xmax:.2f}, {u.ymax:.2f})")
         return
-    them, they = ("it", "it") if len(uncovered) == 1 else ("them", "they")
+    them, they = ("it", "it") if len(groups) == 1 else ("them", "they")
     box = f"({u.xmin:.2f}, {u.ymin:.2f}) to ({u.xmax:.2f}, {u.ymax:.2f}), {CUTOUT_CLEARANCE} mm clear of the parts"
     cut = f"make the footprint's Edge.Cuts cutout cover {them} ({box})" if cuts else \
         f"cut the board out under {them} (an Edge.Cuts rectangle in the footprint from {box})"
@@ -393,6 +396,30 @@ def check_solids(fp: Footprint, solids: list[Solid], r: Report, cutout: bool = F
     if holes and HEADER_SPACER - model_z > depth:
         raise_ += f" (on pin headers: model Z offset {HEADER_SPACER} mm, the spacer of a 2.54 mm header)"
     r.errors.append(f"model: {what}, so {they} would hit the host board. Either {cut}, or {raise_}")
+
+
+SMALL_SOLID = 1.0  # mm: a solid this small beside a bigger one is taken for one of its leads
+BESIDE = 0.5  # mm
+
+
+def _group(items: list[tuple[Solid, float]]) -> list[tuple[Solid, float, int]]:
+    """Fold small solids (leads, terminals) into the bigger solid they sit beside, so a part under a module is
+    reported once rather than once per lead. Returns (solid, deepest depth, small solids folded in), biggest first."""
+    order = sorted(items, key=lambda sd: -sd[0].box.width * sd[0].box.height)
+    groups: list[list] = []
+    for s, d in order:
+        if max(s.box.width, s.box.height) < SMALL_SOLID:
+            host = next((g for g in groups if max(g[0].box.width, g[0].box.height) >= SMALL_SOLID
+                         and check._box_gap(g[0].box, s.box) <= BESIDE), None)
+            if host is not None:
+                host[1], host[2] = max(host[1], d), host[2] + 1
+                continue
+        groups.append([s, d, 0])
+    return [tuple(g) for g in groups]
+
+
+def _beside(small: int) -> str:
+    return f" with {small} small solid{'s' if small > 1 else ''} beside it (its leads)" if small else ""
 
 
 # --- castellated modules --------------------------------------------------------------------------

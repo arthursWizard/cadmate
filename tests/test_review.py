@@ -256,3 +256,14 @@ def test_check_part_passes_the_review_sources_on(tmp_path, monkeypatch):
     r = part.check_part(tmp_path / "parts.kicad_sym", "RP2040-Zero", review_options={"datasheet_pads": PINOUT, "body": OUTLINE})
     assert any(e.startswith("footprint: pads 22 and 23 are swapped") and "GND" in e for e in r["errors"]), r["errors"]
     assert "castellated pads reaching past the module's edge" in r["review"]["checked"]
+
+
+def test_leads_of_a_part_under_the_module_fold_into_it():
+    chip = review.Solid("solid 99", footprint.BBox(6.65, -15.85, 13.65, -8.85), -1.0, 0.0)
+    leads = [review.Solid(f"solid {i}", footprint.BBox(x, -16.1, x + 0.2, -15.9), -0.3, 0.0) for i, x in enumerate((7.0, 7.5, 8.0))]
+    stray = review.Solid("solid 9", footprint.BBox(3.0, -20.0, 3.2, -19.8), -0.3, 0.0)
+    r = review.review_footprint(ZERO, solids=[chip, *leads, stray])
+    hit = next(e for e in r["errors"] if "hit the host board" in e)
+    assert "solid 99 (7.00 x 7.00 mm" in hit and "with 3 small solids beside it (its leads)" in hit
+    assert "solid 9 (" in hit and "solid 0 (" not in hit
+    assert len(r["measured"]["into_board"]) == 5

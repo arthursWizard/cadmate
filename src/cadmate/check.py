@@ -260,7 +260,7 @@ def check_footprint(fp: Footprint, courtyard_clearance: float = COURTYARD_CLEARA
             errors.append(f"{label} has no size")
         if p.kind == "thru_hole" and p.drill is not None:
             hole = f"{p.drill}x{p.drill_y}" if p.drill_y else f"{p.drill}"
-            ring = min((p.width - p.drill) / 2, (p.height - (p.drill_y or p.drill)) / 2)
+            ring = min((p.width - p.drill) / 2 - abs(p.offset[0]), (p.height - (p.drill_y or p.drill)) / 2 - abs(p.offset[1]))
             measured.setdefault("min_annular_ring", ring)
             measured["min_annular_ring"] = round(min(measured["min_annular_ring"], ring), 4)
             if ring <= 1e-9:
@@ -394,6 +394,8 @@ def compare_footprints(a: Footprint, b: Footprint, tolerance: float = 0.005) -> 
                 extra["kind"] = f"{x.kind} vs {y.kind}"
             if x.shape != y.shape:
                 extra["shape"] = f"{x.shape} vs {y.shape}"
+            if x.offset != y.offset:
+                extra["offset"] = f"{x.offset} vs {y.offset}"
             if (x.drill, x.drill_y) != (y.drill, y.drill_y):
                 extra["drill"] = f"{_hole(x)} vs {_hole(y)}"
             if m > tolerance or extra:

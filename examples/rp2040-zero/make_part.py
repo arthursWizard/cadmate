@@ -21,28 +21,25 @@ from cadmate import part
 
 HERE = Path(__file__).parent
 PITCH = 2.54
-# Either way of mounting: each pin gets a plated hole for a 0.64 mm square header post (sized from the
-# post, IPC-7251) under the module's hole, plus, with the same number, an SMD pad from the hole out to
-# 1.0 mm past the module's edge, so a module soldered flat by its castellations gets a visible fillet.
+# Either way of mounting: each pin gets one oval pad with a plated hole sized for a 0.64 mm square header
+# post (IPC-7251), under the module's hole. The pad's copper is moved off the hole (pad_offset) so it runs
+# from just inside the hole to 1.0 mm past the module's edge: soldered flat by the castellations, the
+# fillet forms outside where it can be seen; on a header, the hole takes the post.
 EDGE_LEFT, EDGE_RIGHT, EDGE_BOTTOM = 1.16, 19.16, -0.95  # module outline in this frame (drawing: 18 x 23.5 mm)
 HOLE_IN = 1.38  # drawing: hole centres 1.38 mm in from the edge
-OUTSIDE, TAB_W = 1.0, 1.6
+OUTSIDE = 1.0  # copper past the module's edge
+PAD_W = 1.75  # IPC-7251 pad for the post
+INNER = PAD_W / 2  # copper beyond the hole, on the inside
+LONG = INNER + HOLE_IN + OUTSIDE
+SHIFT = round(LONG / 2 - INNER, 4)  # copper centre from the hole, outwards
 POST = {"lead_width": 0.64, "lead_thickness": 0.64}
-TAB = HOLE_IN + OUTSIDE  # SMD pad length, hole centre to past the edge
 
-pads = []
-for i in range(9):  # right edge, top down: pins 1-9
-    y = -22.86 + i * PITCH
-    pads += [{"number": i + 1, "x": EDGE_RIGHT - HOLE_IN, "y": y} | POST,
-             {"number": i + 1, "x": EDGE_RIGHT - HOLE_IN + TAB / 2, "y": y, "width": TAB, "height": TAB_W}]
-for i in range(5):  # bottom, right to left: pins 10-14
-    x = 15.24 - i * PITCH
-    pads += [{"number": 10 + i, "x": x, "y": EDGE_BOTTOM - HOLE_IN} | POST,
-             {"number": 10 + i, "x": x, "y": EDGE_BOTTOM - HOLE_IN + TAB / 2, "width": TAB_W, "height": TAB}]
-for i in range(9):  # left edge, bottom up: pins 15-23
-    y = -2.54 - i * PITCH
-    pads += [{"number": 15 + i, "x": EDGE_LEFT + HOLE_IN, "y": y} | POST,
-             {"number": 15 + i, "x": EDGE_LEFT + HOLE_IN - TAB / 2, "y": y, "width": TAB, "height": TAB_W}]
+pads = [{"number": i + 1, "x": EDGE_RIGHT - HOLE_IN, "y": -22.86 + i * PITCH, "width": LONG, "height": PAD_W,
+         "pad_offset": [SHIFT, 0]} | POST for i in range(9)]  # right edge, top down
+pads += [{"number": 10 + i, "x": 15.24 - i * PITCH, "y": EDGE_BOTTOM - HOLE_IN, "width": PAD_W, "height": LONG,
+          "pad_offset": [0, SHIFT]} | POST for i in range(5)]  # bottom, right to left
+pads += [{"number": 15 + i, "x": EDGE_LEFT + HOLE_IN, "y": -2.54 - i * PITCH, "width": LONG, "height": PAD_W,
+          "pad_offset": [-SHIFT, 0]} | POST for i in range(9)]  # left edge, bottom up
 
 names = [f"GP{i}" for i in range(14)] + ["GP14", "GP15", "GP26", "GP27", "GP28", "GP29", "3V3", "GND", "5V"]
 types = {"3V3": "power_out", "GND": "power_in", "5V": "power_in"}

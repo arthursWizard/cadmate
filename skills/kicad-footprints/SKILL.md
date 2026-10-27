@@ -31,6 +31,7 @@ Use `custom`. For each pin, give the **lead** rather than guessing a hole: `lead
 - Flat tabs (DC jacks, USB shells, power connectors): add `slot: true` to get a slotted (oval) hole along X; `rotation: 90` for one along Y. Slots cost extra at some fabs, and KiCad's library only uses them for leads more than twice as wide as they are thick; cadmate warns below that.
 - If the datasheet gives a recommended hole size, use its `drill` (a number, or `[x, y]` for a slot) and pad `width`/`height` instead; the manufacturer wins.
 - Mounting holes and pegs without copper: `kind: np_thru_hole` with `drill`.
+- Castellated modules that may also go on headers: one plated hole per pin under the module's hole, and `pad_offset: [dx, dy]` to move the pad's copper off the hole so it reaches about 1 mm past the module's edge (x, y stay the hole). Soldered flat, the fillet forms on the copper outside; on a header, the hole takes the post.
 - Pin 1 gets a rectangular pad, the others round or oval; the origin goes on pin 1. For parts without polarity (resistors, non-polarised capacitors) give pin 1 `shape: circle` (or `oval`) so it does not suggest one. Use `courtyard_clearance: 0.5` for connectors.
 - The report lists every hole size it worked out (`ipc7251_holes`); show it to the user.
 

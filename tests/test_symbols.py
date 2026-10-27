@@ -296,7 +296,9 @@ def test_stacked_pins_get_room_for_their_numbers():
     top = sorted((p for p in s.pins if p.side == "top"), key=lambda p: p.x)
     iovdd = next(p for p in top if p.name == "IOVDD")
     gaps = [abs(p.x - iovdd.x) for p in top if p is not iovdd]
-    assert min(gaps) >= 2 * 2.54  # six numbers in braces need about 9.6 mm across the pin
+    assert min(gaps) >= 2 * 2.54
+    # KiCad draws the six number columns to the left of the pin, about 10 mm with the braces.
+    assert min((iovdd.x - p.x for p in top if p.x < iovdd.x), default=99) >= 4 * 2.54
     assert s.properties["Reference"].y > iovdd.y + 1.27
 
 

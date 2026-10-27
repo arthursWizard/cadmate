@@ -414,6 +414,21 @@ def _spread(col: list) -> list:
     return out
 
 
+STACK_COLUMN = 1.65  # KiCad 10 sets a stack's numbers in columns this far apart, measured on kicad-cli SVG exports
+STACK_EDGE = 1.9  # the first column, the braces and a margin
+
+
+def _spread_across(row: list) -> list:
+    """Top and bottom pins: KiCad draws a stack's number columns to the left of the pin (lower X), so the empty
+    slots go there, enough that the columns end clear of the next pin's line and number."""
+    out: list = []
+    for s in row:
+        if s is not None and len(s.pins) > 1:
+            out += [None] * (math.ceil(((len(s.pins) - 1) * STACK_COLUMN + STACK_EDGE) / GRID) - 1)
+        out.append(s)
+    return out
+
+
 def _ceil_grid(v: float, base: float = GRID) -> float:
     return round(math.ceil(v / base - 1e-9) * base, 4)
 
@@ -425,7 +440,7 @@ def _layout(number: int, pins: list[Pin], length: float, stack_power: bool, repo
     slots = _stacks([p for p in pins if p.etype != "no_connect"], stack_power)
     sides = _sides(slots, warnings)
     left, right = _spread(_column(sides["left"])), _spread(_column(sides["right"]))
-    top, bottom = _spread(sides["top"]), _spread(sides["bottom"])
+    top, bottom = _spread_across(sides["top"]), _spread_across(sides["bottom"])
 
     def names(col):
         return [s.lead.name for s in col if s is not None]

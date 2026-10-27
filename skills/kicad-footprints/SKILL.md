@@ -24,6 +24,17 @@ Most parts in standard packages (SOIC, TSSOP, QFN, SOT-23, 0603...) already have
 
 To review an existing footprint, run `check_footprint`. Give it `family` and `params` from the datasheet to also compare it pad by pad with what IPC-7351B gives.
 
+## Reviewing a footprint against its model, datasheet and symbol
+
+`review_footprint` is the full review, for any footprint (downloaded, hand-made, generated). It runs `check_footprint`'s rules, then everything the second sources allow. Give it what you have; its `skipped` list says what each missing check needs, so ask the user for that rather than guessing.
+
+- **Pad numbering.** On its own it flags numbers that run backwards along a row (two pads swapped by hand). With `datasheet_pads`, `[{number, x, y, name?}]` read off the datasheet's drawing or pinout (any origin, Y up or down), it checks every pad against the pin the datasheet puts there. Add `symbol_path` and pin names and it says which signal would land on which pin. The symbol alone has no positions, so it cannot catch a swap; the datasheet can.
+- **The 3D model**, solid by solid in FreeCAD: bodies outside the courtyard (named with the side), parts that go into the board, and leads that miss or overfill their holes. A module with parts on its underside, soldered flat, is an error with both fixes spelled out: the Edge.Cuts cutout rectangle to draw in the footprint, or the standoff (a 2.54 mm header's 2.5 mm spacer clears most). Pass `cutout: true` only when the board is already cut out there. Without a model, give `underside_parts` from the datasheet or a photo.
+- **Holes.** `leads` with the datasheet's lead (`lead_diameter`, or `lead_width` and `lead_thickness`, per pad number or for all) checks every hole fits it; slots are judged along and across.
+- **Castellated modules.** Give `body`, the module's outline in footprint coordinates, unless the model has the module's board. On the host footprint every edge pad's copper must reach past the module's edge (about 1 mm; under 0.5 mm is a warning, stopping inside is an error). Pads KiCad marks castellated (the module's own board) must sit on the edge.
+
+`check_part` runs the same review on the footprint a symbol links, and takes the same extra sources. Report errors first, then the warnings the user has to judge, then the skipped checks and what they need.
+
 ## Through-hole parts
 
 Use `custom`. For each pin, give the **lead** rather than guessing a hole: `lead_diameter` for round leads, or `lead_width` and `lead_thickness` for square or flat ones, as `[min, max]` when the datasheet gives a range. cadmate works out the hole (maximum lead + 0.15/0.2/0.25 mm for least/nominal/most) and the pad (hole + 0.5/0.6/0.7 mm) per IPC-7251, rounded up to 0.05 mm. A rectangular lead gets a round hole that clears its diagonal. So a 0.64 mm square header pin gets a 1.15 mm hole; KiCad's own pin headers use 1.0 mm by long-standing convention, and `drill: 1.0` reproduces that when the user wants to match them.

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 
-from . import apps, check, footprint, generate, ipc, model, packages, part, symbol, symbol_check, symbol_generate
+from . import apps, check, footprint, generate, ipc, model, packages, part, review, symbol, symbol_check, symbol_generate
 from .footprint import read as _read_footprint  # generate_symbol's footprint argument shadows the module
 
 server = MCPServer("cadmate")
@@ -30,6 +30,8 @@ def environment() -> dict:
             "check_model_vs_footprint": freecad.available,
             "generate_footprint": True,
             "check_footprint": True,
+            "review_footprint": True,
+            "review_footprint_model": freecad.available,
             "compare_footprints": True,
             "generate_symbol": True,
             "check_symbol": True,
@@ -204,6 +206,50 @@ def check_footprint(
 
 
 @server.tool()
+def review_footprint(
+    path: str,
+    model_path: str | None = None,
+    datasheet_pads: list[dict] | None = None,
+    leads: dict | None = None,
+    body: dict | None = None,
+    castellated: bool | None = None,
+    underside_parts: list[dict] | None = None,
+    standoff: float = 0.0,
+    cutout: bool = False,
+    board_thickness: float = review.BOARD_THICKNESS,
+    symbol_path: str | None = None,
+    symbol_name: str | None = None,
+    courtyard_clearance: float = check.COURTYARD_CLEARANCE,
+) -> dict:
+    """Review any footprint, generated or not, against its 3D model, the datasheet and the symbol.
+
+    Runs check_footprint's rules (courtyard, pad gaps, annular rings, silkscreen), then whatever the extra
+    sources allow. Coordinates are the footprint editor's (mm, Y down).
+    - Pad numbering: numbers running backwards along a row of pads (two pads swapped). datasheet_pads,
+      [{number, x, y, name?}] read off the datasheet's drawing or pinout (any origin, Y up or down), checks every
+      pad's number against the pin the datasheet puts there; with symbol_path and names it says which signal
+      would reach which pin.
+    - The linked model (or model_path, placed as the footprint places its model), solid by solid, through
+      FreeCAD: bodies outside the courtyard; parts that go into the board (a module with parts on its underside
+      soldered flat), with the cutout or standoff that fixes it; leads that miss or overfill their holes.
+      cutout: the board is cut out under the part already. Without a model, underside_parts
+      [{name?, x, y, size_x, size_y, height}] (height below the module's underside, which sits standoff mm above
+      the board) stand in for it.
+    - leads: the datasheet's lead, {lead_diameter} or {lead_width, lead_thickness}, for every plated hole, or
+      {pad number or "*": {...}}; checks each hole fits the lead with IPC-7251's allowance.
+    - Castellated modules: body {xmin, ymin, xmax, ymax}, the module's outline (else taken from the model's
+      board). On the host board's footprint, every edge pad's copper must reach past the module's edge;
+      castellated True/False forces this on or off (auto: through-hole pads whose copper is moved off the hole).
+      Pads KiCad marks castellated (the module's own board) must have their hole cut in half by the edge.
+    "checked" and "skipped" say which reviews ran and what input the others need.
+    """
+    sym = symbol.read(symbol_path, symbol_name) if symbol_path else None
+    return review.review_file(path, model_path, cutout=cutout, underside_parts=underside_parts, standoff=standoff,
+                              board_thickness=board_thickness, datasheet_pads=datasheet_pads, leads=leads, body=body,
+                              castellated=castellated, sym=sym, courtyard_clearance=courtyard_clearance)
+
+
+@server.tool()
 def compare_footprints(path: str, reference_path: str) -> dict:
     """Compare a footprint pad by pad with a reference, for example KiCad's library footprint for the same package."""
     return check.compare_footprints(footprint.read(path), footprint.read(reference_path))
@@ -356,6 +402,11 @@ def check_part(
     body_width: float | None = None,
     body_height: float | None = None,
     cutout: bool = False,
+    datasheet_pads: list[dict] | None = None,
+    leads: dict | None = None,
+    body: dict | None = None,
+    castellated: bool | None = None,
+    underside_parts: list[dict] | None = None,
 ) -> dict:
     """Review a part as KiCad will use it: the symbol, the footprint its Footprint field names, and the model that footprint links.
 
@@ -363,10 +414,13 @@ def check_part(
     footprint_path is given, and checks each of the three plus the links: the footprint exists, the symbol's footprint
     filters accept it, every pin has a pad and every pad a pin, the model file exists and sits on the pads. With pins
     (the datasheet's pin table) the symbol is also checked pin by pin; body_* are the datasheet's overall model size.
-    cutout: the board has a cutout under the part, so an SMD model may reach below it.
+    cutout: the board has a cutout under the part, so a model may reach below it. The footprint and model get
+    review_footprint's review; datasheet_pads, leads, body, castellated and underside_parts are its extra sources.
     """
     expected = {k: v for k, v in (("length", body_length), ("width", body_width), ("height", body_height)) if v is not None}
-    return part.check_part(symbol_path, name, footprint_path, pins, expected or None, cutout)
+    options = {k: v for k, v in (("datasheet_pads", datasheet_pads), ("leads", leads), ("body", body), ("castellated", castellated),
+                                 ("underside_parts", underside_parts)) if v is not None}
+    return part.check_part(symbol_path, name, footprint_path, pins, expected or None, cutout, options)
 
 
 def main() -> None:

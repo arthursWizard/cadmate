@@ -22,7 +22,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from . import apps, check, footprint, generate, model, sexpr, symbol, symbol_check, symbol_generate
+from . import apps, check, footprint, generate, model, review, sexpr, symbol, symbol_check, symbol_generate
 from .footprint import BBox, Model
 
 LIB_TABLE_VERSION = 7
@@ -263,8 +263,13 @@ def _lib_uri(project: Path, table: str, name: str) -> Path | None:
 
 
 def check_part(symbol_path: str | Path, name: str | None = None, footprint_path: str | Path | None = None,
-               pins: list[dict] | None = None, expected: dict | None = None, cutout: bool = False) -> dict:
-    """Review a symbol, the footprint its Footprint field names, and the model that footprint links, together."""
+               pins: list[dict] | None = None, expected: dict | None = None, cutout: bool = False,
+               review_options: dict | None = None) -> dict:
+    """Review a symbol, the footprint its Footprint field names, and the model that footprint links, together.
+
+    The footprint and model go through review.review_file; review_options are its extra sources (datasheet_pads,
+    leads, body, castellated, underside_parts, standoff, board_thickness).
+    """
     errors: list[str] = []
     warnings: list[str] = []
     sym_path = Path(symbol_path).expanduser()
@@ -305,28 +310,9 @@ def check_part(symbol_path: str | Path, name: str | None = None, footprint_path:
     vs = symbol_check.compare_with_footprint(sym, fp)
     errors += [f"symbol vs footprint: {e}" for e in vs["errors"]]
     out["pins_vs_pads"] = {k: vs[k] for k in ("pads", "pins")}
-    fr = check.check_footprint(fp)
-    errors += [f"footprint: {e}" for e in fr["errors"]]
-    warnings += [f"footprint: {w}" for w in fr["warnings"]]
-
-    if not fp.models:
-        warnings.append("model: the footprint links no 3D model")
-    else:
-        placement = fp.models[0]
-        out["model_link"] = placement.path
-        try:
-            model_file = model.resolve(placement.path, footprint_dir=fp_file.parent, project_dir=project)
-        except ValueError as e:
-            errors.append(f"model: {e}")
-        else:
-            out["model_file"] = str(model_file)
-            if not model_file.exists() and not model_file.with_suffix(".step").exists():
-                errors.append(f"model: {model_file} not found; KiCad will show the board without this part")
-            elif apps.find_freecadcmd():
-                mr = model.check_file(fp, model_file, placement, expected, cutout)
-                errors += [f"model: {e}" for e in mr["errors"]]
-                warnings += [f"model: {w}" for w in mr["warnings"]]
-                out["model_check"] = mr.get("measured")
-            else:
-                warnings.append("model: FreeCAD not found, so the model's placement was not checked")
+    rr = review.review_file(fp_file, expected=expected, cutout=cutout, project_dir=project, sym=sym, pins_vs_pads=False, **(review_options or {}))
+    errors += [e if e.startswith("model: ") else f"footprint: {e}" for e in rr["errors"]]
+    warnings += [w if w.startswith("model: ") else f"footprint: {w}" for w in rr["warnings"]]
+    out["review"] = {k: rr[k] for k in ("checked", "skipped", "measured")}
+    out |= {k: rr[k] for k in ("model_link", "model_file", "model_check") if k in rr}
     return {"ok": not errors, "errors": errors, "warnings": warnings} | out

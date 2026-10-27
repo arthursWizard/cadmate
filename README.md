@@ -24,6 +24,7 @@ Early. Four workflows work end to end:
 | `list_footprint_families` | Footprint families and the datasheet values each needs | nothing |
 | `generate_footprint` | Writes a footprint from datasheet dimensions into a `.pretty` library, checked first | nothing |
 | `check_footprint` | Reviews any footprint: touching pads, courtyard, silkscreen on copper, KiCad library rules; optionally against the datasheet | nothing |
+| `review_footprint` | Reviews any footprint against its 3D model, the datasheet and the symbol: swapped pad numbers, parts under a module that would hit the board, bodies outside the courtyard, castellated pads short of the module edge, holes too small for the lead | FreeCAD for the model |
 | `compare_footprints` | Pad-by-pad differences between two footprints | nothing |
 | `generate_symbol` | Writes a symbol from the datasheet's pin table into a `.kicad_sym` library, checked first | nothing |
 | `check_symbol` | Reviews any symbol against KiCad's library rules (KLC); optionally against the pin table and the footprint's pads | nothing |

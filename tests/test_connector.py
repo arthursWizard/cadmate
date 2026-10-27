@@ -153,3 +153,14 @@ def test_absolute_model_path_in_the_project_is_linked_through_kiprjmod(tmp_path)
     assert m.path == "${KIPRJMOD}/lib.3dshapes/x.step" and not warnings
     m = part._existing_placement({"path": "/elsewhere/x.step"}, fp_result, warnings, tmp_path)
     assert m.path == "/elsewhere/x.step" and "absolute path" in warnings[0]
+
+
+def test_short_peg_is_not_sized_by_its_box_and_unnumbered_holes_are_named():
+    peg = next(p for p in FP.pads if p.kind == "np_thru_hole" and not p.drill_y)
+    fat = review.Solid("Peg", footprint.BBox(peg.x - 0.48, peg.y - 0.48, peg.x + 0.48, peg.y + 0.48), -0.6, 0.5, loops=[])
+    r = review.Report()
+    review.check_solids(FP, [fat], r)
+    assert not r.errors
+    r = review.Report()
+    review._judge_fits([(peg, -0.1, "0.75 mm")], r, "model")
+    assert "(unnumbered)" in r.errors[0]

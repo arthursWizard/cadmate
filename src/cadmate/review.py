@@ -303,7 +303,7 @@ def _judge_fits(fits: list[tuple[Pad, float, str]], r: Report, source: str) -> N
         elif gap < TIGHT_HOLE - 1e-6:
             tight.setdefault(("warning", hole, lead), []).append(p.number)
     for (level, hole, lead), numbers in tight.items():
-        nums = sorted(set(numbers), key=symbol_check._sort_key)
+        nums = sorted({n or "(unnumbered)" for n in numbers}, key=symbol_check._sort_key)
         if level == "error":
             r.errors.append(f"pads {_some(nums)}: the {lead} lead ({source}) does not fit the {hole} mm hole")
         else:
@@ -368,8 +368,10 @@ def check_solids(fp: Footprint, solids: list[Solid], r: Report, cutout: bool = F
             # cut short of the board's mid-plane, where the section is taken.
             hole = next((p for p in holes if _in_hole(p, s.box.center)), None)
             if below and hole is not None and max(s.box.width, s.box.height) < 2 * max(hole.drill, hole.drill_y or 0):
-                # A box cannot tell a round lead from a square one: take it as round, the kinder reading.
-                fits.append((hole, _fit(hole, _lead_outline(s.box, 0.0)), f"{max(s.box.width, s.box.height):.2f} mm"))
+                if s.loops is None:
+                    # A box cannot tell a round lead from a square one: take it as round, the kinder reading.
+                    fits.append((hole, _fit(hole, _lead_outline(s.box, 0.0)), f"{max(s.box.width, s.box.height):.2f} mm"))
+                # else a model's lead or peg cut short of the mid-plane: no section to size it by, and its box is too coarse
                 tails[id(hole)] = min(tails.get(id(hole), 0.0), s.zmin)
             elif below:
                 into_board.append((s, -s.zmin))
@@ -403,7 +405,7 @@ def check_solids(fp: Footprint, solids: list[Solid], r: Report, cutout: bool = F
                     and tails[id(p)] > -board_thickness + Z_TOLERANCE}, key=symbol_check._sort_key)
     if short:
         stop = max(-tails[id(p)] for p in holes if id(p) in tails and (p.number or "(unnumbered)") in short)
-        r.warnings.append(f"model: the leads in pads {_some(short)} stop {stop:.2f} mm below the board's top, inside a "
+        r.warnings.append(f"model: the leads in pads {_some(short, 24)} stop {stop:.2f} mm below the board's top, inside a "
                           f"{board_thickness:g} mm board; a through-hole lead should come out of the underside so the joint "
                           "can be inspected (IPC-A-610). Check the datasheet's tail length, or the board_thickness given")
     if tails:

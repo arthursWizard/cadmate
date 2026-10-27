@@ -26,7 +26,7 @@ To review an existing footprint, run `check_footprint`. Give it `family` and `pa
 
 ## Through-hole parts
 
-Use `custom`. For each pin, give the **lead** rather than guessing a hole: `lead_diameter` for round leads, or `lead_width` and `lead_thickness` for square or flat ones, as `[min, max]` when the datasheet gives a range. cadmate works out the hole (maximum lead + 0.15/0.2/0.25 mm for least/nominal/most) and the pad (hole + 0.5/0.6/0.7 mm) per IPC-7251, rounded up to 0.05 mm. A rectangular lead gets a round hole that clears its diagonal.
+Use `custom`. For each pin, give the **lead** rather than guessing a hole: `lead_diameter` for round leads, or `lead_width` and `lead_thickness` for square or flat ones, as `[min, max]` when the datasheet gives a range. cadmate works out the hole (maximum lead + 0.15/0.2/0.25 mm for least/nominal/most) and the pad (hole + 0.5/0.6/0.7 mm) per IPC-7251, rounded up to 0.05 mm. A rectangular lead gets a round hole that clears its diagonal. So a 0.64 mm square header pin gets a 1.15 mm hole; KiCad's own pin headers use 1.0 mm by long-standing convention, and `drill: 1.0` reproduces that when the user wants to match them.
 
 - Flat tabs (DC jacks, USB shells, power connectors): add `slot: true` to get a slotted (oval) hole along X; `rotation: 90` for one along Y. Slots cost extra at some fabs, and KiCad's library only uses them for leads more than twice as wide as they are thick; cadmate warns below that.
 - If the datasheet gives a recommended hole size, use its `drill` (a number, or `[x, y]` for a slot) and pad `width`/`height` instead; the manufacturer wins.

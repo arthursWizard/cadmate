@@ -122,7 +122,7 @@ def generate(
     if errors:
         return _fail(errors, warnings)
 
-    length = pin_length if pin_length is not None else _pin_length(table)
+    length = pin_length if pin_length is not None else _pin_length(table, stack_power_pins)
     if length < GRID or abs(length / 1.27 - round(length / 1.27)) > 1e-6:
         return _fail([f"pin_length {length} mm must be at least {GRID} mm and a multiple of 1.27 mm (50 mil)"], warnings)
 
@@ -280,9 +280,13 @@ def _table_errors(table: list[Pin], name: str, reference: str) -> list[str]:
     return errors
 
 
-def _pin_length(table: list[Pin]) -> float:
+def _pin_length(table: list[Pin], stacks: bool) -> float:
     longest = max(len(p.number) for p in table)
-    return GRID if longest <= 2 else 3.81 if longest == 3 else 5.08
+    length = GRID if longest <= 2 else 3.81 if longest == 3 else 5.08
+    names = [(p.unit, p.name.lower()) for p in table if p.etype in ("power_in", "power_out", "output") and p.name]
+    if stacks and len(names) != len(set(names)):
+        length = max(length, 3.81)  # room along the pin for a native stack's numbers and braces, as KiCad's RP2040 has
+    return length
 
 
 # --- layout --------------------------------------------------------------------------------------
@@ -394,6 +398,20 @@ def _column(slots: list[_Slot]) -> list[_Slot | None]:
     return out
 
 
+STACK_NUMBER_WIDTH = 1.27  # KiCad 10 draws a native stack's numbers side by side across the pin, in braces
+STACK_BRACES = 2.0
+
+
+def _spread(col: list) -> list:
+    """Keep empty slots either side of a stacked pin, which KiCad draws with all its numbers across it."""
+    out: list = []
+    for s in col:
+        span = 1 if s is None or len(s.pins) == 1 else math.ceil((len(s.pins) * STACK_NUMBER_WIDTH + STACK_BRACES) / GRID)
+        pad = span - 1
+        out += [None] * (pad // 2) + [s] + [None] * (pad - pad // 2)
+    return out
+
+
 def _ceil_grid(v: float, base: float = GRID) -> float:
     return round(math.ceil(v / base - 1e-9) * base, 4)
 
@@ -404,8 +422,8 @@ def _layout(number: int, pins: list[Pin], length: float, stack_power: bool, repo
         p.hidden = True  # KLC S4.6
     slots = _stacks([p for p in pins if p.etype != "no_connect"], stack_power)
     sides = _sides(slots, warnings)
-    left, right = _column(sides["left"]), _column(sides["right"])
-    top, bottom = sides["top"], sides["bottom"]
+    left, right = _spread(_column(sides["left"])), _spread(_column(sides["right"]))
+    top, bottom = _spread(sides["top"]), _spread(sides["bottom"])
 
     def names(col):
         return [s.lead.name for s in col if s is not None]
@@ -437,6 +455,8 @@ def _layout(number: int, pins: list[Pin], length: float, stack_power: bool, repo
     need = max([abs(y) + GRID for y, *_ in rows], default=GRID)
     for col, cx, sign in ((top, tx, 1), (bottom, bx, -1)):
         for s, x in zip(col, cx):
+            if s is None:
+                continue
             reach = PIN_NAME_OFFSET + text_width(s.lead.name)
             need = max(need, reach + FONT)
             for y, _, x1, x2 in rows:
@@ -466,7 +486,8 @@ def _layout(number: int, pins: list[Pin], length: float, stack_power: bool, repo
             place(s, edge_x, y, 180)
     for col, cx, y, rot in ((top, tx, edge_y, 270), (bottom, bx, -edge_y, 90)):
         for s, x in zip(col, cx):
-            place(s, x, y, rot)
+            if s:
+                place(s, x, y, rot)
     # Hidden no-connect pins inside the body, along the bottom edge, on the 50 mil grid (KLC S4.1 allows it for NC).
     per_row = max(1, int((2 * half_w - FONT) // GRID))
     for k, p in enumerate(sorted(nc, key=_num_key)):
@@ -583,11 +604,11 @@ def _filters(fp_filters, footprint: str | None) -> list[str]:
 def _fields(sym: Symbol, reference, footprint, datasheet, description, keywords, filters, units: list[_Unit], length: float):
     # The fields are shared by all units, so they go above and below every unit's pins,
     # aligned to the corners of the narrowest body.
-    def ends(u: _Unit, side: str) -> float:
-        return length if any(p.side == side and p.unit == u.number and not p.hidden for p in sym.pins) else 0.0
-
-    top = max(u.box.ymax + ends(u, "top") for u in units)
-    bottom = min(u.box.ymin - ends(u, "bottom") for u in units)
+    shown = [p for p in sym.pins if not p.hidden]
+    top = max([u.box.ymax for u in units] + [p.y for p in shown])
+    bottom = min([u.box.ymin for u in units] + [p.y for p in shown])
+    if any(p.side == "top" and len(p.numbers) > 1 for p in shown):
+        top += 1.27  # a stack's braces reach past the pin end
     narrow = min((u.box for u in units), key=lambda r: r.xmax - r.xmin)
     rect = symbol.Rect(narrow.xmin, bottom, narrow.xmax, top)
     ref_y = _ceil_grid(top + 1.27, 1.27)

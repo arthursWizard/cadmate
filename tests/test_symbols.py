@@ -286,3 +286,23 @@ def test_opamp_units_are_drawn_like_kicads():
     assert {p.name: (p.x, p.y, p.side) for p in s.pins}["V+"] == (-2.54, 7.62, "top")
     bad = symbol_generate.generate("X", single + [{"number": 6, "name": "SHDN", "type": "I"}], unit_shapes={1: "opamp"})
     assert not bad["ok"] and "rectangle" in bad["errors"][0]
+
+
+def test_stacked_pins_get_room_for_their_numbers():
+    _, rows = rp2040_table()
+    r, s = build("RP2040", rows, datasheet="https://example.com/ds.pdf", description="MCU, QFN-56", keywords="mcu",
+                 fp_filters=["QFN*7x7mm*"])
+    assert r["report"]["pin_length"] == 3.81
+    top = sorted((p for p in s.pins if p.side == "top"), key=lambda p: p.x)
+    iovdd = next(p for p in top if p.name == "IOVDD")
+    gaps = [abs(p.x - iovdd.x) for p in top if p is not iovdd]
+    assert min(gaps) >= 2 * 2.54  # six numbers in braces need about 9.6 mm across the pin
+    assert s.properties["Reference"].y > iovdd.y + 1.27
+
+
+def test_fields_clear_a_bodiless_supply_unit():
+    r, s = build("LM358", LM358, unit_shapes={1: "opamp", 2: "opamp"}, datasheet="https://example.com/ds.pdf",
+                 description="Dual opamp, SOIC-8", keywords="dual opamp operational-amplifier", fp_filters=["SOIC*"])
+    lowest = min(p.y for p in s.pins)
+    value = s.properties["Value"]
+    assert value.y > max(p.y for p in s.pins) or value.y <= lowest - 1.27

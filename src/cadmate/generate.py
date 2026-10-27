@@ -60,6 +60,7 @@ SILK_PAD_CLEARANCE = 0.2
 COURTYARD_GRID = 0.01
 EP_PAD_CLEARANCE = 0.2  # copper gap between the exposed pad and the signal pads
 MAX_RADIUS = 0.25  # roundrect corner radius cap
+SLOT_MIN_RATIO = 2.0  # KLC F7.7: oval holes only for leads longer than twice their width
 
 
 @dataclass
@@ -378,7 +379,8 @@ def _custom(params: dict, density: str = "nominal") -> Design:
         corner = (-1 if pin1.x <= cx else 1, -1 if pin1.y <= cy else 1)
     report = {"origin": origin, "shifted_by": [round(-sx, 6), round(-sy, 6)], "through_hole": tht}
     if sizing:
-        report["ipc7251_holes"] = list(sizing.values())
+        report["ipc7251_holes"] = [{k: v for k, v in s.items() if k != "warning"} for s in sizing.values()]
+        report["warnings"] = [f"pads {s['pads']}: {s['warning']}" for s in sizing.values() if "warning" in s]
     return Design(name="Custom", descr="Custom land pattern from the datasheet", tags="", pads=pads, body=body,
                   pin1_corner=corner, report=report, courtyard_rects=[])
 
@@ -404,7 +406,13 @@ def _custom_pad(spec: dict, density: str = "nominal", sizing: dict | None = None
             w, h = hole.pad_w, hole.pad_h
         if sizing is not None:
             key = repr(sorted(leads.items())) + repr(bool(spec.get("slot")))
-            sizing.setdefault(key, {"lead": leads, "drill": [drill, drill_y] if drill_y else drill, "pad": [w, h], "pads": []})["pads"].append(number)
+            entry = sizing.setdefault(key, {"lead": leads, "drill": [drill, drill_y] if drill_y else drill, "pad": [w, h], "pads": []})
+            entry["pads"].append(number)
+            if spec.get("slot") and "lead_width" in leads and "lead_thickness" in leads:
+                a, b = ipc.dim(leads["lead_width"]).max, ipc.dim(leads["lead_thickness"]).max
+                if max(a, b) <= SLOT_MIN_RATIO * min(a, b):
+                    entry["warning"] = (f"slot for a {a}x{b} mm lead: KiCad's library only slots leads over {SLOT_MIN_RATIO}:1 "
+                                        "(KLC F7.7); a round hole is cheaper to make")
     elif kind != "smd":
         if spec.get("drill") is None:
             raise ValueError(f"through-hole pad {number!r} needs drill, or the lead size to work it out from")

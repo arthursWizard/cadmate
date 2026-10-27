@@ -447,21 +447,42 @@ def _layout(number: int, pins: list[Pin], length: float, stack_power: bool, repo
         first = -math.floor((len(col) - 1) / 2) * GRID
         return [round(first + k * GRID, 4) for k in range(len(col))]
 
-    ly, ry, tx, bx = ys(left), ys(right), xs(top), xs(bottom)
-    rows = [(y, s, -half_w + PIN_NAME_OFFSET, -half_w + PIN_NAME_OFFSET + text_width(s.lead.name)) for y, s in zip(ly, left) if s]
-    rows += [(y, s, half_w - PIN_NAME_OFFSET - text_width(s.lead.name), half_w - PIN_NAME_OFFSET) for y, s in zip(ry, right) if s]
-    # Half height: one grid past the outer rows, and enough that the top and bottom
-    # pin names, which run down (up) into the body, clear the side names under them.
-    need = max([abs(y) + GRID for y, *_ in rows], default=GRID)
-    for col, cx, sign in ((top, tx, 1), (bottom, bx, -1)):
-        for s, x in zip(col, cx):
-            if s is None:
-                continue
-            reach = PIN_NAME_OFFSET + text_width(s.lead.name)
-            need = max(need, reach + FONT)
-            for y, _, x1, x2 in rows:
-                if x1 - 0.8 <= x <= x2 + 0.8:
-                    need = max(need, sign * y + reach + FONT + NAME_CLEARANCE)
+    tx, bx = xs(top), xs(bottom)
+
+    def needs(shift: int, half_w: float):
+        """Half heights the top and bottom need with the side rows moved down by shift grid steps."""
+        ly = [round(y - shift * GRID, 4) for y in ys(left)]
+        ry = [round(y - shift * GRID, 4) for y in ys(right)]
+        rows = [(y, -half_w + PIN_NAME_OFFSET, -half_w + PIN_NAME_OFFSET + text_width(s.lead.name)) for y, s in zip(ly, left) if s]
+        rows += [(y, half_w - PIN_NAME_OFFSET - text_width(s.lead.name), half_w - PIN_NAME_OFFSET) for y, s in zip(ry, right) if s]
+        # One grid past the outer rows, and enough that the top and bottom pin names, which
+        # run down (up) into the body, clear the side names under them.
+        up = max([y + GRID for y, *_ in rows], default=GRID)
+        down = max([-y + GRID for y, *_ in rows], default=GRID)
+        for col, cx, sign in ((top, tx, 1), (bottom, bx, -1)):
+            for s, x in zip(col, cx):
+                if s is None:
+                    continue
+                reach = PIN_NAME_OFFSET + text_width(s.lead.name) + FONT
+                hits = [sign * y + reach + NAME_CLEARANCE for y, x1, x2 in rows if x1 - 0.8 <= x <= x2 + 0.8]
+                n = max([reach] + hits)
+                if sign > 0:
+                    up = max(up, n)
+                else:
+                    down = max(down, n)
+        return max(up, down), ly, ry
+
+    # The body stays centred on the origin (KLC S3.1). Tall top or bottom names either push the
+    # side rows down or, with a wider body, fit between the two columns: take the smallest body.
+    def area(w: int, k: int):
+        hw = half_w + w * GRID
+        h = _ceil_grid(needs(k, hw)[0] + length) - length
+        return (hw * h, w, abs(k))
+
+    shifts = range(-20, 21) if left or right else [0]
+    widen, shift = min(((w, k) for w in range(0, 5) for k in shifts), key=lambda c: area(*c))
+    half_w = round(half_w + widen * GRID, 4)
+    need, ly, ry = needs(shift, half_w)
     if not left and not right and top and bottom:
         need = max(need, (tw + bw) / 2 + PIN_NAME_OFFSET + FONT)
     half_h = _ceil_grid(need + length) - length

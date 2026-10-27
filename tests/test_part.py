@@ -214,3 +214,20 @@ def check_model_ok(fp, plan):
     r = check.check_model(fp, plan["bbox"], footprint.Model(path=""), plan["expected"])
     assert r["ok"] and not r["warnings"], r
     return True
+
+
+def test_smd_module_with_pads_on_three_sides():
+    # Castellated module soldered flat: pads on the left, right and bottom only, parts on its underside.
+    pads = [{"number": i + 1, "x": 9.5, "y": -6 + 2.54 * i, "width": 2.6, "height": 1.6} for i in range(5)]
+    pads += [{"number": 6 + i, "x": 2.54 - 2.54 * i, "y": 6.5, "width": 1.6, "height": 2.6} for i in range(3)]
+    pads += [{"number": 9 + i, "x": -9.5, "y": 6 - 2.54 * i, "width": 2.6, "height": 1.6} for i in range(5)]
+    r = generate.generate("custom", {"body_width": 18, "body_length": 16, "body_center": [0, 0], "pads": pads, "origin": "as_given"})
+    fp = footprint.parse(r["text"])
+    module = {"xmin": -9, "xmax": 9, "ymin": -8, "ymax": 8, "zmin": -1.1, "zmax": 4}
+    from cadmate import check
+    flat = check.check_model(fp, module)
+    assert not any("centre" in e for e in flat["errors"])  # the pads' centre is not the module's
+    assert any("below the board" in e for e in flat["errors"])
+    assert check.check_model(fp, module, cutout=True)["ok"]
+    off = check.check_model(fp, module | {"xmin": -4, "xmax": 14}, cutout=True)
+    assert any("pads lie" in w for w in off["warnings"])

@@ -100,20 +100,20 @@ def generate_part(
         else:
             if apps.find_freecadcmd():
                 expected = {k: model_spec[k] for k in ("length", "width", "height") if model_spec.get(k) is not None}
-                r = model.check_file(fp, model_file, placement, expected)
+                r = model.check_file(fp, model_file, placement, expected, bool(model_spec.get("cutout")))
                 model_report["check"] = r
                 errors += [f"model: {e}" for e in r["errors"]]
                 warnings += [f"model: {w}" for w in r["warnings"]]
             else:
                 warnings.append("model: FreeCAD not found, so the model's placement was not checked")
     elif not model_spec.get("skip"):
-        values = params | {k: v for k, v in model_spec.items() if k not in ("skip", "path")}
+        values = params | {k: v for k, v in model_spec.items() if k not in ("skip", "path", "cutout")}
         try:
             planned = model.plan(family, values, fp, body)
         except (ValueError, TypeError) as e:
             return _fail(errors + [f"model: {e}"], warnings)
         placement = Model(path=f"${{KIPRJMOD}}/{library}.3dshapes/{fp_name}.step")
-        offline = check.check_model(fp, planned["bbox"], placement, planned["expected"])
+        offline = check.check_model(fp, planned["bbox"], placement, planned["expected"], bool(model_spec.get("cutout")))
         model_report = {"source": "built", "link": placement.path, "expected": planned["expected"], "planned_bbox": planned["bbox"]}
         errors += [f"model: {e}" for e in offline["errors"]]
         if not offline["errors"]:
@@ -125,7 +125,7 @@ def generate_part(
                 except (RuntimeError, OSError) as e:
                     errors.append(f"model: FreeCAD could not build it: {e}")
                 else:
-                    r = model.check_file(fp, model_file, placement, planned["expected"])
+                    r = model.check_file(fp, model_file, placement, planned["expected"], bool(model_spec.get("cutout")))
                     model_report["check"] = r
                     model_report["colours"] = info.get("colours", False)
                     errors += [f"model: {e}" for e in r["errors"]]
@@ -263,7 +263,7 @@ def _lib_uri(project: Path, table: str, name: str) -> Path | None:
 
 
 def check_part(symbol_path: str | Path, name: str | None = None, footprint_path: str | Path | None = None,
-               pins: list[dict] | None = None, expected: dict | None = None) -> dict:
+               pins: list[dict] | None = None, expected: dict | None = None, cutout: bool = False) -> dict:
     """Review a symbol, the footprint its Footprint field names, and the model that footprint links, together."""
     errors: list[str] = []
     warnings: list[str] = []
@@ -323,7 +323,7 @@ def check_part(symbol_path: str | Path, name: str | None = None, footprint_path:
             if not model_file.exists() and not model_file.with_suffix(".step").exists():
                 errors.append(f"model: {model_file} not found; KiCad will show the board without this part")
             elif apps.find_freecadcmd():
-                mr = model.check_file(fp, model_file, placement, expected)
+                mr = model.check_file(fp, model_file, placement, expected, cutout)
                 errors += [f"model: {e}" for e in mr["errors"]]
                 warnings += [f"model: {w}" for w in mr["warnings"]]
                 out["model_check"] = mr.get("measured")

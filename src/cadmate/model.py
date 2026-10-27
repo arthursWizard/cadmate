@@ -267,7 +267,7 @@ def resolve(path: str, footprint_dir: Path | None = None, project_dir: Path | No
     return Path(_VAR.sub(sub, path)).expanduser()
 
 
-def check_file(fp: Footprint, model_file: Path, placement: Model, expected: dict | None = None) -> dict:
+def check_file(fp: Footprint, model_file: Path, placement: Model, expected: dict | None = None, cutout: bool = False) -> dict:
     """Check a STEP file placed on a footprint: read its box in FreeCAD, then check.check_model."""
     if model_file.suffix.lower() in (".wrl", ".vrml"):
         step = model_file.with_suffix(".step")
@@ -277,7 +277,7 @@ def check_file(fp: Footprint, model_file: Path, placement: Model, expected: dict
     if not model_file.exists():
         return {"ok": False, "errors": [f"model file not found: {model_file}"], "warnings": []}
     info = apps.run_freecad_script(Path(__file__).parent / "freecad_scripts" / "inspect_model.py", env={"CADMATE_MODEL": str(model_file)})
-    result = check.check_model(fp, info["bbox"], placement, expected or None)
+    result = check.check_model(fp, info["bbox"], placement, expected or None, cutout)
     if not info.get("valid", True):
         result["errors"].append("FreeCAD reports the shape as invalid")
     if info.get("solids", 1) == 0:

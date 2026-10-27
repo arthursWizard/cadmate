@@ -333,7 +333,8 @@ def generate_part(
     height (and for soic the standoff) in params too; the 3D model is built from the same values.
     model: extra values for the 3D model (lead_thickness, terminal_thickness, standoff, lead_below, lead_diameter),
     or {path, offset?, rotate?, frame?} to link a model made by hand (frame "datasheet" when it was built in the
-    datasheet's pad coordinates, so it follows the footprint's origin), or {skip: true}.
+    datasheet's pad coordinates, so it follows the footprint's origin), or {skip: true}. Add cutout: true
+    when the board has a cutout under the part (a module with parts underneath, soldered flat).
 
     Writes <project_dir>/<library>.kicad_sym, <library>.pretty/<footprint>.kicad_mod and
     <library>.3dshapes/<footprint>.step, the symbol's Footprint field set to <library>:<footprint> and the model
@@ -354,6 +355,7 @@ def check_part(
     body_length: float | None = None,
     body_width: float | None = None,
     body_height: float | None = None,
+    cutout: bool = False,
 ) -> dict:
     """Review a part as KiCad will use it: the symbol, the footprint its Footprint field names, and the model that footprint links.
 
@@ -361,9 +363,10 @@ def check_part(
     footprint_path is given, and checks each of the three plus the links: the footprint exists, the symbol's footprint
     filters accept it, every pin has a pad and every pad a pin, the model file exists and sits on the pads. With pins
     (the datasheet's pin table) the symbol is also checked pin by pin; body_* are the datasheet's overall model size.
+    cutout: the board has a cutout under the part, so an SMD model may reach below it.
     """
     expected = {k: v for k, v in (("length", body_length), ("width", body_width), ("height", body_height)) if v is not None}
-    return part.check_part(symbol_path, name, footprint_path, pins, expected or None)
+    return part.check_part(symbol_path, name, footprint_path, pins, expected or None, cutout)
 
 
 def main() -> None:

@@ -35,6 +35,7 @@ Existing files are only replaced with `overwrite: true`, with `.bak` copies.
 - `custom`: a body box over the footprint's body outline from `standoff` to `height`, with a lead in every through-hole pad and a terminal under every SMD pad. Leads are round (`lead_diameter`, else the hole minus 0.2 mm) or square/flat (`lead_width` and `lead_thickness`), reach `lead_below` mm under the board (3 by default, 0 for none), and get a shoulder into the body's side when they stand beside it (DIP). `lead_above` makes header posts stand that far above the body. Good for clearances and enclosures. For a module or connector whose looks matter, build it in FreeCAD (see `kicad-3d-models`) and pass `model: {path, frame}`:
   - `frame: "datasheet"` when you built it in the datasheet's pad coordinates (the ones you gave the footprint). cadmate moves it with the footprint's origin, which goes to pin 1 for through-hole parts.
   - `frame: "footprint"` (default) when it is already in the footprint's frame; `offset` and `rotate` as KiCad's.
+- `cutout: true` in `model` when the board has a cutout under the part, as for a castellated module with parts on its underside soldered flat; the model may then reach below the board.
 - Models built headless (FreeCADCmd) have no colours; KiCad shows them grey.
 
 ## Checking an existing part

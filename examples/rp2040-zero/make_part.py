@@ -21,18 +21,19 @@ from cadmate import part
 
 HERE = Path(__file__).parent
 PITCH = 2.54
-# Either way of mounting: each pin gets one oval pad with a plated hole sized for a 0.64 mm square header
-# post (IPC-7251), under the module's hole. The pad's copper is moved off the hole (pad_offset) so it runs
+# Either way of mounting: each pin gets one oval pad with a 1.0 mm plated hole for a 0.64 mm square header
+# post, under the module's hole. 1.0 mm and 1.7 mm copper as KiCad's pin headers, which hold the posts
+# straighter than the 1.15 mm IPC-7251 gives. The pad's copper is moved off the hole (pad_offset) so it runs
 # from just inside the hole to 1.0 mm past the module's edge: soldered flat by the castellations, the
 # fillet forms outside where it can be seen; on a header, the hole takes the post.
 EDGE_LEFT, EDGE_RIGHT, EDGE_BOTTOM = 1.16, 19.16, -0.95  # module outline in this frame (drawing: 18 x 23.5 mm)
 HOLE_IN = 1.38  # drawing: hole centres 1.38 mm in from the edge
 OUTSIDE = 1.0  # copper past the module's edge
-PAD_W = 1.75  # IPC-7251 pad for the post
+PAD_W = 1.7  # KiCad pin header pad
 INNER = PAD_W / 2  # copper beyond the hole, on the inside
 LONG = INNER + HOLE_IN + OUTSIDE
 SHIFT = round(LONG / 2 - INNER, 4)  # copper centre from the hole, outwards
-POST = {"lead_width": 0.64, "lead_thickness": 0.64}
+POST = {"drill": 1.0}
 
 pads = [{"number": i + 1, "x": EDGE_RIGHT - HOLE_IN, "y": -22.86 + i * PITCH, "width": LONG, "height": PAD_W,
          "pad_offset": [SHIFT, 0]} | POST for i in range(9)]  # right edge, top down

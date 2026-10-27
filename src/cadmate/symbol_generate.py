@@ -26,6 +26,8 @@ PIN_NAME_OFFSET = 0.508  # 20 mil, KLC S3.6
 OUTLINE_WIDTH = 0.254  # 10 mil, KLC S3.3
 GAP = 2.54  # between the left and right pin names
 NAME_CLEARANCE = 0.635  # between the end of a top or bottom pin name and the side names under it
+SIDE_NAME_GAP = 0.4  # sideways between a top or bottom pin name and a side name level with it, by text_width's
+# estimate (real text is about 0.1 mm per character narrower); KiCad's NE555 has 0.48
 MIN_HALF_WIDTH = 5.08
 
 # Datasheet shorthand -> KiCad electrical type.
@@ -481,7 +483,9 @@ def _layout(number: int, pins: list[Pin], length: float, stack_power: bool, repo
                 if s is None:
                     continue
                 reach = PIN_NAME_OFFSET + text_width(s.lead.name) + FONT
-                hits = [sign * y + reach + NAME_CLEARANCE for y, x1, x2 in rows if x1 - 0.8 <= x <= x2 + 0.8]
+                # A name closer than SIDE_NAME_GAP sideways to a side name reads as one word with it, so it must clear it vertically.
+                near = FONT / 2 + SIDE_NAME_GAP
+                hits = [sign * y + reach + NAME_CLEARANCE for y, x1, x2 in rows if x1 - near <= x <= x2 + near]
                 n = max([reach] + hits)
                 if sign > 0:
                     up = max(up, n)

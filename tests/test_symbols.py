@@ -306,3 +306,14 @@ def test_fields_clear_a_bodiless_supply_unit():
     lowest = min(p.y for p in s.pins)
     value = s.properties["Value"]
     assert value.y > max(p.y for p in s.pins) or value.y <= lowest - 1.27
+
+
+def test_regulator_output_named_like_a_supply_may_be_power_out():
+    # DRV8316's AVDD is an on-chip LDO that can supply other parts: power_out, not power_in.
+    rows = [{"number": 1, "name": "VM", "type": "P"}, {"number": 2, "name": "AVDD", "type": "power_out"},
+            {"number": 3, "name": "AGND", "type": "G"}, {"number": 4, "name": "SCLK", "type": "I"},
+            {"number": 5, "name": "SDI", "type": "I"}, {"number": 6, "name": "SDO", "type": "O"},
+            {"number": 7, "name": "nSCS", "type": "I"}, {"number": 8, "name": "OUTA", "type": "O"}]
+    r, s = build("DRV_TEST", rows, footprint="Package_SO:SOIC-8_3.9x4.9mm_P1.27mm", description="Test part, SOIC-8", keywords="test")
+    assert not r["errors"], r["errors"]
+    assert next(p for p in s.pins if p.name == "AVDD").etype == "power_out"

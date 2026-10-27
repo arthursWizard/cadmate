@@ -93,7 +93,8 @@ def check_model(footprint: Footprint, bbox: dict, model: Model | None = None, ex
 
     bbox: xmin..zmax of the model as read from its STEP file.
     model: the placement from the footprint (offset/scale/rotate); identity if None.
-    expected: optional body size from the datasheet, keys length/width/height (mm).
+    expected: optional body size from the datasheet, keys width/length/height (mm). As in the footprint
+    families, width is along X and length along Y of the footprint as drawn (pin 1 at the top left).
     cutout: the board has a cutout under the part, so an SMD model may reach below the board
     (a module with parts on its underside, soldered flat).
     by_solid: leave out the courtyard and below-the-board checks, because review.review_footprint makes
@@ -149,8 +150,14 @@ def check_model(footprint: Footprint, bbox: dict, model: Model | None = None, ex
             warnings.append(f"model extends {over:.2f} mm outside the courtyard")
 
     if expected:
-        size = {"length": b["xmax"] - b["xmin"], "width": b["ymax"] - b["ymin"], "height": b["zmax"] - max(b["zmin"], 0.0)}
+        size = {"width": b["xmax"] - b["xmin"], "length": b["ymax"] - b["ymin"], "height": b["zmax"] - max(b["zmin"], 0.0)}
         measured["size"] = {k: round(v, 4) for k, v in size.items()}
+        if "width" in expected and "length" in expected:
+            ew, el = float(expected["width"]), float(expected["length"])
+            if abs(ew - el) > 0.1 and abs(size["width"] - el) + abs(size["length"] - ew) < abs(size["width"] - ew) + abs(size["length"] - el):
+                errors.append(f"model is {size['width']:.2f} mm along X and {size['length']:.2f} mm along Y, which fits the datasheet "
+                              f"width {ew} and length {el} turned 90 degrees: width is along X and length along Y of the footprint; "
+                              "swap them if you mixed them up, or rotate the model")
         for key in ("length", "width", "height"):
             if key in expected:
                 # Overall model size includes leads, so it may only be larger than the body, by a bounded amount.
@@ -165,6 +172,8 @@ def check_model(footprint: Footprint, bbox: dict, model: Model | None = None, ex
     return {"ok": not errors, "errors": errors, "warnings": warnings, "measured": measured}
 
 
+EP_PASTE_MIN_SIDE = 1.5  # mm; pads at least this wide and this big get a split-paste warning
+EP_PASTE_MIN_AREA = 4.0  # mm^2
 MIN_ANNULAR_RING = 0.15  # mm of copper around a plated hole; IPC-7251 nominal pads give 0.25 or more
 MIN_PAD_GAP = 0.15  # mm of copper between pads; below this many fabs cannot keep a solder mask web
 SILK_PAD_CLEARANCE = 0.2  # KLC
@@ -288,6 +297,16 @@ def check_footprint(fp: Footprint, courtyard_clearance: float = COURTYARD_CLEARA
             warnings.append(f"{label}: slotted hole in a {p.shape} pad; use an oval pad")
         if p.kind == "smd" and p.layers and not any(layer.endswith(".Cu") for layer in p.layers) and p.number:
             warnings.append(f"{label} has a number but no copper layer")
+
+    # A big pad with one full paste opening (an exposed pad as drawn) floats the part and voids; IPC-7093 wants it split.
+    paste_only = [p for p in fp.pads if "F.Paste" in p.layers and not _copper(p)]
+    for p in fp.pads:
+        if p.kind == "smd" and "F.Paste" in p.layers and _copper(p) and min(p.width, p.height) >= EP_PASTE_MIN_SIDE \
+                and p.width * p.height >= EP_PASTE_MIN_AREA and not any(_box_gap(p.box, q.box) < 0 for q in paste_only):
+            warnings.append(f"pad {p.number or '(unnumbered)'} ({p.width}x{p.height} mm) has one paste opening over all of it; "
+                            "an exposed or thermal pad needs its paste split to about 50-80% (IPC-7093), or the part floats "
+                            "and voids. generate_footprint's custom family does that with paste_coverage on the pad. "
+                            "Fine as is for a mounting tab or a big terminal")
 
     # Copper between differently numbered pads.
     copper = [p for p in fp.pads if _copper(p)]

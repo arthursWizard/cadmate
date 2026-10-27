@@ -79,7 +79,9 @@ def check_model_vs_footprint(
 
     Uses the footprint's first linked model and its offset/rotation unless
     model_path is given. Checks centring over the pads, seating height,
-    courtyard overlap, and body size against the datasheet values passed in.
+    courtyard overlap, and body size against the datasheet values passed in: body_width along the footprint's X,
+    body_length along its Y, as in the footprint families (a QFN-40 drawn 5 mm wide and 7 mm tall is width 5,
+    length 7), each including the leads where they stick out.
     """
     fp_path = Path(footprint_path).expanduser()
     fp = footprint.read(fp_path)
@@ -413,7 +415,8 @@ def check_part(
     Finds the footprint through the project's fp-lib-table (or <library>.pretty next to the symbol library) unless
     footprint_path is given, and checks each of the three plus the links: the footprint exists, the symbol's footprint
     filters accept it, every pin has a pad and every pad a pin, the model file exists and sits on the pads. With pins
-    (the datasheet's pin table) the symbol is also checked pin by pin; body_* are the datasheet's overall model size.
+    (the datasheet's pin table) the symbol is also checked pin by pin; body_* are the datasheet's overall model size,
+    body_width along the footprint's X and body_length along its Y, as in the footprint families.
     cutout: the board has a cutout under the part, so a model may reach below it. The footprint and model get
     review_footprint's review; datasheet_pads, leads, body, castellated and underside_parts are its extra sources.
     """

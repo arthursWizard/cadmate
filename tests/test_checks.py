@@ -40,7 +40,7 @@ GOOD = {"xmin": -3.0, "xmax": 3.0, "ymin": -2.45, "ymax": 2.45, "zmin": 0.0, "zm
 
 
 def test_good_model_passes():
-    r = check.check_model(SOIC, GOOD, expected={"length": 6.0, "width": 4.9, "height": 1.75})
+    r = check.check_model(SOIC, GOOD, expected={"width": 6.0, "length": 4.9, "height": 1.75})
     assert r["ok"], r
     assert r["warnings"] == []
 
@@ -54,7 +54,7 @@ def test_shifted_model_fails():
 
 def test_rotation_swaps_axes():
     rotated = {"xmin": -2.45, "xmax": 2.45, "ymin": -3.0, "ymax": 3.0, "zmin": 0.0, "zmax": 1.75}
-    r = check.check_model(SOIC, rotated, footprint.Model(path="", rotate=(0, 0, 90)), {"length": 6.0, "width": 4.9})
+    r = check.check_model(SOIC, rotated, footprint.Model(path="", rotate=(0, 0, 90)), {"width": 6.0, "length": 4.9})
     assert r["ok"], r
 
 
@@ -66,7 +66,7 @@ def test_too_tall_and_sunk_model():
 def test_y_up_model_is_stood_up_by_x_rotation():
     # A Y-up model (height along +Y), as many vendor STEPs are; KiCad's rotate X = -90 stands it on the board.
     y_up = {"xmin": -3.0, "xmax": 3.0, "ymin": 0.0, "ymax": 1.75, "zmin": -2.45, "zmax": 2.45}
-    r = check.check_model(SOIC, y_up, footprint.Model(path="", rotate=(-90, 0, 0)), {"length": 6.0, "width": 4.9, "height": 1.75})
+    r = check.check_model(SOIC, y_up, footprint.Model(path="", rotate=(-90, 0, 0)), {"width": 6.0, "length": 4.9, "height": 1.75})
     assert r["ok"], r
     assert r["measured"]["model_bbox_placed"]["zmin"] == 0.0
 
@@ -89,9 +89,9 @@ RP2040_MODEL = {"xmin": 1.16, "xmax": 19.16, "ymin": 0.95, "ymax": 25.45, "zmin"
 
 
 def test_overhang_is_a_warning_not_silent():
-    r = check.check_model(RP2040_ZERO, RP2040_MODEL, expected={"length": 18, "width": 23.5})
+    r = check.check_model(RP2040_ZERO, RP2040_MODEL, expected={"width": 18, "length": 23.5})
     assert r["ok"], r
-    assert any("width" in w and "over the datasheet" in w for w in r["warnings"])
+    assert any("length" in w and "over the datasheet" in w for w in r["warnings"])
 
 
 def test_through_hole_model_off_the_pads_is_caught():
@@ -129,3 +129,9 @@ def test_older_apps_are_reported_unsupported():
     assert old["supported"] is False and "older than 10.0" in old["note"]
     assert apps.AppInfo("freecad", "/x", "1.0.2").supported is False
     assert apps.AppInfo("freecad", "/x", None).supported is None
+
+
+def test_swapped_width_and_length_are_named():
+    r = check.check_model(SOIC, GOOD, expected={"width": 4.9, "length": 6.0})
+    assert not r["ok"]
+    assert any("width is along X" in e for e in r["errors"])

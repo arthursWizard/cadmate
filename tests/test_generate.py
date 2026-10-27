@@ -238,3 +238,32 @@ def test_slot_for_a_nearly_round_lead_is_questioned():
     assert any("KLC F7.7" in w for w in r["warnings"])
     r, _ = build("custom", JACK, name="Jack", courtyard_clearance=0.5)  # 2.0 x 0.5 tabs: a slot is right
     assert r["warnings"] == []
+
+
+# TI DRV8316 (RGF0040E): a 5x7 mm VQFN-40 with TI's land pattern, entered as custom.
+RGF40 = {"body_width": 5, "body_length": 7, "pad_rows": [
+    {"first": 1, "count": 12, "x": -2.4, "y": -2.75, "dy": 0.5, "width": 0.6, "height": 0.25},
+    {"first": 13, "count": 8, "x": -1.75, "y": 3.4, "dx": 0.5, "width": 0.25, "height": 0.6},
+    {"first": 21, "count": 12, "x": 2.4, "y": 2.75, "dy": -0.5, "width": 0.6, "height": 0.25},
+    {"first": 33, "count": 8, "x": 1.75, "y": -3.4, "dx": -0.5, "width": 0.25, "height": 0.6}],
+    "pads": [{"number": 41, "x": 0, "y": 0, "width": 3.7, "height": 5.7, "shape": "rect"}]}
+
+
+def test_custom_exposed_pad_paste_is_split_or_flagged():
+    whole = generate.generate("custom", RGF40)
+    assert any("pad 41" in w and "paste" in w for w in whole["warnings"])
+    split = generate.generate("custom", RGF40 | {"pads": [RGF40["pads"][0] | {"paste_coverage": 0.69, "paste_grid": [3, 4]}]})
+    assert split["ok"] and not split["warnings"], split
+    fp = footprint.parse(split["text"])
+    ep = next(p for p in fp.pads if p.number == "41")
+    assert "F.Paste" not in ep.layers
+    paste = [p for p in fp.pads if not p.number]
+    assert len(paste) == 12
+    assert abs(sum(p.width * p.height for p in paste) / (3.7 * 5.7) - 0.69) < 0.02
+
+
+def test_pin1_arrow_sits_outside_a_tall_qfn():
+    r = generate.generate("custom", RGF40)
+    arrow = [g for g in footprint.parse(r["text"]).on_layer("F.SilkS") if g.kind == "poly"]
+    xs = [x for g in arrow for x, _ in g.pts]
+    assert xs and max(xs) < -2.5  # left of the body, beside pad 1

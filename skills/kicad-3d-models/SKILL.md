@@ -12,12 +12,12 @@ Uses the cadmate MCP server (KiCad side and checks) and a FreeCAD MCP server (mo
 ## Workflow
 
 1. `read_footprint` on the footprint. Note SMD or through-hole, pad count, pitch, pin 1 position, courtyard.
-2. Get the body dimensions from the datasheet's package drawing. Ask the user for the datasheet or the part number if you don't have them. Never guess a dimension; ask. Use nominal values, not min or max.
+2. Get the body dimensions from the datasheet's package drawing. Ask the user for the datasheet or the part number if you don't have them. Never guess a dimension; ask. Use nominal values, not min or max; where the drawing gives only a maximum (often the height), use it and say so.
 3. Pick the family from `list_package_families` and run `package_params` with the footprint path. Fix every error before modelling. Show the user the warnings.
 4. Build the model in FreeCAD through the FreeCAD MCP server, as a Python script in the Part workbench so it stays parametric (see "Building" below). Take a screenshot and look at it before going on.
 5. Export STEP next to where the model will live (see "Files"). Export VRML too if the user wants KiCad's renderer to show colours.
 6. `link_model_to_footprint` with the path written using a KiCad variable, never an absolute path.
-7. `check_model_vs_footprint` with the datasheet body length, width and height. Fix every error and re-check. Report warnings to the user.
+7. `check_model_vs_footprint` with the datasheet's overall size: `body_width` along the footprint's X, `body_length` along its Y (as in the footprint families), `body_height`. Fix every error and re-check. Report warnings to the user.
 8. Ask the user to open the footprint in KiCad's 3D viewer and confirm before calling it done.
 
 ## Conventions (KiCad library rules)

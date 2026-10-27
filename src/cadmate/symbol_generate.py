@@ -85,11 +85,14 @@ class _Unit:
     pins: list[Pin] = field(default_factory=list)
     rect: Rect | None = None
     outline: Polyline | None = None  # the opamp triangle, drawn instead of a rectangle
+    box_hint: Rect | None = None  # a unit drawn without a body: the area its pins frame, for placing the fields
 
     @property
     def box(self) -> Rect:
         if self.rect is not None:
             return self.rect
+        if self.box_hint is not None:
+            return self.box_hint
         xs, ys = [x for x, _ in self.outline.pts], [y for _, y in self.outline.pts]
         return Rect(min(xs), min(ys), max(xs), max(ys))
 
@@ -128,7 +131,9 @@ def generate(
     if bad:
         return _fail([f"unit_shapes must be rectangle or opamp, got {bad}"], warnings)
     types = {p.number: p.etype for p in table}  # before stacking turns some into passives
-    sym = Symbol(name=name, pin_names_offset=PIN_NAME_OFFSET)
+    opamps = "opamp" in shapes.values()
+    # KiCad's opamps set the names 5 mil in, so + and - clear the supply pin names beside them.
+    sym = Symbol(name=name, pin_names_offset=OPAMP_NAME_OFFSET if opamps else PIN_NAME_OFFSET)
     report: dict = {"pin_length": length, "units": {}}
     units = sorted({p.unit for p in table})
     laid_out: list[_Unit] = []
@@ -137,6 +142,8 @@ def generate(
         try:
             if shapes.get(u) == "opamp":
                 unit = _layout_opamp(u, pins_u, report, warnings)
+            elif opamps and shapes.get(u) != "rectangle" and _supplies_only(pins_u):
+                unit = _layout_supply_unit(u, pins_u, report)
             else:
                 unit = _layout(u, pins_u, length, stack_power_pins, report, warnings)
         except ValueError as e:
@@ -172,7 +179,7 @@ def generate(
             "pins": len(parsed.pins),
             "visible_pins": sum(not p.hidden for p in parsed.pins),
             "units": parsed.unit_count,
-            "bodies": [{"unit": u.number, "shape": "rectangle" if u.rect else "opamp", "width": round(u.box.xmax - u.box.xmin, 4),
+            "bodies": [{"unit": u.number, "shape": "rectangle" if u.rect else "opamp" if u.outline else "none", "width": round(u.box.xmax - u.box.xmin, 4),
                         "height": round(u.box.ymax - u.box.ymin, 4)} for u in laid_out],
         },
     }
@@ -481,6 +488,26 @@ def _layout(number: int, pins: list[Pin], length: float, stack_power: bool, repo
 
 
 OPAMP = [(-5.08, 5.08), (5.08, 0.0), (-5.08, -5.08), (-5.08, 5.08)]  # KiCad's opamp triangle
+OPAMP_NAME_OFFSET = 0.127
+
+
+def _is_negative_supply(p: Pin) -> bool:
+    n = p.name.replace(" ", "").upper()
+    return bool(GROUND.match(p.name)) or "-" in n or n.startswith(("VEE", "VSS"))
+
+
+def _supplies_only(pins: list[Pin]) -> bool:
+    neg = [p for p in pins if p.etype == "power_in" and _is_negative_supply(p)]
+    return all(p.etype == "power_in" for p in pins) and len(neg) <= 1 and len(pins) - len(neg) <= 1
+
+
+def _layout_supply_unit(number: int, pins: list[Pin], report: dict) -> _Unit:
+    """The supply unit of a multi-amplifier part, drawn as KiCad's: no body, the pins where an amplifier's supplies go."""
+    for p in pins:
+        neg = _is_negative_supply(p)
+        p.x, p.y, p.rotation, p.length, p.unit = -2.54, -7.62 if neg else 7.62, 90 if neg else 270, 3.81, number
+    report["units"][number] = {"shape": "supplies", "supplies": [p.number for p in pins]}
+    return _Unit(number, sorted(pins, key=_num_key), box_hint=Rect(-5.08, -3.81, 5.08, 3.81))
 
 
 def _layout_opamp(number: int, pins: list[Pin], report: dict, warnings: list[str]) -> _Unit:
@@ -489,7 +516,7 @@ def _layout_opamp(number: int, pins: list[Pin], report: dict, warnings: list[str
     for p in pins:
         n = p.name.replace(" ", "").upper()
         if p.etype == "power_in":
-            (sup_neg if GROUND.match(p.name) or "-" in n or n.startswith(("VEE", "VSS")) else sup_pos).append(p)
+            (sup_neg if _is_negative_supply(p) else sup_pos).append(p)
         elif p.etype in ("output", "tri_state", "open_collector", "open_emitter"):
             out.append(p)
         elif n.endswith("+") or n.startswith("+") or n in ("INP", "IN_P", "NONINV"):

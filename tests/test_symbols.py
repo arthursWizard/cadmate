@@ -257,6 +257,10 @@ def test_opamp_units_are_drawn_like_kicads():
     assert [(p.number, p.name, p.x, p.y, p.rotation) for p in s.pins_of(1)] == [
         (p.number, p.name, p.x, p.y, p.rotation) for p in ref.pins_of(1)]
     assert s.polylines[0].pts == ref.polylines[0].pts and s.polylines[0].fill == "background"
+    # The supply unit has no body, its pins where KiCad puts them; names sit 5 mil in, as KiCad's opamps do.
+    assert [(p.number, p.x, p.y, p.length) for p in s.pins_of(3)] == [(p.number, p.x, p.y, p.length) for p in ref.pins_of(3)]
+    assert not [r_ for r_ in s.rects if r_.unit == 3] and s.pin_names_offset == 0.127
+    assert not [w for w in r["warnings"] if "without a name" in w or "offset" in w]
     assert symbol_check.compare_symbols(s, ref)["same_pins"]
     assert symbol_check.compare_with_table(s, pins)["ok"]  # + / - / unnamed output still match the datasheet names
     assert r["summary"]["bodies"][0]["shape"] == "opamp"

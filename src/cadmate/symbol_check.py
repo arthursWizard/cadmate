@@ -158,7 +158,7 @@ def _check_body(sym: Symbol, small: bool, errors: list[str], warnings: list[str]
     if not sym.hide_pin_names and off:
         if off > 50:
             errors.append(f"pin name offset {sym.pin_names_offset} mm is over 50 mil (KLC S3.6)")
-        elif off < 20:
+        elif off < 20 and not sym.polylines:  # KiCad's opamps use 5 mil so + and - clear the supply names
             warnings.append(f"pin name offset {sym.pin_names_offset} mm is under 20 mil (KLC S3.6)")
         elif off > 20:
             warnings.append(f"pin name offset {sym.pin_names_offset} mm; KiCad's library uses 20 mil (0.508 mm) unless the drawing needs more (KLC S3.6)")
@@ -192,7 +192,9 @@ def _check_pins(sym: Symbol, small: bool, errors: list[str], warnings: list[str]
         if key in seen:
             errors.append(f"pin number {p.number} is used twice ({seen[key].name} and {p.name}) (KLC S4.1)")
         seen[key] = p
-    unnamed = [p.number for p in sym.pins if not p.name]
+    # KiCad's opamps leave the output unnamed on purpose.
+    triangles = {g.unit for g in sym.polylines if len(g.pts) == 4}
+    unnamed = [p.number for p in sym.pins if p.name in ("", "~") and p.unit not in triangles]
     if unnamed:
         warnings.append(f"pins without a name: {unnamed[:10]} (KLC S4.1)")
     bad = [p for p in sym.pins if p.etype not in PIN_TYPES]

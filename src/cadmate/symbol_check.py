@@ -121,8 +121,19 @@ def _check_fields(sym: Symbol, errors: list[str], warnings: list[str]) -> None:
         warnings.append("no keywords (KLC S6.2)")
     elif re.findall(r"\.\W|\.$|[,:;?!<>]", kw.value):
         errors.append(f"keywords contain punctuation: {kw.value!r} (KLC S6.2)")
-    if fp is not None and fp.value and not (props.get("ki_fp_filters") and props["ki_fp_filters"].value):
-        warnings.append("a default footprint but no footprint filters (KLC S5.2)")
+    if not (props.get("ki_fp_filters") and props["ki_fp_filters"].value):
+        warnings.append("no footprint filters; give fp_filters (or a default footprint to derive them from) so KiCad offers the right footprints (KLC S5.2)")
+    words = " ".join(p.value for k, p in props.items() if k in ("ki_keywords", "Description")).lower()
+    tokens = set(re.split(r"[\s,-]+", words))
+    keywords = (kw.value.lower() if kw else "")
+    if "opamp" in tokens and "operational-amplifier" not in keywords:
+        warnings.append("add operational-amplifier to the keywords, KiCad's library pairs it with opamp (KLC S6.2)")
+    if "operational" in tokens and "amplifier" in tokens and "opamp" not in keywords.split():
+        warnings.append("add opamp to the keywords, KiCad's library pairs it with operational amplifier (KLC S6.2)")
+    if "ldo" in tokens and not ("low-dropout" in words and "regulator" in words):
+        warnings.append("add low-dropout and regulator to the keywords, KiCad's library pairs them with LDO (KLC S6.2)")
+    if "low-dropout" in words and "regulator" in words and "ldo" not in keywords.split():
+        warnings.append("add ldo to the keywords, KiCad's library pairs it with low-dropout regulator (KLC S6.2)")
 
 
 def _check_body(sym: Symbol, small: bool, errors: list[str], warnings: list[str]) -> None:
@@ -188,10 +199,11 @@ def _check_pins(sym: Symbol, small: bool, errors: list[str], warnings: list[str]
         if not p.number:
             errors.append(f"pin {p.name!r} has no number (KLC S4.1)")
             continue
-        key = (p.number, p.unit, p.style)
-        if key in seen:
-            errors.append(f"pin number {p.number} is used twice ({seen[key].name} and {p.name}) (KLC S4.1)")
-        seen[key] = p
+        for n in p.numbers:
+            key = (n, p.unit, p.style)
+            if key in seen:
+                errors.append(f"pin number {n} is used twice ({seen[key].name} and {p.name}) (KLC S4.1)")
+            seen[key] = p
     # KiCad's opamps leave the output unnamed on purpose.
     triangles = {g.unit for g in sym.polylines if len(g.pts) == 4}
     unnamed = [p.number for p in sym.pins if p.name in ("", "~") and p.unit not in triangles]
@@ -238,6 +250,7 @@ def _check_stacks(sym: Symbol, errors: list[str], warnings: list[str]) -> None:
         if len(pins) < 2:
             continue
         where = f"stack at ({pins[0].x}, {pins[0].y})"
+        warnings.append(f"{where} ({pins[0].name}) is a legacy stack of {len(pins)} pins; KiCad 10 stacks natively, one pin numbered {'[' + ','.join(p.number for p in pins) + ']'} (KLC S4.3)")
         if len({p.name for p in pins}) > 1:
             errors.append(f"{where} mixes pin names {sorted({p.name for p in pins})}; pins on top of each other must be the same signal (KLC S4.3)")
             continue
@@ -289,15 +302,37 @@ def _check_types(sym: Symbol, errors: list[str], warnings: list[str]) -> None:
             errors.append(f"{_label(p)} is a hidden power input; power pins must be visible outside power symbols (KLC S4.6)")
 
 
+def is_converter(sym: Symbol) -> bool:
+    """kicad-library-utils treats any part with a power output as a power converter; KiCad's library
+    then files exceptions for MCUs with an on-chip regulator. Only parts with few signals count here."""
+    power_out = [p for p in sym.pins if p.etype == "power_out" and not p.hidden]
+    signals = [p for p in sym.pins if not p.hidden and p.etype not in ("power_in", "power_out")]
+    return bool(power_out) and len(signals) <= CONVERTER_MAX_SIGNALS
+
+
+def s42_exceptions_needed(sym: Symbol) -> dict[str, str]:
+    """Pins kicad-library-utils flags under KLC S4.2 that are placed so on purpose, by pin name, with
+    the reason; written as KLC_S4.2_<pin> fields, the way KiCad's own library records exceptions."""
+    power_out = [p for p in sym.pins if p.etype == "power_out" and not p.hidden]
+    if not power_out or is_converter(sym):
+        return {}
+    out = {}
+    for p in sym.pins:
+        if not p.hidden and p.etype == "power_in" and _match(p.name, POSITIVE_POWER) and p.side != "left":
+            out[p.name] = "Not a power converter: its power output is an on-chip regulator, so the supplies stay on top"
+    for p in power_out:
+        if p.side != "right":
+            out[p.name] = "On-chip regulator output, placed with the supplies it feeds"
+    return out
+
+
 def _check_placement(sym: Symbol, errors: list[str], warnings: list[str]) -> None:
     """KLC S4.2: grounds at the bottom, supplies at the top, a converter's input left and output right."""
     power_out = [p for p in sym.pins if p.etype == "power_out" and not p.hidden]
-    signals = [p for p in sym.pins if not p.hidden and p.etype not in ("power_in", "power_out")]
-    # kicad-library-utils treats any power output as a converter; KiCad's library then files
-    # exceptions for MCUs with an on-chip regulator. Only parts with few signals count here.
-    converter = bool(power_out) and len(signals) <= CONVERTER_MAX_SIGNALS
+    converter = is_converter(sym)
+    excepted = {k[len("KLC_S4.2_"):] for k in sym.properties if k.startswith("KLC_S4.2_")}
     for p in sym.pins:
-        if p.hidden:
+        if p.hidden or p.name in excepted:
             continue
         name = p.name.lower()
         if _match(name, GROUND) and p.side != "bottom":
@@ -308,7 +343,7 @@ def _check_placement(sym: Symbol, errors: list[str], warnings: list[str]) -> Non
                 why = "a power converter's input goes on the left" if converter else "positive supplies go at the top"
                 warnings.append(f"{_label(p)} is on the {p.side}; {why} (KLC S4.2)")
     for p in power_out:
-        if p.side != "right":
+        if p.side != "right" and p.name not in excepted:
             warnings.append(f"{_label(p)} is a power output on the {p.side}; power outputs go on the right (KLC S4.2)")
 
 
@@ -388,7 +423,8 @@ def compare_with_table(sym: Symbol, table: list[dict]) -> dict:
     warnings: list[str] = []
     by_number: dict[str, list[Pin]] = {}
     for p in sym.pins:
-        by_number.setdefault(p.number, []).append(p)
+        for n in p.numbers:
+            by_number.setdefault(n, []).append(p)
     wanted = set()
     for row in table or []:
         if not isinstance(row, dict) or row.get("number") in (None, ""):
@@ -422,7 +458,7 @@ def _sort_key(n: str):
 def compare_with_footprint(sym: Symbol, fp: fpmod.Footprint) -> dict:
     """Pins and pads must match by number, or KiCad cannot connect them on the board."""
     pads = {p.number for p in fp.pads if p.number and p.kind != "np_thru_hole"}
-    pins = {p.number for p in sym.pins}
+    pins = {n for p in sym.pins for n in p.numbers}
     errors, warnings = [], []
     no_pin = sorted(pads - pins, key=_sort_key)
     no_pad = sorted(pins - pads, key=_sort_key)
@@ -436,9 +472,14 @@ def compare_with_footprint(sym: Symbol, fp: fpmod.Footprint) -> dict:
 def compare_symbols(candidate: Symbol, reference: Symbol) -> dict:
     """Pin by pin differences between two symbols, matched by pin number."""
     def index(sym: Symbol) -> dict[str, Pin]:
+        # A legacy stack (hidden passives under a visible pin) reads as the visible pin, so it
+        # compares equal to KiCad 10's native stack of the same pads.
+        shown = {(p.unit, round(p.x, 3), round(p.y, 3), p.name): p for p in sym.pins if not p.hidden}
         out: dict[str, Pin] = {}
         for p in sym.pins:
-            out.setdefault(p.number, p)
+            lead = shown.get((p.unit, round(p.x, 3), round(p.y, 3), p.name), p) if p.hidden else p
+            for n in p.numbers:
+                out.setdefault(n, lead)
         return out
 
     a, b = index(candidate), index(reference)

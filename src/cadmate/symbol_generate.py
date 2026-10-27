@@ -130,7 +130,7 @@ def generate(
     bad = {k: v for k, v in shapes.items() if v not in ("rectangle", "opamp")}
     if bad:
         return _fail([f"unit_shapes must be rectangle or opamp, got {bad}"], warnings)
-    types = {p.number: p.etype for p in table}  # before stacking turns some into passives
+    rows = [(p.number, p.etype, p) for p in table]  # before stacking renumbers the stacks
     opamps = "opamp" in shapes.values()
     # KiCad's opamps set the names 5 mil in, so + and - clear the supply pin names beside them.
     sym = Symbol(name=name, pin_names_offset=OPAMP_NAME_OFFSET if opamps else PIN_NAME_OFFSET)
@@ -159,13 +159,16 @@ def generate(
     sym.properties = _fields(sym, reference, footprint, datasheet, description, keywords, filters, laid_out, length)
     if len(units) > 1 and not _interchangeable(laid_out):
         sym.units_locked = True
+    for pin_name, reason in symbol_check.s42_exceptions_needed(sym).items():
+        sym.properties[f"KLC_S4.2_{pin_name}"] = symbol.Property(reason, 0, 0, True, private=True)
+        report.setdefault("klc_exceptions", []).append(f"S4.2 {pin_name}: {reason}")
     report["fp_filters"] = filters
 
     text = to_kicad_sym(sym)
     parsed = symbol.parse_symbol(text)  # never hand out a symbol we cannot read back
     review = symbol_check.check_symbol(parsed)
     # Against the table as read (overbars converted, opamp inputs named + and -).
-    review_vs = symbol_check.compare_with_table(parsed, [{"number": p.number, "name": p.name, "type": types[p.number]} for p in table])
+    review_vs = symbol_check.compare_with_table(parsed, [{"number": n, "name": p.name, "type": t} for n, t, p in rows])
     errors = review["errors"] + review_vs["errors"]
     warnings += review["warnings"] + review_vs["warnings"]
     return {
@@ -292,7 +295,7 @@ def text_width(name: str) -> float:
 
 
 def _stacks(pins: list[Pin], stack_power: bool) -> list[_Slot]:
-    """One slot per visible pin. Power pins sharing a name stack, as KLC S4.3 allows."""
+    """One slot per pin drawn. Power and output pins sharing a name stack, as KLC S4.3 allows."""
     slots: list[_Slot] = []
     by_name: dict[str, _Slot] = {}
     for p in sorted(pins, key=lambda q: q._order):
@@ -314,14 +317,9 @@ def _stacks(pins: list[Pin], stack_power: bool) -> list[_Slot]:
         if "power_in" in types:
             lead = min((p for p in s.pins if p.etype == "power_in"), key=_num_key)
             rest = [p for p in s.pins if p is not lead]
-            for p in rest:
-                p.etype, p.hidden = "passive", True  # KLC S4.3: the stacked pins under a power input are hidden passives
             out.append(_Slot([lead] + sorted(rest, key=_num_key), s.group, s.order))
         elif types in ({"output"}, {"power_out"}):
-            ordered = sorted(s.pins, key=_num_key)
-            for p in ordered[1:]:
-                p.hidden = True
-            out.append(_Slot(ordered, s.group, s.order))
+            out.append(_Slot(sorted(s.pins, key=_num_key), s.group, s.order))
         else:  # passives alone may not stack (KLC S4.3); keep each pin
             out += [_Slot([p], p._group, p._order) for p in s.pins]
     return sorted(out, key=lambda s: s.order)
@@ -451,9 +449,12 @@ def _layout(number: int, pins: list[Pin], length: float, stack_power: bool, repo
     placed: list[Pin] = []
 
     def place(slot: _Slot, x: float, y: float, rotation: int):
-        for p in slot.pins:
-            p.x, p.y, p.rotation, p.length = x, y, rotation, length
-            placed.append(p)
+        # A stack is one pin in KiCad 10, numbered with all its pads (KLC S4.3).
+        p = slot.lead
+        if len(slot.pins) > 1:
+            p.number = symbol.stack_number([q.number for q in slot.pins])
+        p.x, p.y, p.rotation, p.length = x, y, rotation, length
+        placed.append(p)
 
     edge_x = round(half_w + length, 4)
     edge_y = round(half_h + length, 4)
@@ -478,7 +479,7 @@ def _layout(number: int, pins: list[Pin], length: float, stack_power: bool, repo
     rect = Rect(-round(half_w, 4), -round(half_h, 4), round(half_w, 4), round(half_h, 4), OUTLINE_WIDTH, "background", number, 1)
     report["units"][number] = {
         "left": names(left), "right": names(right), "top": names(top), "bottom": names(bottom),
-        "stacked": {s.lead.name: [p.number for p in s.pins] for s in slots if len(s.pins) > 1},
+        "stacked": {s.lead.name: s.lead.number for s in slots if len(s.pins) > 1},
         "hidden_nc": [p.number for p in nc],
         "body": [rect.xmax - rect.xmin, rect.ymax - rect.ymin],
     }
@@ -505,7 +506,8 @@ def _layout_supply_unit(number: int, pins: list[Pin], report: dict) -> _Unit:
     """The supply unit of a multi-amplifier part, drawn as KiCad's: no body, the pins where an amplifier's supplies go."""
     for p in pins:
         neg = _is_negative_supply(p)
-        p.x, p.y, p.rotation, p.length, p.unit = -2.54, -7.62 if neg else 7.62, 90 if neg else 270, 3.81, number
+        # KiCad's own sit 100 mil left, under an amplifier's supply pins; centred keeps KLC S3.1.
+        p.x, p.y, p.rotation, p.length, p.unit = 0.0, -7.62 if neg else 7.62, 90 if neg else 270, 3.81, number
     report["units"][number] = {"shape": "supplies", "supplies": [p.number for p in pins]}
     return _Unit(number, sorted(pins, key=_num_key), box_hint=Rect(-5.08, -3.81, 5.08, 3.81))
 
@@ -621,9 +623,9 @@ def _effects(indent: str, justify: str = "") -> str:
     return out + f"{indent})\n"
 
 
-def _property(key: str, value: str, x: float, y: float, hidden: bool, justify: str = "") -> str:
+def _property(key: str, value: str, x: float, y: float, hidden: bool, justify: str = "", private: bool = False) -> str:
     q = sexpr.quote
-    out = f"\t\t(property {q(key)} {q(value)}\n\t\t\t(at {_f(x)} {_f(y)} 0)\n\t\t\t(show_name no)\n\t\t\t(do_not_autoplace no)\n"
+    out = f"\t\t(property {'private ' if private else ''}{q(key)} {q(value)}\n\t\t\t(at {_f(x)} {_f(y)} 0)\n\t\t\t(show_name no)\n\t\t\t(do_not_autoplace no)\n"
     if hidden:
         out += "\t\t\t(hide yes)\n"
     return out + _effects("\t\t\t", justify) + "\t\t)\n"
@@ -640,7 +642,7 @@ def to_kicad_sym(sym: Symbol) -> str:
     for key, p in sym.properties.items():
         if key == "ki_fp_filters" and sym.units_locked:
             add(_property("ki_locked", "", 0, 0, False))  # where KiCad puts it
-        add(_property(key, p.value, p.x, p.y, p.hidden, p.justify))
+        add(_property(key, p.value, p.x, p.y, p.hidden, p.justify, p.private))
     if sym.units_locked and "ki_fp_filters" not in sym.properties:
         add(_property("ki_locked", "", 0, 0, False))
     for unit in sorted({r.unit for r in sym.rects} | {g.unit for g in sym.polylines} | {p.unit for p in sym.pins}):

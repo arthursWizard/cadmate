@@ -30,6 +30,52 @@ PIN_SHAPES = (
 SIDES = {0: "left", 180: "right", 90: "bottom", 270: "top"}
 
 
+def stack_number(numbers: list[str]) -> str:
+    """KiCad 10's native pin stack: one pin standing for several pads, numbered [1,5,8-10]."""
+    def key(n: str):
+        m = re.fullmatch(r"([A-Za-z]*)(\d+)", n)
+        return (m.group(1), int(m.group(2))) if m else (n, -1)
+
+    parts: list[str] = []
+    run: list[tuple[str, int]] = []
+
+    def flush():
+        if len(run) >= 3:
+            parts.append(f"{run[0][0]}{run[0][1]}-{run[-1][0]}{run[-1][1]}")
+        else:
+            parts.extend(f"{p}{n}" for p, n in run)
+        run.clear()
+
+    for n in sorted(numbers, key=key):
+        prefix, num = key(n)
+        if num < 0:
+            flush()
+            parts.append(n)
+        elif run and run[-1][0] == prefix and run[-1][1] + 1 == num:
+            run.append((prefix, num))
+        else:
+            flush()
+            run.append((prefix, num))
+    flush()
+    return "[" + ",".join(parts) + "]"
+
+
+def expand_number(number: str) -> list[str]:
+    """The pad numbers a pin stands for: itself, or every number in a native stack like [1,5,8-10]."""
+    m = re.fullmatch(r"\[(.*)\]", number.strip())
+    if not m:
+        return [number]
+    out = []
+    for part in m.group(1).split(","):
+        part = part.strip()
+        r = re.fullmatch(r"([A-Za-z]*)(\d+)-\1?(\d+)", part)
+        if r:
+            out += [f"{r.group(1)}{i}" for i in range(int(r.group(2)), int(r.group(3)) + 1)]
+        elif part:
+            out.append(part)
+    return out
+
+
 @dataclass
 class Pin:
     number: str
@@ -48,6 +94,10 @@ class Pin:
     @property
     def side(self) -> str:
         return SIDES.get(self.rotation % 360, "other")
+
+    @property
+    def numbers(self) -> list[str]:
+        return expand_number(self.number)
 
     @property
     def inner(self) -> tuple[float, float]:
@@ -95,6 +145,7 @@ class Property:
     y: float = 0.0
     hidden: bool = False
     justify: str = ""
+    private: bool = False  # KiCad's private fields; the library uses them for KLC exceptions
 
 
 @dataclass
@@ -164,7 +215,7 @@ def _property(node: sexpr.Node) -> tuple[str, Property]:
     justify = ""
     if eff is not None and eff.child("justify") is not None:
         justify = " ".join(eff.child("justify").atoms())
-    return key, Property(value, xy[0], xy[1], hidden, justify)
+    return key, Property(value, xy[0], xy[1], hidden, justify, "private" in node.items[1:2])
 
 
 def _unit_style(sub_name: str) -> tuple[int, int]:

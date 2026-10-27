@@ -33,7 +33,8 @@ To review an existing symbol, run `check_symbol`, with `pins` from the datasheet
 ## Fields (KLC S6)
 
 - `description`: what it is, then the package, like KiCad's: "USB serial converter, UART, SOIC-16", "1A Low Dropout regulator, positive, 3.3V fixed output, SOT-223". Don't repeat the part name.
-- `keywords`: space-separated search words not already in the description, no punctuation: "USB UART serial converter".
+- `keywords`: space-separated search words not already in the description, no punctuation: "USB UART serial converter". KiCad's library pairs some terms: with opamp add operational-amplifier, with LDO add low-dropout and regulator.
+- Footprint filters: derived from `footprint`; for a part without a default footprint, pass `fp_filters` (e.g. `["SOIC*3.9x4.9mm*P1.27mm*", "DIP*W7.62mm*"]`) so KiCad offers the right footprints.
 - `reference`: U for ICs (default); J connectors, Q transistors, D diodes, K relays, Y crystals, SW switches.
 - `datasheet`: the URL. Footprint filters come from the footprint name unless you pass `fp_filters`.
 
@@ -41,7 +42,8 @@ To review an existing symbol, run `check_symbol`, with `pins` from the datasheet
 
 - mm, KiCad's symbol frame: Y points up.
 - Pins end on the 100 mil (2.54 mm) grid; 100 mil long, longer for 3-character pin numbers. Body centred on the origin, 10 mil outline filled with the background colour, pin names 20 mil inside.
-- Power pins that share a name stack under the lowest-numbered one, the rest hidden passive (KLC S4.3). Pins that share a name but are not power (say two SW outputs of type passive) stay separate.
+- Power and output pins that share a name become one pin numbered with all their pads, KiCad 10's native stack: IOVDD on pads 1, 10 and 22 is pin `[1,10,22]` (KLC S4.3). Pins that share a name but are passive (say two SW pins) stay separate.
+- A chip with an on-chip regulator output (power_out) but many signals keeps its supplies on top; cadmate records that as a `KLC_S4.2_<pin>` exception field, as KiCad's own library does, since KiCad's checker would otherwise take the part for a power converter.
 - NC pins are hidden, type no_connect, inside the body.
 - Files are written in KiCad 10's format; cadmate needs KiCad 10 or later.
 

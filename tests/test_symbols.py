@@ -81,7 +81,7 @@ def test_ne555_matches_kicad_library():
 def test_regulator_is_laid_out_as_a_power_converter():
     r, s = build("AMS1117-3.3", AMS1117, footprint="Package_TO_SOT_SMD:SOT-223-3_TabPin2",
                  datasheet="http://www.advanced-monolithic.com/pdf/ds1117.pdf",
-                 description="1A Low Dropout regulator, positive, 3.3V fixed output, SOT-223", keywords="linear regulator ldo fixed positive")
+                 description="1A Low Dropout regulator, positive, 3.3V fixed output, SOT-223", keywords="linear ldo low-dropout fixed")
     assert r["warnings"] == []
     assert symbol_check.compare_symbols(s, symbol.read(LIB, "AMS1117-3.3"))["same_pins"]
     assert {p.name: p.side for p in s.pins} == {"GND": "bottom", "VO": "right", "VI": "left"}
@@ -104,8 +104,10 @@ def test_groups_and_sides_follow_the_table():
     left = sorted((p for p in s.pins if p.side == "left"), key=lambda p: -p.y)
     assert [p.name for p in left] == ["UD+", "UD-", "XI", "XO", "R232"]
     assert left[1].y - left[2].y == pytest.approx(5.08)  # an empty row between groups
-    # KiCad's own CH340G has its regulator output on top, which KLC flags; so do we.
-    assert any("V3" in w and "KLC S4.2" in w for w in r["warnings"])
+    # V3 is an on-chip regulator output kept on top, as in KiCad's own CH340G. kicad-library-utils would
+    # call the part a power converter; cadmate records the exceptions the way KiCad's library does.
+    assert {k for k, v in s.properties.items() if v.private} == {"KLC_S4.2_V3", "KLC_S4.2_VCC"}
+    assert not any("KLC S4.2" in w for w in r["warnings"])
 
 
 def test_rp2040_stacks_power_pins_like_kicad():
@@ -118,10 +120,10 @@ def test_rp2040_stacks_power_pins_like_kicad():
     assert cmp["same_connections"], cmp
     # Only the regulator output differs: KiCad keeps it on top under a KLC exception, cadmate puts power outputs right.
     assert [d["number"] for d in cmp["differences"]] == ["45"]
-    assert r["report"]["units"][1]["stacked"] == {"IOVDD": ["1", "10", "22", "33", "42", "49"], "DVDD": ["23", "50"]}
-    iovdd = [p for p in s.pins if p.name == "IOVDD"]
-    assert [(p.number, p.etype, p.hidden) for p in iovdd][:2] == [("1", "power_in", False), ("10", "passive", True)]
-    assert len({(p.x, p.y) for p in iovdd}) == 1
+    # KiCad 10's native stacks: one pin per supply, numbered with all its pads.
+    assert r["report"]["units"][1]["stacked"] == {"IOVDD": "[1,10,22,33,42,49]", "DVDD": "[23,50]"}
+    assert [(p.number, p.etype, p.hidden) for p in s.pins if p.name == "IOVDD"] == [("[1,10,22,33,42,49]", "power_in", False)]
+    assert not any(p.hidden for p in s.pins)
     assert {p.side for p in s.pins if p.etype == "power_in" and not p.hidden} == {"top", "bottom"}
     assert r["warnings"] == ["pin 56: name 'QSPI_SS#' written as '~{QSPI_SS}' (KiCad overbar)"]
 
@@ -155,6 +157,14 @@ def test_table_errors():
     assert "given twice" in symbol_generate.generate("X", [{"number": 1, "name": "A", "type": "I"}, {"number": 1, "name": "B", "type": "I"}])["errors"][0]
     assert "KLC 1.7" in symbol_generate.generate("X Y", [{"number": 1, "name": "A", "type": "I"}])["errors"][0]
     assert "unknown type" in symbol_generate.generate("X", [{"number": 1, "name": "A", "type": "weird"}])["errors"][0]
+
+
+def test_native_stack_numbers():
+    assert symbol.stack_number(["4", "1", "2", "3", "9"]) == "[1-4,9]"
+    assert symbol.stack_number(["A1", "A2", "A3", "B1"]) == "[A1-A3,B1]"
+    assert symbol.expand_number("[1-4,9]") == ["1", "2", "3", "4", "9"]
+    assert symbol.expand_number("[A1-A3, B1]") == ["A1", "A2", "A3", "B1"]
+    assert symbol.expand_number("7") == ["7"]
 
 
 def test_name_and_type_shorthand():
@@ -263,8 +273,8 @@ def test_opamp_units_are_drawn_like_kicads():
     assert [(p.number, p.name, p.x, p.y, p.rotation) for p in s.pins_of(1)] == [
         (p.number, p.name, p.x, p.y, p.rotation) for p in ref.pins_of(1)]
     assert s.polylines[0].pts == ref.polylines[0].pts and s.polylines[0].fill == "background"
-    # The supply unit has no body, its pins where KiCad puts them; names sit 5 mil in, as KiCad's opamps do.
-    assert [(p.number, p.x, p.y, p.length) for p in s.pins_of(3)] == [(p.number, p.x, p.y, p.length) for p in ref.pins_of(3)]
+    # The supply unit has no body, as KiCad's; its pins are centred (KiCad's sit 100 mil left, which KLC S3.1 flags).
+    assert [(p.number, p.x, p.y, p.length) for p in s.pins_of(3)] == [(p.number, 0.0, p.y, p.length) for p in ref.pins_of(3)]
     assert not [r_ for r_ in s.rects if r_.unit == 3] and s.pin_names_offset == 0.127
     assert not [w for w in r["warnings"] if "without a name" in w or "offset" in w]
     assert symbol_check.compare_symbols(s, ref)["same_pins"]

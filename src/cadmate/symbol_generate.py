@@ -26,6 +26,8 @@ PIN_NAME_OFFSET = 0.508  # 20 mil, KLC S3.6
 OUTLINE_WIDTH = 0.254  # 10 mil, KLC S3.3
 GAP = 2.54  # between the left and right pin names
 NAME_CLEARANCE = 0.635  # between the end of a top or bottom pin name and the side names under it
+SIDE_NAME_GAP = 0.4  # sideways between a top or bottom pin name and a side name level with it, by text_width's
+# estimate (real text is about 0.1 mm per character narrower); KiCad's NE555 has 0.48
 MIN_HALF_WIDTH = 5.08
 
 # Datasheet shorthand -> KiCad electrical type.
@@ -285,7 +287,9 @@ def _pin_length(table: list[Pin], stacks: bool) -> float:
     length = GRID if longest <= 2 else 3.81 if longest == 3 else 5.08
     names = [(p.unit, p.name.lower()) for p in table if p.etype in ("power_in", "power_out", "output") and p.name]
     if stacks and len(names) != len(set(names)):
-        length = max(length, 3.81)  # room along the pin for a native stack's numbers and braces, as KiCad's RP2040 has
+        # KiCad draws a native stack's numbers as columns across the pin with braces 4.3 mm tall: on a 3.81 mm
+        # pin the braces reach into the body, on 5.08 mm they clear it.
+        length = max(length, 5.08)
     return length
 
 
@@ -412,6 +416,21 @@ def _spread(col: list) -> list:
     return out
 
 
+STACK_COLUMN = 1.65  # KiCad 10 sets a stack's numbers in columns this far apart, measured on kicad-cli SVG exports
+STACK_EDGE = 1.9  # the first column, the braces and a margin
+
+
+def _spread_across(row: list) -> list:
+    """Top and bottom pins: KiCad draws a stack's number columns to the left of the pin (lower X), so the empty
+    slots go there, enough that the columns end clear of the next pin's line and number."""
+    out: list = []
+    for s in row:
+        if s is not None and len(s.pins) > 1:
+            out += [None] * (math.ceil(((len(s.pins) - 1) * STACK_COLUMN + STACK_EDGE) / GRID) - 1)
+        out.append(s)
+    return out
+
+
 def _ceil_grid(v: float, base: float = GRID) -> float:
     return round(math.ceil(v / base - 1e-9) * base, 4)
 
@@ -423,7 +442,7 @@ def _layout(number: int, pins: list[Pin], length: float, stack_power: bool, repo
     slots = _stacks([p for p in pins if p.etype != "no_connect"], stack_power)
     sides = _sides(slots, warnings)
     left, right = _spread(_column(sides["left"])), _spread(_column(sides["right"]))
-    top, bottom = _spread(sides["top"]), _spread(sides["bottom"])
+    top, bottom = _spread_across(sides["top"]), _spread_across(sides["bottom"])
 
     def names(col):
         return [s.lead.name for s in col if s is not None]
@@ -464,7 +483,9 @@ def _layout(number: int, pins: list[Pin], length: float, stack_power: bool, repo
                 if s is None:
                     continue
                 reach = PIN_NAME_OFFSET + text_width(s.lead.name) + FONT
-                hits = [sign * y + reach + NAME_CLEARANCE for y, x1, x2 in rows if x1 - 0.8 <= x <= x2 + 0.8]
+                # A name closer than SIDE_NAME_GAP sideways to a side name reads as one word with it, so it must clear it vertically.
+                near = FONT / 2 + SIDE_NAME_GAP
+                hits = [sign * y + reach + NAME_CLEARANCE for y, x1, x2 in rows if x1 - near <= x <= x2 + near]
                 n = max([reach] + hits)
                 if sign > 0:
                     up = max(up, n)

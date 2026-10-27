@@ -44,6 +44,8 @@ FAMILIES: dict[str, dict] = {
             "moves a through-hole pad's copper off its hole (x, y stay the hole), e.g. to reach past a module's edge. Holes and pads "
             "then follow IPC-7251 for the density; give leads as [min, max] where the datasheet has a range. "
             "pad_rows: [{first, count, x, y, dx, dy, width, height, ...}] numbers pads first, first+1, ... stepping by (dx, dy). "
+            "An exposed or thermal pad takes paste_coverage (0.65 typical, or the datasheet's stencil figure) and optionally "
+            "paste_grid [columns, rows], to split its solder paste into openings as the qfn family does. "
             "Coordinates in KiCad's frame, Y down. origin: auto (SMD centre of the pads, through-hole pin 1), center, pin1 or as_given."
         ),
     },
@@ -320,11 +322,16 @@ def _qfn_counts(params: dict) -> tuple[int, int]:
     return px, py
 
 
-def _paste_grid(w: float, h: float, coverage: float) -> list[Pad]:
+def _paste_grid(w: float, h: float, coverage: float, cx: float = 0.0, cy: float = 0.0, grid=None) -> list[Pad]:
     """Split the exposed pad's paste into a grid of openings, so the part does not float on one big blob."""
     if not 0.2 <= coverage <= 1.0:
         raise ValueError("paste_coverage must be between 0.2 and 1")
-    nx, ny = max(1, math.ceil(w / 1.25 - 1e-9)), max(1, math.ceil(h / 1.25 - 1e-9))
+    if grid is not None:
+        nx, ny = int(grid[0]), int(grid[1])
+        if nx < 1 or ny < 1:
+            raise ValueError("paste_grid must be [columns, rows], each at least 1")
+    else:
+        nx, ny = max(1, math.ceil(w / 1.25 - 1e-9)), max(1, math.ceil(h / 1.25 - 1e-9))
     k = math.sqrt(coverage)
     pw, ph = round(w / nx * k, 2), round(h / ny * k, 2)
     out = []
@@ -332,7 +339,7 @@ def _paste_grid(w: float, h: float, coverage: float) -> list[Pad]:
         for j in range(ny):
             x = (i - (nx - 1) / 2) * w / nx
             y = (j - (ny - 1) / 2) * h / ny
-            out.append(Pad("", "smd", "roundrect", round(x, 6), round(y, 6), 0.0, pw, ph, None, ["F.Paste"]))
+            out.append(Pad("", "smd", "roundrect", round(cx + x, 6), round(cy + y, 6), 0.0, pw, ph, None, ["F.Paste"]))
     return out
 
 
@@ -351,6 +358,19 @@ def _custom(params: dict, density: str = "nominal") -> Design:
         pads.append(_custom_pad(spec, density, sizing))
     if not pads:
         raise ValueError("custom needs pads or pad_rows")
+    ep_paste = []
+    for spec in [r for r in params.get("pad_rows") or [] if r.get("paste_coverage") is not None] + \
+            [q for q in params.get("pads") or [] if q.get("paste_coverage") is not None]:
+        numbers = [str(int(spec["first"]) + i) for i in range(int(spec["count"]))] if "first" in spec else [str(spec["number"])]
+        for p in pads:
+            if p.number not in numbers:
+                continue
+            if p.kind != "smd" or p.rotation % 180:
+                raise ValueError(f"pad {p.number}: paste_coverage applies to SMD pads at 0 or 180 degrees")
+            p.layers = ["F.Cu", "F.Mask"]
+            grid = _paste_grid(p.width, p.height, float(spec["paste_coverage"]), p.x, p.y, spec.get("paste_grid"))
+            pads += grid
+            ep_paste.append(f"pad {p.number}: {len(grid)} paste openings, {round(100 * float(spec['paste_coverage']))}% coverage")
 
     bw, bl = float(params["body_width"]), float(params["body_length"])
     ext = _extents(pads)
@@ -383,6 +403,8 @@ def _custom(params: dict, density: str = "nominal") -> Design:
         cx, cy = body.center
         corner = (-1 if pin1.x <= cx else 1, -1 if pin1.y <= cy else 1)
     report = {"origin": origin, "shifted_by": [round(-sx, 6), round(-sy, 6)], "through_hole": tht}
+    if ep_paste:
+        report["ep_paste"] = ep_paste
     if sizing:
         report["ipc7251_holes"] = [{k: v for k, v in s.items() if k != "warning"} for s in sizing.values()]
         report["warnings"] = [f"pads {s['pads']}: {s['warning']}" for s in sizing.values() if "warning" in s]
@@ -584,6 +606,12 @@ def _silk(design: Design) -> tuple[list, list]:
         dx, dy = pin1.x - ext.center[0], pin1.y - ext.center[1]
         if abs(dx) < 1e-6 and abs(dy) < 1e-6:
             dx = -1.0
+        # Point along the axis of the edge pad 1 sits on, so the arrow lands outside the body: on a tall QFN pad 1
+        # is nearer the centre in X than in Y, but it sits on the left edge.
+        to_x = min(box.xmin - ext.xmin, ext.xmax - box.xmax)
+        to_y = min(box.ymin - ext.ymin, ext.ymax - box.ymax)
+        if abs(to_x - to_y) > 1e-6:
+            dx, dy = (dx or -1.0, 0.0) if to_x < to_y else (0.0, dy or -1.0)
         gap, length, half = keep + 0.01, 0.33, 0.24
         if abs(dx) >= abs(dy):  # arrow beside pad 1, pointing at it along X
             s = -1 if dx < 0 else 1

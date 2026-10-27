@@ -286,8 +286,9 @@ def _check_types(sym: Symbol, errors: list[str], warnings: list[str]) -> None:
     for pins in _stacks(sym).values():
         visible = [p for p in pins if not p.hidden]
         p = (visible or pins)[0]
-        if _match(p.name.lower(), POWER_NAMES) and p.etype != "power_in":
-            errors.append(f"{_label(p)} is a power pin by its name but has type {p.etype}; use power_in (KLC S4.4)")
+        if _match(p.name.lower(), POWER_NAMES) and p.etype not in ("power_in", "power_out"):
+            errors.append(f"{_label(p)} is a power pin by its name but has type {p.etype}; use power_in, or "
+                          f"power_out if the part drives this rail for other parts, like a regulator output (KLC S4.4)")
     for p in sym.pins:
         if re.search(r"~\{.+\}", p.name) and p.shape == "inverted":
             errors.append(f"{_label(p)} is inverted twice: an overbar on the name and an inverted pin shape (KLC S4.4)")

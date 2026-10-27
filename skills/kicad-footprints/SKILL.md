@@ -15,9 +15,9 @@ Most parts in standard packages (SOIC, TSSOP, QFN, SOT-23, 0603...) already have
 
 1. Find the package drawing and, if there is one, the **recommended land pattern** (often called "recommended footprint", "PCB layout" or "solder pad layout"). Ask the user for the datasheet if you don't have it. Never guess a dimension; ask.
 2. Pick the family from `list_footprint_families`:
-   - Recommended land pattern given: `custom`, with the pads exactly as drawn. The manufacturer's pattern wins over IPC.
+   - Recommended land pattern given: `custom`, with the pads exactly as drawn. The manufacturer's pattern wins over IPC. For a QFN/DFN this means `pad_rows` for the four sides and the exposed pad in `pads` with `paste_coverage` (the datasheet's stencil figure, or 0.65) so its paste is split like the `qfn` family's; give `paste_grid: [columns, rows]` to match the stencil drawing's openings. Without it the exposed pad gets one full paste opening, which the review flags.
    - Otherwise gull-wing on two sides: `soic`. No-lead (QFN/DFN): `qfn`. Anything else: `custom`, deriving pads from the drawing and saying in your reply that you did.
-3. Read the dimensions with their **tolerances**. For `soic` and `qfn` give min and max, not just nominal: `[0.31, 0.51]`, `[min, nom, max]` or `"6.0+/-0.2"`. The tolerances change the pad size; nominals alone give pads that are too short.
+3. Read the dimensions with their **tolerances**. For `soic` and `qfn` give min and max, not just nominal: `[0.31, 0.51]`, `[min, nom, max]` or `"6.0+/-0.2"`. The tolerances change the pad size; nominals alone give pads that are too short. When the drawing gives only a maximum (often the height, "A 1.0 MAX"), use it and tell the user you did. Package drawings and land patterns rarely survive text extraction: render those pages to images (for example with pypdfium2 or `pdftoppm`) and read the picture.
 4. `generate_footprint` into a project-local library, for example `<project>/footprints.pretty` (see "Files"). Pass `datasheet` with the URL so it ends up in the description. It reviews the result and writes nothing if there are errors; fix the inputs and run again.
 5. Show the user the warnings and the `report` (pad size, IPC values). If KiCad's library has the same package, run `compare_footprints` against it and report the differences.
 6. Ask the user to open the footprint in KiCad's footprint editor and confirm pin 1 and the pad layout against the datasheet's drawing before using it.
@@ -67,7 +67,7 @@ The same values feed `package_params` for the 3D model (`kicad-3d-models` skill)
 - Pin 1 top left for `soic` and `qfn`, counted anticlockwise seen from the top.
 - Courtyard 0.25 mm around body and pads on a 0.01 mm grid; use `courtyard_clearance: 0.5` for connectors and large parts.
 - Silkscreen 0.2 mm clear of pads, with an arrow at pin 1. Body outline on F.Fab with the pin 1 corner chamfered.
-- Exposed pads get split paste openings (about 65% coverage), and the signal pads are kept 0.2 mm from the exposed pad.
+- Exposed pads get split paste openings (about 65% coverage), and the signal pads are kept 0.2 mm from the exposed pad. In `custom`, ask for it per pad with `paste_coverage`.
 - Files are written in KiCad 10's format; cadmate needs KiCad 10 or later.
 
 ## Files

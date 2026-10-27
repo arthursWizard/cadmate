@@ -31,7 +31,11 @@ SIDES = {0: "left", 180: "right", 90: "bottom", 270: "top"}
 
 
 def stack_number(numbers: list[str]) -> str:
-    """KiCad 10's native pin stack: one pin standing for several pads, numbered [1,5,8-10]."""
+    """KiCad 10's native pin stack: one pin standing for several pads, numbered [1,5,8,9,10].
+
+    Always a comma list, as KiCad's own library writes them: KiCad draws a list as short columns across the pin,
+    but a range like [8-10] as one line along it, which runs past the pin into the body.
+    """
     def key(n: str):
         m = re.fullmatch(r"([A-Za-z]*)(\d+)", n)
         return (m.group(1), int(m.group(2))) if m else (n, -1)
@@ -40,10 +44,7 @@ def stack_number(numbers: list[str]) -> str:
     run: list[tuple[str, int]] = []
 
     def flush():
-        if len(run) >= 3:
-            parts.append(f"{run[0][0]}{run[0][1]}-{run[-1][0]}{run[-1][1]}")
-        else:
-            parts.extend(f"{p}{n}" for p, n in run)
+        parts.extend(f"{p}{n}" for p, n in run)
         run.clear()
 
     for n in sorted(numbers, key=key):

@@ -22,6 +22,8 @@ The `kicad-symbols`, `kicad-footprints` and `kicad-3d-models` skills hold the de
 
 ## What it writes
 
+`generate_part` writes libraries into a project folder; it does not make the KiCad project itself. If the folder has no `.kicad_pro` yet, ask the user to create the project there in KiCad (File > New Project) so the project library tables are picked up.
+
 - `<project>/<library>.kicad_sym`: the symbol, its Footprint field `<library>:<footprint name>` and footprint filters that match it.
 - `<project>/<library>.pretty/<footprint name>.kicad_mod`, linking `${KIPRJMOD}/<library>.3dshapes/<footprint name>.step` at offset 0.
 - `<project>/<library>.3dshapes/<footprint name>.step`, built in the footprint's frame, so it needs no offset or rotation.
@@ -32,7 +34,7 @@ Existing files are only replaced with `overwrite: true`, with `.bak` copies.
 ## The 3D model
 
 - `soic` and `qfn`: a proper package model, body and leads as separate solids, pin 1 dimple, leads on every pad.
-- `custom`: a body box over the footprint's body outline from `standoff` to `height`, with a lead in every through-hole pad and a terminal under every SMD pad. Leads are round (`lead_diameter`, else the hole minus 0.2 mm) or square/flat (`lead_width` and `lead_thickness`), reach `lead_below` mm under the board (3 by default, 0 for none), and get a shoulder into the body's side when they stand beside it (DIP). `lead_above` makes header posts stand that far above the body. Good for clearances and enclosures. For a module or connector whose looks matter, build it in FreeCAD (see `kicad-3d-models`) and pass `model: {path, frame}`:
+- `custom`: a body box over the footprint's body outline from `standoff` to `height`, with a lead in every through-hole pad and a terminal under every SMD pad. With `standoff` 0 (QFN, LGA, a manufacturer's no-lead land pattern) the terminals stop at the body's edge, so a QFN entered as `custom` gets a model of the right size. Leads are round (`lead_diameter`, else the hole minus 0.2 mm) or square/flat (`lead_width` and `lead_thickness`), reach `lead_below` mm under the board (3 by default, 0 for none), and get a shoulder into the body's side when they stand beside it (DIP). `lead_above` makes header posts stand that far above the body. Good for clearances and enclosures. For a module or connector whose looks matter, build it in FreeCAD (see `kicad-3d-models`) and pass `model: {path, frame}`:
   - `frame: "datasheet"` when you built it in the datasheet's pad coordinates (the ones you gave the footprint). cadmate moves it with the footprint's origin, which goes to pin 1 for through-hole parts.
   - `frame: "footprint"` (default) when it is already in the footprint's frame; `offset` and `rotate` as KiCad's.
 - `cutout: true` in `model` when the board has a cutout under the part, as for a castellated module with parts on its underside soldered flat; the model may then reach below the board.
@@ -40,4 +42,4 @@ Existing files are only replaced with `overwrite: true`, with `.bak` copies.
 
 ## Checking an existing part
 
-`check_part` with the symbol library (and `name`) follows the symbol's Footprint field through the project's `fp-lib-table` to the footprint, then the footprint's model link to the STEP, and reports: missing footprint or model file, footprint filters that hide the footprint, pins without pads and pads without pins, the footprint review, and the model's placement over the pads. Give `pins` to compare the symbol with the datasheet's table, and `body_length`, `body_width`, `body_height` to check the model's size. The footprint gets `review_footprint`'s review (see the `kicad-footprints` skill), so `datasheet_pads`, `leads`, `body`, `castellated` and `underside_parts` work here too.
+`check_part` with the symbol library (and `name`) follows the symbol's Footprint field through the project's `fp-lib-table` to the footprint, then the footprint's model link to the STEP, and reports: missing footprint or model file, footprint filters that hide the footprint, pins without pads and pads without pins, the footprint review, and the model's placement over the pads. Give `pins` to compare the symbol with the datasheet's table, and `body_width`, `body_length`, `body_height` to check the model's size. As in the footprint families, width is along the footprint's X and length along its Y: a 5x7 mm QFN drawn tall is width 5, length 7. A model that fits the sizes turned 90 degrees is reported as such. The footprint gets `review_footprint`'s review (see the `kicad-footprints` skill), so `datasheet_pads`, `leads`, `body`, `castellated` and `underside_parts` work here too.

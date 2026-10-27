@@ -51,6 +51,9 @@ FAMILIES: dict[str, dict] = {
 # Only the soic and qfn values need tolerances; the rest are plain numbers.
 TOLERANCED = {"body_width", "body_length", "overall_width", "lead_width", "lead_length"}
 
+# 3D model values (see model.py), accepted so one parameter set serves footprint and model.
+MODEL_ONLY = {"height", "standoff", "lead_thickness", "terminal_thickness", "lead_below", "lead_above", "lead_diameter"}
+
 SILK_WIDTH = 0.12
 FAB_WIDTH = 0.1
 COURTYARD_WIDTH = 0.05
@@ -96,7 +99,7 @@ def generate(
     if missing:
         return _fail([f"missing {k}" for k in missing])
     warnings: list[str] = []
-    unknown = sorted(set(params) - set(spec["required"]) - set(spec["optional"]) - {"height", "standoff"})
+    unknown = sorted(set(params) - set(spec["required"]) - set(spec["optional"]) - MODEL_ONLY)
     if unknown:
         warnings.append(f"ignored unknown parameters: {unknown}")
 

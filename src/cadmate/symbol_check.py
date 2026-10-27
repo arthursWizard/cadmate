@@ -32,7 +32,7 @@ SUGGESTED_TYPES = {  # KLC S4.4, warnings only
 }
 CONVERTER_MAX_SIGNALS = 10  # more signal pins than this and a power output is an on-chip regulator
 SMALL_SYMBOL = 800 * MIL  # KLC S3.1: smaller symbols may sit 50 mil off centre
-CHAR_WIDTH = 1.05
+CHAR_WIDTH = 1.2  # as symbol_generate
 
 
 def valid_name(name: str) -> bool:

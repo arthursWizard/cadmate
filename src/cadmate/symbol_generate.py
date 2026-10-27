@@ -21,10 +21,11 @@ from . import sexpr, symbol, symbol_check
 from .symbol import GRID, PIN_SHAPES, PIN_TYPES, Pin, Rect, Symbol
 
 FONT = 1.27  # 50 mil, KLC S3.2
-CHAR_WIDTH = 1.05  # mm per character of KiCad's stroke font at 1.27 mm; a little over the average so names do not touch
+CHAR_WIDTH = 1.2  # mm per character of KiCad's stroke font at 1.27 mm, measured on kicad-cli renders, plus a little
 PIN_NAME_OFFSET = 0.508  # 20 mil, KLC S3.6
 OUTLINE_WIDTH = 0.254  # 10 mil, KLC S3.3
 GAP = 2.54  # between the left and right pin names
+NAME_CLEARANCE = 0.635  # between the end of a top or bottom pin name and the side names under it
 MIN_HALF_WIDTH = 5.08
 
 # Datasheet shorthand -> KiCad electrical type.
@@ -409,7 +410,7 @@ def _layout(number: int, pins: list[Pin], length: float, stack_power: bool, repo
             need = max(need, reach + FONT)
             for y, _, x1, x2 in rows:
                 if x1 - 0.8 <= x <= x2 + 0.8:
-                    need = max(need, sign * y + reach + FONT)
+                    need = max(need, sign * y + reach + FONT + NAME_CLEARANCE)
     if not left and not right and top and bottom:
         need = max(need, (tw + bw) / 2 + PIN_NAME_OFFSET + FONT)
     half_h = _ceil_grid(need + length) - length
@@ -483,12 +484,15 @@ def _filters(fp_filters, footprint: str | None) -> list[str]:
 
 
 def _fields(sym: Symbol, reference, footprint, datasheet, description, keywords, filters, units: list[_Unit], length: float):
-    # Reference and Value above the first unit's body (clear of top pins), left aligned to its corner.
-    rect = units[0].rect
-    has_top = any(p.side == "top" and p.unit == units[0].number for p in sym.pins)
-    has_bottom = any(p.side == "bottom" and p.unit == units[0].number for p in sym.pins)
-    top = rect.ymax + (length if has_top else 0.0)
-    bottom = rect.ymin - (length if has_bottom else 0.0)
+    # The fields are shared by all units, so they go above and below every unit's pins,
+    # aligned to the corners of the narrowest body.
+    def ends(u: _Unit, side: str) -> float:
+        return length if any(p.side == side and p.unit == u.number and not p.hidden for p in sym.pins) else 0.0
+
+    top = max(u.rect.ymax + ends(u, "top") for u in units)
+    bottom = min(u.rect.ymin - ends(u, "bottom") for u in units)
+    narrow = min((u.rect for u in units), key=lambda r: r.xmax - r.xmin)
+    rect = symbol.Rect(narrow.xmin, bottom, narrow.xmax, top)
     ref_y = _ceil_grid(top + 1.27, 1.27)
     width = rect.xmax - rect.xmin
     props = {"Reference": symbol.Property(reference, rect.xmin, ref_y, False, "left")}

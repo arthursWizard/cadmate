@@ -234,3 +234,11 @@ def test_generate_symbol_tool_writes_and_refuses_to_overwrite(tmp_path):
     assert not ch["ok"] and "no pad" in ch["errors"][0]
     review = server.check_symbol(str(lib), "NE555D", pins=NE555, footprint_path=str(SOIC))
     assert review["ok"], review
+
+
+def test_fields_clear_the_pins_of_every_unit():
+    r, s = build("LM358", LM358, datasheet="https://example.com/ds.pdf", description="Dual opamp, SOIC-8", keywords="dual")
+    ref, value = s.properties["Reference"], s.properties["Value"]
+    top = max(p.y for p in s.pins)
+    bottom = min(p.y for p in s.pins)
+    assert ref.y > top and (value.y > top or value.y < bottom)

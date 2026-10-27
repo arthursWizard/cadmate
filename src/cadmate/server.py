@@ -6,34 +6,15 @@ cover the KiCad side and the checks that tie the two together.
 
 from __future__ import annotations
 
-import os
-import re
 import shutil
 from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 
-from . import apps, check, footprint, generate, ipc, packages, symbol, symbol_check, symbol_generate
+from . import apps, check, footprint, generate, ipc, model, packages, part, symbol, symbol_check, symbol_generate
 from .footprint import read as _read_footprint  # generate_symbol's footprint argument shadows the module
 
 server = MCPServer("cadmate")
-
-_VAR = re.compile(r"\$\{([A-Za-z0-9_]+)\}")
-
-
-def _resolve(path: str, footprint_dir: Path | None = None) -> Path:
-    """Expand ${VARS} (KiCad style) from the environment; ${KIPRJMOD} falls back to the footprint's folder."""
-
-    def sub(m: re.Match) -> str:
-        name = m.group(1)
-        if name in os.environ:
-            return os.environ[name]
-        if name == "KIPRJMOD" and footprint_dir is not None:
-            return str(footprint_dir)
-        raise ValueError(f"${{{name}}} is not set; pass model_path explicitly or set it in the server's environment")
-
-    return Path(_VAR.sub(sub, path)).expanduser()
-
 
 @server.tool()
 def environment() -> dict:
@@ -54,6 +35,9 @@ def environment() -> dict:
             "check_symbol": True,
             "read_symbol": True,
             "compare_symbols": True,
+            "generate_part": True,
+            "generate_part_model": freecad.available,
+            "check_part": True,
         },
     }
 
@@ -102,27 +86,9 @@ def check_model_vs_footprint(
         if not fp.models:
             return {"ok": False, "errors": ["footprint has no linked model; pass model_path"]}
         model_path = placement.path
-    resolved = _resolve(model_path, fp_path.parent)
-    if resolved.suffix.lower() in (".wrl", ".vrml"):
-        step = resolved.with_suffix(".step")
-        if not step.exists():
-            return {"ok": False, "errors": [f"{resolved.name} is VRML; checks need the STEP next to it ({step.name})"]}
-        resolved = step
-    if not resolved.exists():
-        return {"ok": False, "errors": [f"model file not found: {resolved}"]}
-    info = apps.run_freecad_script(
-        Path(__file__).parent / "freecad_scripts" / "inspect_model.py", env={"CADMATE_MODEL": str(resolved)}
-    )
+    resolved = model.resolve(model_path, fp_path.parent)
     expected = {k: v for k, v in (("length", body_length), ("width", body_width), ("height", body_height)) if v is not None}
-    result = check.check_model(fp, info["bbox"], placement, expected or None)
-    if not info.get("valid", True):
-        result["errors"].append("FreeCAD reports the shape as invalid")
-        result["ok"] = False
-    if info.get("solids", 1) == 0:
-        result["errors"].append("model contains no solids")
-        result["ok"] = False
-    result["model_file"] = str(resolved)
-    return result
+    return model.check_file(fp, resolved, placement, expected or None)
 
 
 @server.tool()
@@ -348,6 +314,59 @@ def read_symbol(path: str, name: str | None = None) -> dict:
 def compare_symbols(path: str, reference_path: str, name: str | None = None, reference_name: str | None = None) -> dict:
     """Compare a symbol pin by pin with a reference, for example KiCad's library symbol for the same part."""
     return symbol_check.compare_symbols(symbol.read(path, name), symbol.read(reference_path, reference_name))
+
+
+@server.tool()
+def generate_part(
+    project_dir: str,
+    library: str,
+    symbol: dict,
+    footprint: dict,
+    model: dict | None = None,
+    datasheet: str | None = None,
+    overwrite: bool = False,
+) -> dict:
+    """Make a whole part from one datasheet: symbol, footprint and 3D model, linked to each other and checked together.
+
+    symbol: {name, pins, description?, keywords?, reference?, fp_filters?, pin_length?, unit_shapes?}, as for generate_symbol.
+    footprint: {family, params, name?, density?, courtyard_clearance?}, as for generate_footprint. Put the package
+    height (and for soic the standoff) in params too; the 3D model is built from the same values.
+    model: extra values for the 3D model (lead_thickness, terminal_thickness, standoff, lead_below, lead_diameter),
+    or {path, offset?, rotate?, frame?} to link a model made by hand (frame "datasheet" when it was built in the
+    datasheet's pad coordinates, so it follows the footprint's origin), or {skip: true}. Add cutout: true
+    when the board has a cutout under the part (a module with parts underneath, soldered flat).
+
+    Writes <project_dir>/<library>.kicad_sym, <library>.pretty/<footprint>.kicad_mod and
+    <library>.3dshapes/<footprint>.step, the symbol's Footprint field set to <library>:<footprint> and the model
+    linked as ${KIPRJMOD}/<library>.3dshapes/<footprint>.step, and adds the libraries to the project's
+    sym-lib-table and fp-lib-table. Every pin must have a pad and every pad a pin, and the model must sit on the
+    pads; nothing is written when any check finds errors. Existing files are only replaced with overwrite=True,
+    keeping .bak copies. The model needs FreeCAD; without it, symbol and footprint are written without a model.
+    """
+    return part.generate_part(project_dir, library, symbol, footprint, model, datasheet=datasheet, overwrite=overwrite)
+
+
+@server.tool()
+def check_part(
+    symbol_path: str,
+    name: str | None = None,
+    footprint_path: str | None = None,
+    pins: list[dict] | None = None,
+    body_length: float | None = None,
+    body_width: float | None = None,
+    body_height: float | None = None,
+    cutout: bool = False,
+) -> dict:
+    """Review a part as KiCad will use it: the symbol, the footprint its Footprint field names, and the model that footprint links.
+
+    Finds the footprint through the project's fp-lib-table (or <library>.pretty next to the symbol library) unless
+    footprint_path is given, and checks each of the three plus the links: the footprint exists, the symbol's footprint
+    filters accept it, every pin has a pad and every pad a pin, the model file exists and sits on the pads. With pins
+    (the datasheet's pin table) the symbol is also checked pin by pin; body_* are the datasheet's overall model size.
+    cutout: the board has a cutout under the part, so an SMD model may reach below it.
+    """
+    expected = {k: v for k, v in (("length", body_length), ("width", body_width), ("height", body_height)) if v is not None}
+    return part.check_part(symbol_path, name, footprint_path, pins, expected or None, cutout)
 
 
 def main() -> None:

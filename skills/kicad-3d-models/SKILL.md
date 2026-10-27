@@ -5,6 +5,8 @@ description: Build, check and link a 3D model for a KiCad footprint that has non
 
 # 3D model for a KiCad footprint
 
+For a new part, `generate_part` (skill `kicad-parts`) builds the model for `soic` and `qfn` packages from the footprint's own values, so start there. Use this skill for footprints that already exist, and for modules and connectors that need a real model rather than `custom`'s placeholder box.
+
 Uses the cadmate MCP server (KiCad side and checks) and a FreeCAD MCP server (modelling).
 
 ## Workflow

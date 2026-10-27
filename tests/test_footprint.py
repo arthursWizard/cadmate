@@ -58,3 +58,17 @@ def test_parser_handles_escaped_strings():
 def test_rejects_non_footprint():
     with pytest.raises(ValueError):
         footprint.parse('(kicad_sch (version 1))')
+
+
+def test_offset_pads_round_trip_and_reach_past_the_hole():
+    from cadmate import check, generate
+    params = {"body_width": 5, "body_length": 5, "body_center": [1.5, 0],
+              "pads": [{"number": 1, "x": 0, "y": 0, "lead_width": 0.64, "lead_thickness": 0.64, "width": 3.25, "height": 1.75, "pad_offset": [-0.75, 0]}]}
+    r = generate.generate("custom", params)
+    assert r["ok"], r
+    assert "(drill 1.15 (offset -0.75 0))" in r["text"]
+    pad = footprint.parse(r["text"]).pads[0]
+    assert (pad.x, pad.y, pad.offset) == (0, 0, (-0.75, 0))  # the hole stays at the origin (pin 1)
+    assert (pad.box.xmin, pad.box.xmax) == (-2.375, 0.875)
+    # The ring is thinnest on the side the copper moved away from: 0.875 - 0.575 = 0.3 mm.
+    assert check.check_footprint(footprint.parse(r["text"]))["measured"]["min_annular_ring"] == 0.3

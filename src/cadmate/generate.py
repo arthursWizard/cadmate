@@ -40,7 +40,8 @@ FAMILIES: dict[str, dict] = {
         "notes": (
             "pads: [{number, x, y, width, height, shape?, kind?, drill?, rotation?}], kind smd (default), thru_hole or np_thru_hole. "
             "Through-hole pads may give the lead instead of drill and size: lead_diameter for round leads, or lead_width and "
-            "lead_thickness for flat ones (add slot: true for a slotted hole, long axis along X; rotate 90 for Y). Holes and pads "
+            "lead_thickness for flat ones (add slot: true for a slotted hole, long axis along X; rotate 90 for Y). pad_offset [dx, dy] "
+            "moves a through-hole pad's copper off its hole (x, y stay the hole), e.g. to reach past a module's edge. Holes and pads "
             "then follow IPC-7251 for the density; give leads as [min, max] where the datasheet has a range. "
             "pad_rows: [{first, count, x, y, dx, dy, width, height, ...}] numbers pads first, first+1, ... stepping by (dx, dy). "
             "Coordinates in KiCad's frame, Y down. origin: auto (SMD centre of the pads, through-hole pin 1), center, pin1 or as_given."
@@ -50,6 +51,9 @@ FAMILIES: dict[str, dict] = {
 
 # Only the soic and qfn values need tolerances; the rest are plain numbers.
 TOLERANCED = {"body_width", "body_length", "overall_width", "lead_width", "lead_length"}
+
+# 3D model values (see model.py), accepted so one parameter set serves footprint and model.
+MODEL_ONLY = {"height", "standoff", "lead_thickness", "terminal_thickness", "lead_below", "lead_above", "lead_diameter"}
 
 SILK_WIDTH = 0.12
 FAB_WIDTH = 0.1
@@ -96,7 +100,7 @@ def generate(
     if missing:
         return _fail([f"missing {k}" for k in missing])
     warnings: list[str] = []
-    unknown = sorted(set(params) - set(spec["required"]) - set(spec["optional"]) - {"height", "standoff"})
+    unknown = sorted(set(params) - set(spec["required"]) - set(spec["optional"]) - MODEL_ONLY)
     if unknown:
         warnings.append(f"ignored unknown parameters: {unknown}")
 
@@ -140,6 +144,7 @@ def generate(
             "pitch": fp.pitch(),
             "pad_extents": vars(fp.pad_extents) if fp.pad_extents else None,
             "courtyard": vars(fp.courtyard) if fp.courtyard else None,
+            "body": {k: round(v, 6) for k, v in vars(design.body).items()},
         },
     }
 
@@ -432,7 +437,11 @@ def _custom_pad(spec: dict, density: str = "nominal", sizing: dict | None = None
         shape, layers = spec.get("shape", default), ["*.Cu", "*.Mask"]
     if shape not in ("rect", "roundrect", "circle", "oval"):
         raise ValueError(f"pad shape must be rect, roundrect, circle or oval, got {shape!r}")
-    return Pad(number, kind, shape, float(spec["x"]), float(spec["y"]), float(spec.get("rotation", 0.0)), w, h, drill, layers, drill_y)
+    offset = spec.get("pad_offset") or (0.0, 0.0)
+    if (offset[0] or offset[1]) and kind != "thru_hole":
+        raise ValueError(f"pad {number!r}: pad_offset only applies to plated through-hole pads")
+    return Pad(number, kind, shape, float(spec["x"]), float(spec["y"]), float(spec.get("rotation", 0.0)), w, h, drill, layers, drill_y,
+               (float(offset[0]), float(offset[1])))
 
 
 def _extents(pads: list[Pad]) -> BBox:
@@ -656,10 +665,11 @@ def to_kicad_mod(design: Design) -> str:
     for p in design.pads:
         at = _xy((p.x, p.y)) + (f" {_f(p.rotation)}" if p.rotation else "")
         line = f"\t(pad {sexpr.quote(p.number)} {p.kind} {p.shape} (at {at}) (size {_f(p.width)} {_f(p.height)})"
+        off = f" (offset {_f(p.offset[0])} {_f(p.offset[1])})" if p.offset != (0.0, 0.0) else ""
         if p.drill is not None and p.drill_y is not None:
-            line += f" (drill oval {_f(p.drill)} {_f(p.drill_y)})"
+            line += f" (drill oval {_f(p.drill)} {_f(p.drill_y)}{off})"
         elif p.drill is not None:
-            line += f" (drill {_f(p.drill)})"
+            line += f" (drill {_f(p.drill)}{off})"
         line += " (layers " + " ".join(sexpr.quote(layer) for layer in p.layers) + ")"
         if p.shape == "roundrect":
             line += f" (roundrect_rratio {_f(_rratio(p.width, p.height))})"

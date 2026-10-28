@@ -77,3 +77,14 @@ The same values feed `package_params` for the 3D model (`kicad-3d-models` skill)
 - Project-local: `<project>/<name>.pretty/`, added in Preferences > Manage Footprint Libraries (Project tab).
 - A personal library: a `.pretty` folder the user picks, added in the Global tab.
 - `generate_footprint` refuses to overwrite a file unless asked, and keeps a `.bak` copy when it does.
+
+## Working live with the footprint open in KiCad
+
+For iterating with the user: they look at it in KiCad's footprint editor, comment or edit by hand, and you edit on top. KiCad's footprint editor has no API; since KiCad 10 it reloads the open footprint when its file changes, so cadmate works on the saved file.
+
+1. The footprint must be open in KiCad's footprint editor from a library KiCad knows (the project's or the global fp-lib-table; `generate_part` registers its libraries). Ask the user to open it if it isn't.
+2. Each round starts with the user saving in KiCad (Cmd+S on macOS, Ctrl+S elsewhere): their unsaved edits aren't in the file, and if the editor holds unsaved edits when you write, KiCad asks them whether to reload. Remind them once, at the start, then only when `user_changes` suggests they forgot.
+3. `kicad_live_state` first, every round. Read `user_changes`: those are the user's hand edits since you last looked, pad by pad. Keep them and build on them; never revert one unless they ask. If one conflicts with the datasheet, say so and ask. When it reports `overwrote_cadmate_step`, a save in KiCad replaced your last step: ask before applying it again.
+4. `kicad_live_edit` with small text replacements in the item's text as `kicad_live_state` returned it, one step per change you'd describe in one line, with that line as the label. Never regenerate the footprint or rewrite it whole: that throws away the user's edits. Fix any `new_errors` the reply reports, or tell the user why they stay.
+5. `kicad_live_snapshot` and look at the picture before saying anything about the change. Then tell the user in a line what you changed and that KiCad has reloaded it (about a second after the write).
+6. `kicad_live_undo` takes back your last step and keeps their later edits; KiCad's own undo list starts over on every reload, so it can't.

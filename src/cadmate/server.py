@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 from mcp.server.mcpserver import Image, MCPServer
 
-from . import apps, check, footprint, generate, ipc, live, model, packages, part, review, symbol, symbol_check, symbol_generate
+from . import apps, check, footprint, generate, ipc, kicad_live, live, model, packages, part, review, symbol, symbol_check, symbol_generate
 from .footprint import read as _read_footprint  # generate_symbol's footprint argument shadows the module
 
 server = MCPServer("cadmate")
@@ -42,6 +43,8 @@ def environment() -> dict:
             "generate_part_model": freecad.available,
             "check_part": True,
             "freecad_live": _live_running(),
+            "kicad_live": True,
+            "kicad_live_snapshot": kicad.available,
         },
     }
 
@@ -567,6 +570,69 @@ def freecad_live_export_step(
     placement = fp.models[0] if fp.models else footprint.Model(path="")
     expected = {k: v for k, v in (("length", body_length), ("width", body_width), ("height", body_height)) if v is not None}
     return r | {"check": model.check_file(fp, out, placement, expected or None)}
+
+
+# Footprints and symbols open in KiCad's editors, which reload the file when it changes (kicad_live.py).
+
+
+def _kicad_live(fn, *args, **kw) -> dict:
+    try:
+        return fn(*args, **kw)
+    except (kicad_live.LiveError, ValueError, OSError) as e:
+        return {"ok": False, "error": str(e)}
+
+
+@server.tool()
+def kicad_live_state(path: str, name: str | None = None) -> dict:
+    """Read a footprint or symbol the user has open in KiCad, and what they changed by hand since cadmate last looked.
+
+    path: a .kicad_mod, or a .kicad_sym library with name (needed when it holds several symbols). KiCad's footprint
+    and symbol editors have no API, so cadmate works on the saved file: ask the user to save in KiCad (Cmd/Ctrl+S)
+    before each round, or their latest edits aren't in it yet. user_changes lists, pad by pad or pin by pin, what
+    differs from what cadmate last read or wrote, plus the raw text diff; first_look means there is nothing to compare
+    with yet. Also returns the item's text (edit it with kicad_live_edit), a summary, the footprint or symbol check,
+    and cadmate's steps so far. Read this before every edit and build on what is there.
+    """
+    return _kicad_live(kicad_live.state, path, name)
+
+
+@server.tool()
+def kicad_live_edit(path: str, edits: list[dict], label: str, name: str | None = None) -> dict:
+    """Edit a footprint or symbol open in KiCad on top of the user's saved edits, as one step named by label.
+
+    edits: [{old, new, all?}], text replacements inside the footprint (or inside the one symbol of the library), applied
+    in order to the text as it is now (kicad_live_state gives it); old must occur once unless all is true. Change what
+    is there: a pad's (at ...) or (size ...), a pin's (length ...), a field's value. Never rewrite the whole item or
+    regenerate it, which throws away the user's edits. The result is parsed and checked before it is written; the reply
+    gives the user's changes found first, what this step changed, and new or fixed check findings. KiCad reloads the
+    file about a second later if the editor has no unsaved edits; otherwise it asks the user whether to reload, and
+    answering no keeps their copy, which overwrites this step when they save (kicad_live_state then reports it).
+    label is one line the user will recognise in the history ("pads 2 and 3 0.1 mm longer").
+    """
+    return _kicad_live(kicad_live.edit, path, edits, label, name)
+
+
+@server.tool()
+def kicad_live_undo(path: str, name: str | None = None) -> dict:
+    """Take back cadmate's last step on a footprint or symbol, keeping the user's hand edits made since.
+
+    KiCad's own undo list starts over on every reload, so cadmate keeps its steps itself. When the user has changed
+    the same text since, the undo is refused; make the reverse change as a new edit instead.
+    """
+    return _kicad_live(kicad_live.undo, path, name)
+
+
+@server.tool()
+def kicad_live_snapshot(path: str, name: str | None = None, width: int = 900) -> Image:
+    """Picture of a footprint or symbol as saved, drawn by kicad-cli the way KiCad plots it.
+
+    Look at it after an edit before telling the user what changed. It shows the file, so the user's unsaved edits in
+    KiCad aren't in it.
+    """
+    try:
+        return Image(path=kicad_live.snapshot(path, name, width))
+    except (kicad_live.LiveError, OSError, subprocess.SubprocessError) as e:
+        raise RuntimeError(str(e)) from e
 
 
 def main() -> None:

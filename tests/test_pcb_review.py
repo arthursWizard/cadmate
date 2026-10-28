@@ -334,3 +334,16 @@ def test_measurements_are_reported_without_findings():
     r = pr.review_board(_xtal(), fab=None)
     xi = next(m for m in r["measured"]["crystal"] if m["net"] == "XI")
     assert xi["route_mm"] == pytest.approx(0.635 + 8.55, abs=0.2) and xi["vias"] == 0
+
+
+def test_unrouted_pair_is_not_called_a_mismatch():
+    b = board(footprint("Connector:USB", "J1", "USB", 5, 10, [pad(1, 0, 0, "USB_D+"), pad(2, 0, 1, "USB_D-")]),
+              footprint("Connector:USB", "J2", "USB", 25, 10, [pad(1, 0, 0, "USB_D+"), pad(2, 0, 1, "USB_D-")]),
+              seg((5, 10), (7, 10), "USB_D+", w=0.2), seg((5, 11), (25, 11), "USB_D-", w=0.2))
+    found = rules(pr.review_board(b, fab=None), "diff_pair")
+    assert len(found) == 1 and "not fully routed" in found[0]["what"]
+
+
+def test_cap_with_its_ground_side_unrouted():
+    b = _decap_board(25.2, lambda vdd, gnd, x: [seg((x - 0.8, 18.1), (x - 0.8, 17.4), "+3V3"), seg((x - 0.8, 17.4), vdd, "+3V3")])
+    assert any("ground pad" in f["what"] for f in rules(pr.review_board(b, fab=None), "decoupling"))

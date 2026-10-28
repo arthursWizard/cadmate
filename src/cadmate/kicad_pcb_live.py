@@ -27,6 +27,7 @@ from . import apps, live, sexpr
 TIMEOUT_MS = 20000  # reading a large board as text takes a while
 LISTED_CHANGES = 60  # changes beyond this are counted, not listed
 UNDO_ACTION = "common.Interactive.undo"
+REDO_ACTION = "common.Interactive.redo"
 
 ENABLE_HOW = ("Ask the user to turn on KiCad's API: KiCad menu > Settings… (Preferences on Linux and Windows) > Plugins, "
               "tick \"Enable KiCad API\", then restart KiCad and open the board in the PCB editor.")
@@ -207,6 +208,15 @@ def diff(before: dict[str, dict], after: dict[str, dict]) -> dict:
     return out
 
 
+def digest(idx: dict[str, dict]) -> str:
+    """One hash for the whole board index: equal digests, same board."""
+    return hashlib.sha1("\n".join(f"{k} {v['hash']}" for k, v in sorted(idx.items())).encode()).hexdigest()[:16]
+
+
+def _touched(before: dict[str, dict], after: dict[str, dict]) -> set[str]:
+    return {k for k in before.keys() | after.keys() if (before.get(k) or {}).get("hash") != (after.get(k) or {}).get("hash")}
+
+
 # --- what cadmate last saw ----------------------------------------------------------------------------
 
 
@@ -334,7 +344,8 @@ def edit(code: str, label: str) -> dict:
     board.push_commit(commit, f"cadmate: {label.strip()}")
     after = s.snapshot()
     s.st["seen"] = after
-    s.st["steps"].append({"label": label.strip()})
+    s.st["steps"].append({"label": label.strip(), "before": digest(before), "after": digest(after),
+                          "items": sorted(_touched(before, after))})
     _save(s.file, s.st)
     result = ns.get("result")
     try:
@@ -345,27 +356,41 @@ def edit(code: str, label: str) -> dict:
 
 
 def undo() -> dict:
-    """Undo cadmate's last step with KiCad's own undo, but only when nothing was done after it."""
+    """Undo cadmate's last step with KiCad's own undo, but only when the board is exactly as that step left it.
+
+    KiCad's undo takes back whatever is on top of its list, so any change after cadmate's step, the user's or not,
+    and whether or not cadmate has reported it already, means KiCad's undo would take back that change instead.
+    """
     kicad, board = connect()
     s = Session(board, kicad)
     if not s.st["steps"]:
         return {"ok": False, "error": "cadmate has no step on this board to undo"}
-    before, user = s.look()
-    if user.get("first_look") or user.get("changed"):
-        return {"ok": False, "error": "the user changed the board since cadmate's last step, so KiCad's undo would take back their "
-                                      "change first. Make the reverse change as a new edit, or ask the user to press Cmd/Ctrl+Z.",
+    step = s.st["steps"][-1]
+    now, user = s.look()
+    if "after" not in step or digest(now) != step["after"]:
+        return {"ok": False, "error": f"the board changed after cadmate's step '{step['label']}', so KiCad's undo would take back that later "
+                                      "change first. Make the reverse change as a new edit, or ask the user to undo in KiCad.",
                 "user_changes": user}
     try:
         kicad.run_action(UNDO_ACTION)
     except Exception as e:
         return {"ok": False, "error": busy_hint(e)}
     after = s.snapshot()
-    step = s.st["steps"].pop()
+    ch = diff(now, after)
+    if not ch["changed"]:
+        return {"ok": False, "error": "KiCad's undo changed nothing; the PCB editor may not have had focus. Ask the user to undo in KiCad."}
+    if digest(after) != step["before"] and not _touched(now, after) <= set(step["items"]):
+        try:
+            kicad.run_action(REDO_ACTION)
+        except Exception:
+            pass
+        s.st["seen"] = s.snapshot()
+        _save(s.file, s.st)
+        return {"ok": False, "error": f"KiCad's undo took back something other than '{step['label']}', so cadmate redid it. "
+                                      "Make the reverse change as a new edit instead.", "undo_changed": ch}
+    s.st["steps"].pop()
     s.st["seen"] = after
     _save(s.file, s.st)
-    ch = diff(before, after)
-    if not ch["changed"]:
-        return {"ok": False, "error": "KiCad's undo changed nothing; the PCB editor may not have had focus. Ask the user to press Cmd/Ctrl+Z."}
     return {"ok": True, "undid": step["label"], "changed": ch}
 
 

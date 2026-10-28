@@ -82,7 +82,10 @@ class FakeKiCad:
 
     def run_action(self, action):
         self.actions.append(action)
-        self.board.text = self.board.undo_text
+        if action == pcb.UNDO_ACTION:
+            self.board.redo_text, self.board.text = self.board.text, self.board.undo_text
+        else:
+            self.board.text = self.board.redo_text
 
 
 @pytest.fixture
@@ -150,12 +153,12 @@ def test_undo_only_when_nothing_happened_since(board):
     pcb.edit("board.text = board.text.replace('(at 10 20 90)', '(at 10 22 90)')", "C1 down")
     board.text = board.text.replace("(at 30 20 0)", "(at 31 20 0)")
     r = pcb.undo()
-    assert not r["ok"] and "Cmd/Ctrl+Z" in r["error"]
+    assert not r["ok"] and "changed after" in r["error"]
 
     board.text = BOARD
     pcb.state()
-    board.undo_text = BOARD
     pcb.edit("board.text = board.text.replace('(at 10 20 90)', '(at 10 22 90)')", "C1 down again")
+    board.undo_text = BOARD
     r = pcb.undo()
     assert r["ok"] and r["undid"] == "C1 down again" and board.text == BOARD
 
@@ -169,3 +172,24 @@ def test_no_kicad_says_how_to_enable(monkeypatch):
     monkeypatch.setattr(pcb, "connect", refuse)
     r = server.kicad_pcb_state()
     assert not r["ok"] and "Enable KiCad API" in r["how"]
+
+
+def test_undo_refused_after_a_user_change_cadmate_already_reported(board):
+    pcb.state()
+    board.undo_text = BOARD
+    pcb.edit("board.text = board.text.replace('(at 10 20 90)', '(at 10 22 90)')", "C1 down")
+    board.text = board.text.replace("(at 30 20 0)", "(at 31 20 0)")
+    assert pcb.state()["user_changes"]["changed"]  # reported, and so seen
+    r = pcb.undo()
+    assert not r["ok"] and "changed after" in r["error"]
+    assert "(at 31 20 0)" in board.text and "(at 10 22 90)" in board.text
+
+
+def test_undo_that_takes_back_something_else_is_redone(board):
+    pcb.state()
+    pcb.edit("board.text = board.text.replace('(at 10 20 90)', '(at 10 22 90)')", "C1 down")
+    board.undo_text = board.text.replace("(at 30 20 0)", "(at 35 20 0)")  # KiCad's undo list holds something else on top
+    edited = board.text
+    r = pcb.undo()
+    assert not r["ok"] and "redid" in r["error"] and board.text == edited
+    assert [s["label"] for s in pcb.state()["history"]] == ["C1 down"]

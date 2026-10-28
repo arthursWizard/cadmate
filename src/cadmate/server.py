@@ -689,7 +689,8 @@ def kicad_pcb_edit(code: str, label: str) -> dict:
 def kicad_pcb_undo() -> dict:
     """Take back cadmate's last step on the board with KiCad's own undo.
 
-    Refused when the user changed the board after that step, since KiCad's undo would take back their change first.
+    Refused unless the board is exactly as that step left it: KiCad's undo takes back whatever came last, so a later
+    change by the user would be undone instead. If KiCad's undo still takes back something else, cadmate redoes it.
     """
     return _pcb(kicad_pcb_live.undo)
 

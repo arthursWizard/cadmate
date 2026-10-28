@@ -288,6 +288,10 @@ class Review:
                 self.add("decoupling", "note" if route["vias"] == 1 else "warning", f"{label}: {route['vias']} via(s) between cap and pin",
                          "Each via adds series inductance. Fine when the cap sits on the other side right under the pin; "
                          "otherwise put cap and pin on one layer.", "mt101", pp.x, pp.y, **where, **vals)
+            if gpin is not None and groute is None:
+                self.add("decoupling", "warning", f"{label}: no copper path from the cap's ground pad to {gpin.name}",
+                         "Without its ground side the cap decouples nothing. Often a ground pad left out of the pour "
+                         "or an unrouted ground connection.", "mt101", gp.x, gp.y, refs=[cref, iref], net=gp.net, **vals)
             if groute is not None:
                 loop = route["length"] + groute["length"]
                 if loop > self.lim["decap_loop"]:
@@ -518,6 +522,13 @@ class Review:
             ta = [t for t in self.b.tracks if t.net == a]
             tb = [t for t in self.b.tracks if t.net == b]
             la, lb = sum(t.length for t in ta), sum(t.length for t in tb)
+            broken = [n for n in (a, b) if len(self.graph(n).islands()) > 1]
+            if broken:
+                self.measured.setdefault("diff_pair", []).append({"pair": [a, b], "length_mm": [round(la, 2), round(lb, 2)], "unrouted": broken})
+                self.add("diff_pair", "note", f"{a} / {b}: {' and '.join(broken)} not fully routed, so length and coupling aren't compared",
+                         "Route the pair first; the unrouted connection is reported on its own.", "heuristic", ta[0].start[0], ta[0].start[1],
+                         ta[0].layer, net=a)
+                continue
             coupled = self._coupled(ta, tb)
             self.measured.setdefault("diff_pair", []).append({"pair": [a, b], "length_mm": [round(la, 2), round(lb, 2)],
                                                               "mismatch_mm": round(abs(la - lb), 2), "coupled": round(coupled, 2)})

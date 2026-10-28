@@ -79,10 +79,12 @@ def pin1_marks(shape, m):
             else:
                 continue
             inside = min(c.x - sb.XMin, sb.XMax - c.x, c.y - sb.YMin, sb.YMax - c.y)
-            # A dimple or disc lies inside the top (a corner fillet or a lead does not); a notch is cut into an edge.
-            if (full and inside < r + 0.05) or (not full and abs(inside) > 0.05):
+            # A dimple or disc lies inside the top (a corner fillet or a lead does not); a notch crosses an edge (the
+            # solid's box may reach past the body's edge, to the leads).
+            if (full and inside < r + 0.05) or (not full and not -r < inside < r):
                 continue
-            marks.append({"x": c.x, "y": c.y, "r": r})
+            if not any(abs(k["x"] - c.x) < 0.01 and abs(k["y"] - c.y) < 0.01 for k in marks):  # a dimple's wall and floor
+                marks.append({"x": c.x, "y": c.y, "r": r})
     return marks
 
 

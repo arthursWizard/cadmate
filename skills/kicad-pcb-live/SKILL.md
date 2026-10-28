@@ -14,4 +14,4 @@ Uses cadmate's `kicad_pcb_*` tools. They work on the board in the user's open PC
 5. Tell the user in a line what you changed. They can press Cmd/Ctrl+Z to take it back. `kicad_pcb_undo` does the same, and only works when nothing happened after your step.
 6. Don't save (`kicad_pcb_save`) unless the user asks.
 
-Moving a footprint doesn't reroute its tracks: say so when parts with tracks move, and ask before deleting or rerouting tracks. Zones need refilling after copper changes (`board.refill_zones()`); do it in the same step when a zone is affected.
+Moving a footprint doesn't reroute its tracks: say so when parts with tracks move, and ask before deleting or rerouting tracks. Zones need refilling after copper changes: run `board.refill_zones()` as its own `kicad_pcb_edit` step after the change, labelled "refill zones".

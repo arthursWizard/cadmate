@@ -158,9 +158,12 @@ def test_symbol_rename_refused(lib):
 
 def test_svg_gets_a_pixel_size(tmp_path):
     svg = tmp_path / "a.svg"
-    svg.write_text('<?xml version="1.0"?>\n<svg\n  xmlns="http://www.w3.org/2000/svg"\n  version="1.1"\n'
-                   '  width="22.656800mm" height="8.483600mm" viewBox="0.000000 0.000000 22.656800 8.483600">\n<title>x</title></svg>')
-    kicad_live._pixel_size(svg, 900)
+    original = ('<?xml version="1.0"?>\n<svg\n  xmlns="http://www.w3.org/2000/svg"\n  version="1.1"\n'
+                '  width="20mm" height="10mm" viewBox="0 0 20 10">\n<title>x</title></svg>')
+    svg.write_text(original)
+    kicad_live._pixel_size(svg, 900, margin=0.05)
     text = svg.read_text()
-    assert '<svg width="900" height="337"' in text and "mm" not in text.split("<title>")[0].split("viewBox")[0]
-    assert 'viewBox="0.000000 0.000000 22.656800 8.483600"' in text
+    assert '<svg width="900" height="500" viewBox="-1.0000 -1.0000 22.0000 12.0000"' in text and "mm" not in text
+    svg.write_text(original)
+    kicad_live._pixel_size(svg, 900, square=True, margin=0.05)
+    assert '<svg width="900" height="900" viewBox="-1.0000 -6.0000 22.0000 22.0000"' in svg.read_text()

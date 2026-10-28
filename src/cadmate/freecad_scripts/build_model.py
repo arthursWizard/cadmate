@@ -1,7 +1,7 @@
 # Runs inside FreeCADCmd. Builds the solids listed in the JSON file $CADMATE_SPEC
 # (planned by cadmate/model.py) and exports them as one STEP file, one solid per
 # object so body and leads keep separate colours. Writes the bounding box and
-# solid count as JSON to $CADMATE_OUT.
+# solid count as JSON to $CADMATE_OUT. The STEP keeps the colours on FreeCAD 1.0 and later, headless too.
 #
 # Solids: {"name", "colour", one of "box": [x, y, z, dx, dy, dz],
 #          "cyl": [x, y, z, r, h], "prism": {"pts": [[x, z], ...], "y0", "dy"},
@@ -42,14 +42,21 @@ for s in spec["solids"]:
     objs.append(obj)
 doc.recompute()
 
+# Colours: with the GUI, from the view objects. Headless, FreeCAD 1.0 and later take (object, face colours)
+# pairs in Import.export; 0.20 and 0.21 have no headless way, so their STEP stays grey.
+headless_colours = int(App.Version()[0]) >= 1
 if App.GuiUp:
-    import ImportGui  # writes the colours into the STEP
+    import ImportGui
 
     ImportGui.export(objs, spec["out"])
 else:
     import Import
 
-    Import.export(objs, spec["out"])
+    if headless_colours:
+        items = [(o, [tuple(float(c) for c in s["colour"][:3])] * len(o.Shape.Faces)) for o, s in zip(objs, spec["solids"])]
+        Import.export(items, spec["out"])
+    else:
+        Import.export(objs, spec["out"])
 
 compound = Part.makeCompound([o.Shape for o in objs])
 bb = compound.BoundBox
@@ -57,7 +64,6 @@ result = {
     "bbox": {"xmin": bb.XMin, "ymin": bb.YMin, "zmin": bb.ZMin, "xmax": bb.XMax, "ymax": bb.YMax, "zmax": bb.ZMax},
     "solids": len(compound.Solids),
     "valid": all(o.Shape.isValid() for o in objs),
-    "colours": App.GuiUp,
 }
 with open(os.environ["CADMATE_OUT"], "w") as f:
     json.dump(result, f)

@@ -5,8 +5,12 @@
 # model placement; "section_z", the height of the board's mid-plane), it also
 # places the model as KiCad does and lists every solid: its placed bounding box,
 # its volume, and the closed loops where it crosses section_z (a lead in its
-# hole, or a body that goes into the board).
+# hole, or a body that goes into the board), unless "parts" is false. Either way it
+# lists the round pin 1 marks on top of the solids ("marks", placed): a dimple (a
+# full cylinder along Z, shallower than half its solid, inside its top), a flush
+# disc on the top, or a half-round notch in the edge of the top (DIP bodies).
 import json
+import math
 import os
 
 import FreeCAD as App
@@ -35,10 +39,62 @@ def box(b):
     return {"xmin": b.XMin, "ymin": b.YMin, "zmin": b.ZMin, "xmax": b.XMax, "ymax": b.YMax, "zmax": b.ZMax}
 
 
+def placed_box(b, m):
+    """The box of b's corners moved by m (exact for the quarter turns KiCad models use)."""
+    pts = [m.multVec(App.Vector(x, y, z)) for x in (b.XMin, b.XMax) for y in (b.YMin, b.YMax) for z in (b.ZMin, b.ZMax)]
+    lo = [min(getattr(p, a) for p in pts) for a in "xyz"]
+    hi = [max(getattr(p, a) for p in pts) for a in "xyz"]
+    return App.BoundBox(*lo, *hi)
+
+
+def pin1_marks(shape, m):
+    marks = []
+    o = m.multVec(App.Vector(0, 0, 0))
+
+    def along_z(v):
+        v = m.multVec(v) - o
+        return abs(v.z) >= 0.99 * v.Length, v.Length
+
+    for solid in shape.Solids:
+        sb = placed_box(solid.BoundBox, m)
+        for face in solid.Faces:
+            fb = placed_box(face.BoundBox, m)
+            if fb.ZMax < sb.ZMax - 0.05:  # not at the top
+                continue
+            surf = face.Surface
+            if isinstance(surf, Part.Cylinder):  # a dimple, or a notch at the end of a DIP body
+                u0, u1 = face.ParameterRange[:2]
+                vertical, scale = along_z(surf.Axis)
+                if not vertical or u1 - u0 < math.pi - 0.1 or fb.ZLength > sb.ZLength / 2:
+                    continue
+                full = u1 - u0 >= 2 * math.pi - 1e-3
+                r, c = surf.Radius * scale, m.multVec(surf.Center)
+            elif isinstance(surf, Part.Plane) and len(face.Wires) == 1 and len(face.Edges) == 1 \
+                    and isinstance(face.Edges[0].Curve, Part.Circle):  # a flush disc, as KiCad's library models have
+                vertical, scale = along_z(face.normalAt(0, 0))
+                if not vertical:
+                    continue
+                full = True
+                r, c = face.Edges[0].Curve.Radius * scale, m.multVec(face.Edges[0].Curve.Center)
+            else:
+                continue
+            inside = min(c.x - sb.XMin, sb.XMax - c.x, c.y - sb.YMin, sb.YMax - c.y)
+            # A dimple or disc lies inside the top (a corner fillet or a lead does not); a notch crosses an edge (the
+            # solid's box may reach past the body's edge, to the leads).
+            if (full and inside < r + 0.05) or (not full and not -r < inside < r):
+                continue
+            if not any(abs(k["x"] - c.x) < 0.01 and abs(k["y"] - c.y) < 0.01 for k in marks):  # a dimple's wall and floor
+                marks.append({"x": c.x, "y": c.y, "r": r})
+    return marks
+
+
 spec = os.environ.get("CADMATE_PLACEMENT")
 if spec:
     spec = json.loads(spec)
-    placed = shape.transformGeometry(App.Matrix(*spec["matrix"]))
+    m = App.Matrix(*spec["matrix"])
+    result["marks"] = pin1_marks(shape, m)
+if spec and spec.get("parts", True):
+    placed = shape.transformGeometry(m)
     z = spec["section_z"]
     parts = []
     for i, solid in enumerate(placed.Solids):

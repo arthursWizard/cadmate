@@ -59,7 +59,7 @@ cadmate requires **KiCad 10** and **FreeCAD 1.1** or later, and follows new rele
 - **KiCad files** are read directly: footprints from KiCad 5 (`module`) to current (`footprint`) formats, symbol libraries from KiCad 6 on, including KiCad 10's one-file-per-symbol `.kicad_symdir` folders. They are written in KiCad 10's format, as KiCad's own editors write it. No KiCad install is needed for footprint or symbol work.
 - **`kicad-cli`** (KiCad 7+) for exports and checks, in later milestones.
 - **KiCad IPC API** (KiCad 9+) only for live editing, switched on when present.
-- **FreeCAD** through `FreeCADCmd`, using the Part API that is stable across 0.20 to 1.1. Models it builds headless have no colours.
+- **FreeCAD** through `FreeCADCmd`, using the Part API that is stable across 0.20 to 1.1. Headless builds keep their colours on FreeCAD 1.0 and later; with 0.20 and 0.21 the STEP is grey.
 
 Developed against KiCad 10.0 and FreeCAD 1.1 on macOS.
 

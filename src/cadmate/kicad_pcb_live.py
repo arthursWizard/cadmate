@@ -284,7 +284,7 @@ def state(footprints: bool = True, tracks_on_nets: list[str] | None = None) -> d
     for v in now.values():
         by_type[v["summary"]["type"]] = by_type.get(v["summary"]["type"], 0) + 1
     out = {"ok": True, "board": board.name, "user_changes": user, "selection": _selection(board, now), "counts": by_type,
-           "history": s.st["steps"], "units": "mm, KiCad's board frame (Y down), rotation in degrees"}
+           "history": [st["label"] for st in s.st["steps"]], "units": "mm, KiCad's board frame (Y down), rotation in degrees"}
     if footprints:
         out["footprints"] = sorted((v["summary"] for v in now.values() if v["summary"]["type"] == "footprint"),
                                    key=lambda f: f["ref"] or "")

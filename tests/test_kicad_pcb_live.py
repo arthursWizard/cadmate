@@ -139,7 +139,7 @@ def test_edit_reports_user_changes_then_its_own(board):
     assert r["changed"]["items"] == [{"item": "footprint C1", "changed": {"y": [20.0, 22.0]}}]
     assert board.commits == ["cadmate: C1 2 mm down"]
     assert pcb.state()["user_changes"]["changed"] is False  # cadmate's own edit isn't the user's
-    assert [s["label"] for s in pcb.state()["history"]] == ["C1 2 mm down"]
+    assert pcb.state()["history"] == ["C1 2 mm down"]
 
 
 def test_failed_edit_drops_the_commit(board):
@@ -192,4 +192,4 @@ def test_undo_that_takes_back_something_else_is_redone(board):
     edited = board.text
     r = pcb.undo()
     assert not r["ok"] and "redid" in r["error"] and board.text == edited
-    assert [s["label"] for s in pcb.state()["history"]] == ["C1 down"]
+    assert pcb.state()["history"] == ["C1 down"]

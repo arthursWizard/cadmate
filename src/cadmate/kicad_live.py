@@ -22,7 +22,6 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
-import os
 import platform
 import re
 import shutil
@@ -137,55 +136,24 @@ def _save(t: Target, st: dict) -> None:
     f.write_text(json.dumps(st))
 
 
-MAC_SETTLE = 0.5  # seconds between the file leaving its folder and coming back, so KiCad sees both
-
-
 def _write(t: Target, text: str) -> None:
-    """Write the file so that KiCad's editor notices.
-
-    KiCad watches the file's folder through wxWidgets. On Linux (inotify) and Windows a write to the file is reported
-    with its path, so writing in place is enough. On macOS wxWidgets uses kqueue, which reports only names appearing in
-    or leaving the folder, by comparing listings: a write in place, or a rename over the file, changes no name and goes
-    unseen. So there the file is moved aside, and the new one moved in after a pause long enough for KiCad to list the
-    folder in between; the old copy is kept until the new one is in place.
-    """
     t.parse(t.item(text))  # never hand KiCad a file we can't read back
-    if platform.system() != "Darwin":
-        t.path.write_text(text, encoding="utf-8")
-        return
-    new = t.path.with_name(f".{t.path.name}.cadmate-new")
-    old = t.path.with_name(f".{t.path.name}.cadmate-old")
-    new.write_text(text, encoding="utf-8")
-    os.replace(t.path, old)
-    try:
-        time.sleep(MAC_SETTLE)
-    finally:
-        os.replace(new, t.path)
-    old.unlink(missing_ok=True)
+    t.path.write_text(text, encoding="utf-8")
 
 
-# KiCad 10's footprint editor reloads a changed footprint from a copy of the library it keeps in memory, not from the
-# file, so on its own it shows the old footprint. The PCB editor's Redraw re-reads every library that changed on disk
-# into that copy, and it can be run through KiCad's API. Run right after the write, it lands before the footprint
-# editor's reload (a second after it notices the change).
-REDRAW_ACTION = "common.Control.zoomRedraw"
+# KiCad 10's footprint editor keeps a copy of each library and opens footprints from it. Its file watcher reloads a
+# changed footprint from that copy too, so it shows the old one; the toolbar's Refresh (View > Redraw) re-reads changed
+# libraries into the copy, and opening the footprint again then shows the file. The API can't reach the footprint
+# editor, so the user does those two clicks.
+SEE_IT = {
+    "footprint": "To see it in KiCad's footprint editor: click Refresh in its toolbar (View > Redraw), then double-click "
+                 "the footprint in the library tree. KiCad 10 doesn't pick up the file by itself.",
+    "symbol": "KiCad's symbol editor reloads the symbol about a second after the write, unless it holds unsaved edits.",
+}
 
 
 def refresh_kicad(t: Target) -> dict:
-    if t.kind != "footprint":
-        return {}
-    from . import kicad_pcb_live
-
-    try:
-        kicad, _ = kicad_pcb_live.connect(timeout_ms=3000)
-        kicad.run_action(REDRAW_ACTION)
-        return {"kicad": "KiCad re-read the library; the footprint editor shows the change within about two seconds. If it "
-                         "doesn't, the user double-clicks the footprint in the editor's library tree to open it again."}
-    except Exception:
-        return {"kicad": "KiCad's footprint editor won't show this by itself: it keeps a copy of the library from when the "
-                         "project opened. With the project's board open in the PCB editor and KiCad's API on, cadmate refreshes "
-                         "that copy itself; otherwise the user closes the footprint editor, reopens the project and opens the "
-                         "footprint again. Say so, and show kicad_live_snapshot meanwhile."}
+    return {"kicad": SEE_IT[t.kind]}
 
 
 # --- what changed -------------------------------------------------------------------------------

@@ -308,3 +308,29 @@ def test_drc_report_becomes_findings():
     r = pr.review_board(board(ic()), fab=None, drc=rep)
     assert r["findings"][0]["rule"] in ("unconnected", "drc") and r["counts"]["problem"] == 2
     assert "kicad_drc" in r["checked"]
+
+
+# --- differential pairs and what was measured -----------------------------------------------------------
+
+
+def test_pair_names():
+    nets = ["/U1D+", "/U1D-", "USB_DP", "USB_DM", "LVDS_P", "LVDS_N", "PWM_P", "GND", "VBUSP", "VBUSN"]
+    pairs = pr.diff_pairs(nets)
+    assert ("/U1D+", "/U1D-") in pairs and ("USB_DP", "USB_DM") in pairs and ("LVDS_P", "LVDS_N") in pairs
+    assert not any("VBUS" in a for a, _ in pairs)
+
+
+def test_pair_routed_apart_and_unequal():
+    together = board(ic(), seg((5, 10), (25, 10), "USB_D+", w=0.2), seg((5, 10.45), (25, 10.45), "USB_D-", w=0.2))
+    r = pr.review_board(together, fab=None)
+    assert rules(r, "diff_pair") == [] and r["measured"]["diff_pair"][0]["coupled"] == 1.0
+    apart = board(ic(), seg((5, 10), (25, 10), "USB_D+", w=0.2), seg((5, 10.45), (8, 10.45), "USB_D-", w=0.2),
+                  seg((8, 10.45), (8, 20), "USB_D-", w=0.2), seg((8, 20), (25, 20), "USB_D-", w=0.2))
+    whats = [f["what"] for f in rules(pr.review_board(apart, fab=None), "diff_pair")]
+    assert any("lengths differ" in w for w in whats) and any("run together" in w for w in whats)
+
+
+def test_measurements_are_reported_without_findings():
+    r = pr.review_board(_xtal(), fab=None)
+    xi = next(m for m in r["measured"]["crystal"] if m["net"] == "XI")
+    assert xi["route_mm"] == pytest.approx(0.635 + 8.55, abs=0.2) and xi["vias"] == 0

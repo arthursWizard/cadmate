@@ -72,6 +72,8 @@ LIMITS = {
     "noisy_gap": 1.0,  # mm: signals closer than this to a switching node
     "neck_length": 1.0,  # mm: a narrower track this short at a small pad is a fan-out neck, not a thin trace
     "vias_per_net": 6,
+    "pair_mismatch": 2.0,  # mm between the two nets of a pair
+    "pair_coupled": 0.6,  # share of a pair's length run side by side (edge gap within 3 widths, at least 0.5 mm)
     "delta_t": 10.0,  # °C temperature rise for IPC-2221
 }
 
@@ -197,6 +199,7 @@ class Review:
         self.checked: list[str] = []
         self.skipped: list[dict] = []
         self._graphs: dict[str, NetGraph] = {}
+        self.measured: dict[str, list] = {}  # what each rule measured, findings or not
 
     def role(self, net: str | None) -> str:
         return self.roles.get(net, {}).get("role", "signal") if net else "none"
@@ -265,6 +268,10 @@ class Review:
                     "ground_route_mm": groute["length"] if groute else None, "ground_route_vias": groute["vias"] if groute else None,
                     "ground_through_pour": groute["through_pour"] if groute else None}
             where = dict(refs=[cref, iref], net=pp.net)
+            self.measured.setdefault("decoupling", []).append(
+                {"cap": cref, "ic": iref, "pins": sorted({p.number for p in pins}), "net": pp.net,
+                 **{k: (round(v, 2) if isinstance(v, float) else v) for k, v in vals.items()},
+                 "loop_mm": round(route["length"] + groute["length"], 2) if route and groute else None})
             if route is None:
                 self.add("decoupling", "problem", f"{label}: no copper path from the cap to the pin",
                          "The cap isn't connected to the pin it sits next to; check for an unrouted or broken track.", "mt101", pp.x, pp.y, **where, **vals)
@@ -312,9 +319,14 @@ class Review:
                 ic_pins = [p for part in self.b.parts if _is_ic(part) for p in part.copper_pads if p.net == net]
                 tracks = [t for t in self.b.tracks if t.net == net]
                 net_vias = [v for v in self.b.vias if v.net == net]
+                r = None
                 if ic_pins:
                     pin = min(ic_pins, key=lambda p: dist((p.x, p.y), (pad.x, pad.y)))
                     r = self.graph(net).path(pad, pin)
+                    self.measured.setdefault("crystal", []).append(
+                        {"crystal": x.ref, "net": net, "to": pin.name, "route_mm": r["length"] if r else None,
+                         "vias": len(net_vias), "track_mm": round(sum(t.length for t in tracks), 2),
+                         "layers": sorted({t.layer for t in tracks})})
                     if r and r["length"] > self.lim["crystal_route"]:
                         self.add("crystal", "warning", f"{x.ref} to {pin.name}: {r['length']:.1f} mm of track",
                                  "Crystal traces are high-impedance and pick up noise; AN2867 puts the crystal as close as possible to the MCU.",
@@ -492,6 +504,47 @@ class Review:
                     and (p.contains(t.start, t.width / 2) or p.contains(t.end, t.width / 2)):
                 return True
         return False
+
+    # differential pairs ------------------------------------------------------------------------------
+
+    def pairs(self) -> None:
+        found = diff_pairs(self.b.nets)
+        routed = [(a, b) for a, b in found if any(t.net == a for t in self.b.tracks) and any(t.net == b for t in self.b.tracks)]
+        if not routed:
+            self.skipped.append({"rule": "diff_pair", "why": "no routed net pairs named like X+/X-, X_P/X_N or DP/DM"})
+            return
+        self.checked.append("diff_pair")
+        for a, b in routed:
+            ta = [t for t in self.b.tracks if t.net == a]
+            tb = [t for t in self.b.tracks if t.net == b]
+            la, lb = sum(t.length for t in ta), sum(t.length for t in tb)
+            coupled = self._coupled(ta, tb)
+            self.measured.setdefault("diff_pair", []).append({"pair": [a, b], "length_mm": [round(la, 2), round(lb, 2)],
+                                                              "mismatch_mm": round(abs(la - lb), 2), "coupled": round(coupled, 2)})
+            if abs(la - lb) > self.lim["pair_mismatch"]:
+                self.add("diff_pair", "warning", f"{a} / {b}: lengths differ by {abs(la - lb):.1f} mm ({la:.1f} vs {lb:.1f})",
+                         "Length mismatch in a pair turns into skew between the two signals, which turns into common-mode noise. "
+                         "Tracks count only; pad and package lengths aren't included.", "heuristic", ta[0].start[0], ta[0].start[1],
+                         ta[0].layer, net=a, mismatch_mm=abs(la - lb))
+            if coupled < self.lim["pair_coupled"]:
+                self.add("diff_pair", "warning" if coupled < 0.4 else "note", f"{a} / {b}: run together for only {coupled:.0%} of their length",
+                         "A pair keeps its impedance and rejects noise only while the two tracks run side by side; an autorouter "
+                         "routes them as two separate nets.", "heuristic", ta[0].start[0], ta[0].start[1], ta[0].layer, net=a, coupled=coupled)
+
+    def _coupled(self, ta: list[Track], tb: list[Track]) -> float:
+        total = near = 0.0
+        for t in ta:
+            for s, e in t.pieces():
+                L = dist(s, e)
+                n = max(1, int(L / 0.2))
+                for k in range(n):
+                    p = (s[0] + (e[0] - s[0]) * (k + 0.5) / n, s[1] + (e[1] - s[1]) * (k + 0.5) / n)
+                    total += L / n
+                    gap = min((point_seg(p, a, b)[0] - (o.width + t.width) / 2 for o in tb if o.layer == t.layer for a, b in o.pieces()),
+                              default=math.inf)
+                    if gap <= max(0.5, 3 * t.width):
+                        near += L / n
+        return near / total if total else 1.0
 
     # vias ----------------------------------------------------------------------------------------------
 
@@ -686,6 +739,21 @@ class Review:
 # --- helpers ----------------------------------------------------------------------------------------
 
 
+def diff_pairs(nets: list[str]) -> list[tuple[str, str]]:
+    """Net pairs named like a differential pair: X+/X-, X_P/X_N, XP/XN, X_DP/X_DM."""
+    names = set(nets)
+    out = []
+    for n in nets:
+        for pos, neg in (("+", "-"), ("_P", "_N"), ("P", "N"), ("DP", "DM")):
+            if n.endswith(pos) and len(n) > len(pos):
+                other = n[: -len(pos)] + neg
+                base = n[: -len(pos)].split("/")[-1]
+                if other in names and (pos not in ("P", "DP") or re.search(r"(USB|D|LVDS|ETH|TX|RX|CLK|HDMI)_?$", base, re.I)):
+                    out.append((n, other))
+                    break
+    return out
+
+
 def ipc2221_current(width_mm: float, delta_t: float, thickness_mm: float = 0.035, outer: bool = True) -> float:
     """Amps a track carries at this temperature rise, per IPC-2221 (SOURCES["ipc2221"])."""
     k = 0.048 if outer else 0.024
@@ -793,8 +861,11 @@ def _drc_findings(rep: dict) -> list[dict]:
             items.append({"what": "; ".join(i.get("description", "") for i in its)[:200],
                           "at": [its[0].get("pos", {}).get("x"), its[0].get("pos", {}).get("y")] if its else None})
         first = items[0]["at"] if items and items[0]["at"] else [None, None]
-        out.append(_f("unconnected", "problem", f"{len(un)} connection(s) not routed", "Nets the ratsnest still shows: the board doesn't "
-                      "work until they are routed.", "kicad_drc", first[0], first[1], items=items))
+        nets = sorted({m for u in un for i in u.get("items", []) for m in re.findall(r"\[([^\]]+)\]", i.get("description", ""))})
+        out.append(_f("unconnected", "problem", f"{len(un)} connection(s) not routed, on {len(nets)} net(s)",
+                      "The ratsnest still shows these: the board doesn't work until they are routed. KiCad counts each missing "
+                      "link, so one net split in three counts twice; autorouters usually count nets.", "kicad_drc", first[0], first[1],
+                      nets=nets[:30], items=items))
     kinds: dict[str, list] = {}
     for v in rep.get("violations", []):
         kinds.setdefault((v.get("type", "?"), v.get("severity", "?")), []).append(v)
@@ -818,6 +889,7 @@ def review_board(board: Board, currents: dict[str, float] | None = None, roles: 
     r = Review(board, infer_roles(board, roles), currents, lim)
     r.decoupling()
     r.crystals()
+    r.pairs()
     r.noisy()
     r.widths()
     r.vias(fab)
@@ -842,7 +914,7 @@ def review_board(board: Board, currents: dict[str, float] | None = None, roles: 
     return {
         "ok": True, "board": board.name, "counts": counts, "findings": findings[:LISTED],
         "more": len(findings) - LISTED if len(findings) > LISTED else 0,
-        "checked": r.checked, "not_checked": r.skipped,
+        "checked": r.checked, "not_checked": r.skipped, "measured": r.measured,
         "net_roles": {k: (v if k not in ("signal",) else {"count": len(v), "examples": v[:10]}) for k, v in sorted(by_role.items())},
         "net_roles_note": "Inferred from net names, pin types, power symbols and the parts on each net. 'signal' means cadmate "
                           "couldn't tell what the net carries; pass roles={net: 'fast'|'sensitive'|'power'|...} to correct it.",

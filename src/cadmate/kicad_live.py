@@ -378,7 +378,7 @@ def edit(path: str, edits: list[dict], label: str, name: str | None = None) -> d
     st["seen"] = new_item
     _save(t, st)
     return {"ok": True, "written": str(t.path), "step": len(st["steps"]), "label": label.strip(), "user_changes": user,
-            "check": {"ok": after_check["ok"]} | _new_findings(before_check, after_check), "changed": changes(t, current, new_item)["items"]}
+            "check": {"ok": after_check["ok"], "errors": after_check["errors"]} | _new_findings(before_check, after_check), "changed": changes(t, current, new_item)["items"]}
 
 
 def undo(path: str, name: str | None = None) -> dict:

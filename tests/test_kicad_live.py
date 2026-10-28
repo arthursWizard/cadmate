@@ -174,3 +174,11 @@ def test_empty_fields_kicad_adds_on_save_are_not_user_changes(fp):
     hand_edit(fp, '\t(attr smd)', '\t(property "Datasheet" "" (at 0 0 0) (layer "F.Fab"))\n\t(property "Description" "" (at 0 0 0) (layer "F.Fab"))\n\t(attr smd)')
     ch = kicad_live.state(str(fp))["user_changes"]
     assert ch["changed"] and ch["items"] == [] and "note" in ch
+
+
+def test_edit_reply_lists_errors_that_were_already_there(fp):
+    kicad_live.state(str(fp))
+    hand_edit(fp, '(pad "1" smd roundrect (at -2.475 -1.905)', '(pad "1" smd roundrect (at -2.9 -1.905)')  # past the courtyard
+    r = kicad_live.edit(str(fp), [{"old": '(at -2.9 -1.905) (size 1.95 0.6)', "new": '(at -2.9 -1.905) (size 2.15 0.6)'}], "pad 1 longer")
+    assert r["ok"] and not r["check"]["new_errors"]
+    assert any("outside the courtyard" in e for e in r["check"]["errors"])

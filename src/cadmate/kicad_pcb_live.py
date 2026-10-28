@@ -45,11 +45,11 @@ def _kipy():
     return kipy
 
 
-def connect():
-    """The board open in KiCad's PCB editor, as a kipy Board."""
+def connect(timeout_ms: int = TIMEOUT_MS):
+    """KiCad and the board open in its PCB editor, as kipy objects."""
     kipy = _kipy()
     try:
-        kicad = kipy.KiCad(timeout_ms=TIMEOUT_MS)
+        kicad = kipy.KiCad(timeout_ms=timeout_ms)
         kicad.ping()
     except Exception as e:
         raise PcbUnavailable(f"can't reach KiCad's API ({e.__class__.__name__}: {e}). {ENABLE_HOW}") from e
@@ -143,7 +143,9 @@ def _summary(node: sexpr.Node, names: dict[str, str]) -> dict:
         name = node.child("name")
         pts = node.child("polygon")
         corners = len(pts.child("pts").children("xy")) if pts is not None and pts.child("pts") is not None else 0
-        return {"type": "zone", "net": _net(node, names) or (node.child("net_name").atoms() or [None])[0] if node.child("net_name") else _net(node, names),
+        net_name = node.child("net_name")
+        net = _net(node, names) or (net_name.atoms()[0] if net_name is not None and net_name.atoms() else None)
+        return {"type": "zone", "net": net,
                 "name": name.atoms()[0] if name is not None and name.atoms() else None, "layer": _layer(node), "corners": corners}
     d = {"type": h.removeprefix("gr_") if h in _GRAPHICS else h, "layer": _layer(node)}
     for key in ("start", "end", "center", "mid", "at"):

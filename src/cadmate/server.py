@@ -13,7 +13,7 @@ from pathlib import Path
 
 from mcp.server.mcpserver import Image, MCPServer
 
-from . import apps, check, footprint, generate, ipc, kicad_live, live, model, packages, part, review, symbol, symbol_check, symbol_generate
+from . import apps, check, footprint, generate, ipc, kicad_live, kicad_pcb_live, live, model, packages, part, review, symbol, symbol_check, symbol_generate
 from .footprint import read as _read_footprint  # generate_symbol's footprint argument shadows the module
 
 server = MCPServer("cadmate")
@@ -45,6 +45,7 @@ def environment() -> dict:
             "freecad_live": _live_running(),
             "kicad_live": True,
             "kicad_live_snapshot": kicad.available,
+            "kicad_pcb_live": _pcb_running(),
         },
     }
 
@@ -632,6 +633,82 @@ def kicad_live_snapshot(path: str, name: str | None = None, width: int = 900) ->
     try:
         return Image(path=kicad_live.snapshot(path, name, width))
     except (kicad_live.LiveError, OSError, subprocess.SubprocessError) as e:
+        raise RuntimeError(str(e)) from e
+
+
+# The board open in KiCad's PCB editor, through KiCad's API (kicad_pcb_live.py).
+
+
+def _pcb_running() -> bool:
+    try:
+        kicad_pcb_live.connect(timeout_ms=1500)
+        return True
+    except kicad_pcb_live.PcbUnavailable:
+        return False
+
+
+def _pcb(fn, *args, **kw) -> dict:
+    try:
+        return fn(*args, **kw)
+    except kicad_pcb_live.PcbUnavailable as e:
+        return {"ok": False, "running": False, "error": str(e), "how": kicad_pcb_live.ENABLE_HOW}
+    except Exception as e:  # API errors: KiCad busy, bad request
+        return {"ok": False, "error": f"{e.__class__.__name__}: {kicad_pcb_live.busy_hint(e)}"}
+
+
+@server.tool()
+def kicad_pcb_state(footprints: bool = True, tracks_on_nets: list[str] | None = None) -> dict:
+    """Read the board open in the user's KiCad PCB editor, as it is now (saved or not), and what they changed since cadmate last looked.
+
+    Needs KiCad's API switched on (KiCad > Settings… > Plugins > Enable KiCad API, then restart KiCad); the reply says
+    how when it isn't. Returns user_changes (items added, removed or changed by the user since cadmate's last look or
+    edit: footprints with ref and placement, tracks and vias with net, zones, graphics), the user's current selection
+    (what "this one" means), counts by type, every footprint's ref, value, library, x, y (mm, Y down), rotation and
+    side, and with tracks_on_nets the tracks and vias on those nets. Read this before every edit and build on it.
+    """
+    return _pcb(kicad_pcb_live.state, footprints, tracks_on_nets)
+
+
+@server.tool()
+def kicad_pcb_edit(code: str, label: str) -> dict:
+    """Edit the board in the user's KiCad PCB editor as one undo step named "cadmate: <label>".
+
+    code is Python using kicad-python (kipy), run inside one commit: if it raises, nothing changes on the board. It sees
+    board (kipy Board), kicad, kipy, Vector2, Angle, BoardLayer, mm(x) (mm to KiCad's nanometres), to_mm(nm), math,
+    footprint(ref) (the FootprintInstance with that reference) and place(ref, x=None, y=None, rotation=None) (mm,
+    degrees). Change items and send them back with board.update_items(items); add with board.create_items, remove with
+    board.remove_items. Example: f = footprint("C3"); f.position = Vector2.from_xy_mm(12.5, 8); board.update_items(f).
+    Set result to return a value. Edit what is there and keep the user's changes; don't delete and recreate their
+    items. The reply gives the user's changes found first and what this step changed. label is one line the user sees
+    in KiCad's undo list ("C3 closer to U1's VDD pin").
+    """
+    return _pcb(kicad_pcb_live.edit, code, label)
+
+
+@server.tool()
+def kicad_pcb_undo() -> dict:
+    """Take back cadmate's last step on the board with KiCad's own undo.
+
+    Refused when the user changed the board after that step, since KiCad's undo would take back their change first.
+    """
+    return _pcb(kicad_pcb_live.undo)
+
+
+@server.tool()
+def kicad_pcb_save() -> dict:
+    """Save the board in the user's KiCad PCB editor. Only when the user asks or agrees."""
+    return _pcb(kicad_pcb_live.save)
+
+
+@server.tool()
+def kicad_pcb_snapshot(layers: str = "F.Cu,B.Cu,F.SilkS,B.SilkS,F.Fab,Edge.Cuts", width: int = 1400) -> Image:
+    """Picture of the board in the user's PCB editor as it is now, unsaved edits included, plotted by kicad-cli.
+
+    KiCad writes a copy to a temporary folder for this; the user's file is untouched. layers is KiCad's comma list.
+    """
+    try:
+        return Image(path=kicad_pcb_live.snapshot(layers, width))
+    except (kicad_pcb_live.PcbUnavailable, kicad_live.LiveError, OSError, subprocess.SubprocessError) as e:
         raise RuntimeError(str(e)) from e
 
 

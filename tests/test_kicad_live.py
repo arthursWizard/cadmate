@@ -154,3 +154,13 @@ def test_symbol_field_change_is_reported(lib):
 def test_symbol_rename_refused(lib):
     r = kicad_live.edit(str(lib), [{"old": '(symbol "NE555D"', "new": '(symbol "NE555X"'}], "rename", name="NE555D")
     assert not r["ok"] and "rename" in r["error"]
+
+
+def test_svg_gets_a_pixel_size(tmp_path):
+    svg = tmp_path / "a.svg"
+    svg.write_text('<?xml version="1.0"?>\n<svg\n  xmlns="http://www.w3.org/2000/svg"\n  version="1.1"\n'
+                   '  width="22.656800mm" height="8.483600mm" viewBox="0.000000 0.000000 22.656800 8.483600">\n<title>x</title></svg>')
+    kicad_live._pixel_size(svg, 900)
+    text = svg.read_text()
+    assert '<svg width="900" height="337"' in text and "mm" not in text.split("<title>")[0].split("viewBox")[0]
+    assert 'viewBox="0.000000 0.000000 22.656800 8.483600"' in text

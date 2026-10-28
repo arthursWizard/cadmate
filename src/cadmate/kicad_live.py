@@ -23,6 +23,7 @@ import difflib
 import hashlib
 import json
 import platform
+import re
 import shutil
 import subprocess
 import tempfile
@@ -412,7 +413,22 @@ def undo(path: str, name: str | None = None) -> dict:
 # --- pictures -----------------------------------------------------------------------------------
 
 
+def _pixel_size(svg: Path, width: int) -> None:
+    """Give the SVG a size in pixels, width wide, keeping its viewBox. kicad-cli sizes it in mm, and macOS's qlmanage
+    draws it at that physical size in a corner instead of scaling it to the picture."""
+    text = svg.read_text(encoding="utf-8")
+    root = re.search(r"<svg\b[^>]*>", text)
+    box = re.search(r'viewBox="\s*([-\d.]+)[\s,]+([-\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)\s*"', root.group(0)) if root else None
+    if not box or float(box.group(3)) <= 0:
+        return
+    height = max(1, round(width * float(box.group(4)) / float(box.group(3))))
+    tag = re.sub(r'\s(width|height)="[^"]*"', "", root.group(0))
+    tag = tag.replace("<svg", f'<svg width="{width}" height="{height}"', 1)
+    svg.write_text(text[:root.start()] + tag + text[root.end():], encoding="utf-8")
+
+
 def _svg_to_png(svg: Path, png: Path, width: int) -> None:
+    _pixel_size(svg, width)
     try:
         import cairosvg  # optional
 
@@ -441,7 +457,8 @@ def snapshot(path: str, name: str | None = None, width: int = 900) -> Path:
         raise LiveError(f"kicad-cli not found; set {apps.KICAD_CLI_ENV}")
     out = Path(tempfile.mkdtemp(prefix="cadmate-snap-"))
     if t.kind == "footprint":
-        cmd = [cli, "fp", "export", "svg", "--footprint", t.path.stem, "--output", str(out), str(t.path.parent)]
+        # Pad outlines and numbers on the fab layer, so the picture shows which pad is which.
+        cmd = [cli, "fp", "export", "svg", "--footprint", t.path.stem, "--sketch-pads-on-fab-layers", "--output", str(out), str(t.path.parent)]
     else:
         cmd = [cli, "sym", "export", "svg", "--symbol", t.name, "--output", str(out), str(t.path)]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)

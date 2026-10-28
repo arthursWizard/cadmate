@@ -126,6 +126,7 @@ def _check_pin1_mark(footprint: Footprint, marks: list[dict], pad_box: dict, err
         warnings.append("the model's pin 1 mark lies on the pad centre line, so its orientation is not checked")
         return
     m, axes, got = found[0]
+    measured["pin1_mark"] = (round(m["x"], 4), round(-m["y"], 4))
     where = f"the model's pin 1 mark is at ({m['x']:.2f}, {-m['y']:.2f}) and pad 1 at ({pin1.x:.2f}, {pin1.y:.2f})"
     if len(axes) == 2 and all(got[i] == -want[i] for i in axes):
         errors.append(f"{where}, opposite corners: the model is turned 180 degrees about Z; add 180 to its Z rotation")

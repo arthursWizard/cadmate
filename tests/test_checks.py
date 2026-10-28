@@ -93,6 +93,20 @@ def test_model_turned_180_is_caught_by_its_pin1_mark():
     r = check.check_model(SOIC, GOOD, marks=[MARK | {"x": 1.5, "y": -1.0}])
     assert not r["ok"]
     assert "turned 180 degrees" in r["errors"][0]
+    assert r["measured"]["pin1_mark"] == (1.5, 1.0)
+
+
+def test_dip_end_notch_tells_180_degrees():
+    # A DIP's notch sits on the centre line of its pin 1 end: it shows which end, not which side.
+    dip = footprint.parse('''(footprint "DIP-8" (pad "1" thru_hole oval (at 0 0) (size 1.6 1.6) (drill 0.8))
+      (pad "2" thru_hole oval (at 0 2.54) (size 1.6 1.6) (drill 0.8)) (pad "3" thru_hole oval (at 0 5.08) (size 1.6 1.6) (drill 0.8))
+      (pad "4" thru_hole oval (at 0 7.62) (size 1.6 1.6) (drill 0.8)) (pad "5" thru_hole oval (at 7.62 7.62) (size 1.6 1.6) (drill 0.8))
+      (pad "6" thru_hole oval (at 7.62 5.08) (size 1.6 1.6) (drill 0.8)) (pad "7" thru_hole oval (at 7.62 2.54) (size 1.6 1.6) (drill 0.8))
+      (pad "8" thru_hole oval (at 7.62 0) (size 1.6 1.6) (drill 0.8)))''')
+    box = {"xmin": 0.64, "xmax": 6.98, "ymin": -8.7, "ymax": 1.08, "zmin": -3.0, "zmax": 5.0}
+    assert check.check_model(dip, box, marks=[{"x": 3.81, "y": 1.08, "r": 0.75}])["ok"]
+    r = check.check_model(dip, box, marks=[{"x": 3.81, "y": -8.7, "r": 0.75}])
+    assert any("along Y" in e for e in r["errors"]), r
 
 
 def test_mirrored_mark_is_named():

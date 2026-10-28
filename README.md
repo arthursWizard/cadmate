@@ -6,13 +6,14 @@ cadmate is an [MCP](https://modelcontextprotocol.io) server. You talk to Claude 
 
 ## Status
 
-Early. Six workflows work end to end:
+Early. Seven workflows work end to end:
 
 - **Make the missing 3D model**: point Claude at a footprint and the part's datasheet, and get a checked STEP model linked into that footprint.
 - **Make a footprint from a datasheet**: Claude reads the package drawing, cadmate computes IPC-7351B pads (or places the datasheet's recommended land pattern) and writes a checked `.kicad_mod`. For JEDEC packages the pads and courtyard match KiCad's own library footprints exactly.
 - **Make a whole part from one datasheet**: symbol, footprint and 3D model from one reading of the datasheet, linked to each other (the symbol's Footprint field, the footprint's model link), checked together and registered in the project's library tables.
 - **Work on a model together in FreeCAD**: Claude opens or builds the model in your FreeCAD window, you comment or edit it by hand, and Claude edits on top of what you changed, until you're both happy. Then it exports the STEP and checks it against the footprint. See "Live editing in FreeCAD" below.
 - **Work on a footprint or symbol together in KiCad**: you keep it open in KiCad's footprint or symbol editor, save and comment or edit by hand, and Claude edits on top of what you saved; KiCad reloads it each time. See "Live editing in KiCad" below.
+- **Work on a board together in KiCad's PCB editor**: Claude reads the board straight from your open window, saved or not, sees what you moved since its last look, and edits on top; each edit is one undo step in KiCad. See "Live editing in the PCB editor" below.
 - **Make a symbol from a datasheet**: Claude reads the pin table, cadmate lays out the symbol per KiCad's library conventions (grid, sides by pin type, stacked power pins, hidden NC pins, fields) and writes it into a `.kicad_sym` library, checked against the pin table and the footprint's pads.
 
 | Tool | What it does | Needs |
@@ -45,6 +46,11 @@ Early. Six workflows work end to end:
 | `kicad_live_edit` | Edits a footprint or symbol on top of your saved edits, as one labelled step; KiCad reloads it | nothing |
 | `kicad_live_undo` | Takes back Claude's last step, keeping your edits made since | nothing |
 | `kicad_live_snapshot` | A picture of the footprint or symbol, plotted by kicad-cli | KiCad, and an SVG converter (macOS has one) |
+| `kicad_pcb_state` | The board open in KiCad's PCB editor as it is now, your selection, and what you changed since Claude last looked | KiCad API on |
+| `kicad_pcb_edit` | Edits the open board as one undo step named "cadmate: ..." | KiCad API on |
+| `kicad_pcb_undo` | Takes back Claude's last step, only if nothing happened after it | KiCad API on |
+| `kicad_pcb_save` | Saves the board | KiCad API on |
+| `kicad_pcb_snapshot` | A picture of the open board, unsaved edits included | KiCad API on, and an SVG converter |
 
 ## Version policy
 
@@ -107,6 +113,18 @@ KiCad's undo list starts over on every reload, so Claude keeps its own: each ste
 
 Footprints placed on a board don't follow along: use Tools > Update Footprints from Library in the PCB editor when you're done. In a symbol library, Claude only touches the one symbol; the rest of the file stays byte for byte.
 
+### Live editing in the PCB editor
+
+The PCB editor is the one part of KiCad with an API, so here the loop is properly live: no saving in between.
+
+1. Turn the API on once: KiCad menu > Settings… (Preferences on Linux and Windows) > Plugins, tick "Enable KiCad API", and restart KiCad.
+2. Open the board in the PCB editor and tell Claude what you want. Select parts to say "this one".
+3. Claude reads the board from the editor, sees what you changed since its last look, and edits on top. Each edit is one undo step named `cadmate: <what changed>`, so Cmd+Z takes it back like any other.
+
+The API has no change log, so cadmate tells your changes from its own by comparing the whole board with what it saw after its last edit. It asks Claude to undo its own step only when nothing happened after it, because KiCad's undo always takes back the last change, whoever made it. cadmate doesn't save the board unless you ask.
+
+The API is reachable by any program running as you on this computer, the same as your files. Turn it off again in the same place if that matters to you.
+
 cadmate finds KiCad and FreeCAD in their usual install locations on macOS, Linux and Windows. To point it elsewhere, set these in the server's environment:
 
 | Variable | Example |
@@ -140,7 +158,7 @@ To read datasheets, Claude needs a way to read PDFs and to look at drawings as i
 4. Board review: ERC/DRC with explanations and fixes
 5. Fab export per fab house
 6. Enclosure from the board, worked on live in FreeCAD
-7. Live PCB help through KiCad's API
+7. More live PCB help: DRC findings explained and fixed in the open board
 8. Schematic help (live once KiCad 11's schematic API ships)
 9. Buttons inside KiCad and FreeCAD that hand the current selection to Claude
 

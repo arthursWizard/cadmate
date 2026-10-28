@@ -182,3 +182,15 @@ def test_edit_reply_lists_errors_that_were_already_there(fp):
     r = kicad_live.edit(str(fp), [{"old": '(at -2.9 -1.905) (size 1.95 0.6)', "new": '(at -2.9 -1.905) (size 2.15 0.6)'}], "pad 1 longer")
     assert r["ok"] and not r["check"]["new_errors"]
     assert any("outside the courtyard" in e for e in r["check"]["errors"])
+
+
+def test_macos_write_moves_the_file_out_and_back(fp, monkeypatch):
+    monkeypatch.setattr(kicad_live.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(kicad_live, "MAC_SETTLE", 0)
+    seen = []
+    real = kicad_live.os.replace
+    monkeypatch.setattr(kicad_live.os, "replace", lambda a, b: (seen.append((Path(a).name, Path(b).name)), real(a, b)))
+    r = kicad_live.edit(str(fp), [{"old": '(at -2.475 -1.905) (size 1.95 0.6)', "new": '(at -2.475 -1.905) (size 2.2 0.6)'}], "pad 1 longer")
+    assert r["ok"]
+    assert seen == [(fp.name, f".{fp.name}.cadmate-old"), (f".{fp.name}.cadmate-new", fp.name)]
+    assert "(size 2.2 0.6)" in fp.read_text() and sorted(p.name for p in fp.parent.iterdir()) == [fp.name]

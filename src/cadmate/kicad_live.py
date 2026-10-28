@@ -22,6 +22,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
+import os
 import platform
 import re
 import shutil
@@ -136,10 +137,31 @@ def _save(t: Target, st: dict) -> None:
     f.write_text(json.dumps(st))
 
 
+MAC_SETTLE = 0.5  # seconds between the file leaving its folder and coming back, so KiCad sees both
+
+
 def _write(t: Target, text: str) -> None:
-    """Write in place, not by rename: KiCad watches the file's folder and matches events on the file's own path."""
+    """Write the file so that KiCad's editor notices.
+
+    KiCad watches the file's folder through wxWidgets. On Linux (inotify) and Windows a write to the file is reported
+    with its path, so writing in place is enough. On macOS wxWidgets uses kqueue, which reports only names appearing in
+    or leaving the folder, by comparing listings: a write in place, or a rename over the file, changes no name and goes
+    unseen. So there the file is moved aside, and the new one moved in after a pause long enough for KiCad to list the
+    folder in between; the old copy is kept until the new one is in place.
+    """
     t.parse(t.item(text))  # never hand KiCad a file we can't read back
-    t.path.write_text(text, encoding="utf-8")
+    if platform.system() != "Darwin":
+        t.path.write_text(text, encoding="utf-8")
+        return
+    new = t.path.with_name(f".{t.path.name}.cadmate-new")
+    old = t.path.with_name(f".{t.path.name}.cadmate-old")
+    new.write_text(text, encoding="utf-8")
+    os.replace(t.path, old)
+    try:
+        time.sleep(MAC_SETTLE)
+    finally:
+        os.replace(new, t.path)
+    old.unlink(missing_ok=True)
 
 
 # --- what changed -------------------------------------------------------------------------------

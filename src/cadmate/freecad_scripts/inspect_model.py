@@ -22,6 +22,15 @@ result = {
 }
 
 
+def tight(shape):
+    """The shape's box. transformGeometry turns cylinders into B-splines whose plain BoundBox follows their control
+    points, about 0.2 mm too big on a 0.55 mm peg; the optimal box follows the surface."""
+    try:
+        return shape.optimalBoundingBox()
+    except Exception:  # older FreeCAD, or a shape OCC cannot measure that way
+        return shape.BoundBox
+
+
 def box(b):
     return {"xmin": b.XMin, "ymin": b.YMin, "zmin": b.ZMin, "xmax": b.XMax, "ymax": b.YMax, "zmax": b.ZMax}
 
@@ -33,7 +42,7 @@ if spec:
     z = spec["section_z"]
     parts = []
     for i, solid in enumerate(placed.Solids):
-        sb = solid.BoundBox
+        sb = tight(solid)
         loops = []
         if sb.ZMin < z < sb.ZMax:
             for wire in solid.slice(App.Vector(0, 0, 1), z):
@@ -43,7 +52,7 @@ if spec:
                     area = Part.Face(wire).Area
                 except Exception:  # a wire OCC cannot fill; its box still says where it is
                     area = None
-                loops.append({"bbox": box(wire.BoundBox), "area": area})
+                loops.append({"bbox": box(tight(wire)), "area": area})
         parts.append({"name": f"solid {i + 1}", "bbox": box(sb), "volume": solid.Volume, "section": loops})
     result["parts"] = parts
 

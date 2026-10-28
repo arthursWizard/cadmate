@@ -178,9 +178,10 @@ class Symbol:
         return [p for p in self.pins if p.unit in (unit, 0)]
 
     def body(self, unit: int) -> Rect | None:
-        """The unit's outline: its one rectangle, or the one nearest the origin."""
+        """The unit's outline: its one rectangle, or the largest. Smaller ones are drawings inside it, like the
+        plug KiCad's USB_C_Receptacle draws at its centre."""
         rects = [r for r in self.rects if r.unit in (unit, 0)]
-        return min(rects, key=lambda r: r.center[0] ** 2 + r.center[1] ** 2) if rects else None
+        return max(rects, key=lambda r: ((r.xmax - r.xmin) * (r.ymax - r.ymin), -(r.center[0] ** 2 + r.center[1] ** 2))) if rects else None
 
     def to_dict(self) -> dict:
         return {

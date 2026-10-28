@@ -40,7 +40,7 @@ Existing files are only replaced with `overwrite: true`, with `.bak` copies.
   - Put the STEP in the project (`<library>.3dshapes/`); cadmate links a path inside the project through `${KIPRJMOD}`.
   - To swap only the model of a part already made, use `link_model_to_footprint` and `check_part` rather than `generate_part` again, which rewrites the symbol and footprint too.
 - `cutout: true` in `model` when the board has a cutout under the part, as for a castellated module with parts on its underside soldered flat; the model may then reach below the board.
-- Models built headless (FreeCADCmd) have no colours; KiCad shows them grey.
+- Models built headless (FreeCADCmd) keep their colours on FreeCAD 1.0 and later. With 0.20 or 0.21 they come out grey, and `generate_part` warns.
 
 ## Checking an existing part
 

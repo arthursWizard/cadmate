@@ -8,7 +8,9 @@ The model's bounding box (from FreeCAD, in the model's own frame) is moved by
 the footprint's model offset and compared with the pads and courtyard. KiCad's
 footprint Y axis points down while the 3D Y axis points up, so pad Y values
 are flipped before comparing. Rotations other than steps of 90 degrees are not
-handled here yet (they would need the rotated shape, not its box).
+handled here yet (they would need the rotated shape, not its box). Where the pads
+look the same turned 180 degrees, the box cannot show a turned model, so the
+model's pin 1 mark is checked against pad 1.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ CENTER_TOLERANCE = 0.25  # mm
 Z_TOLERANCE = 0.05  # mm
 PAD_COVER_TOLERANCE = 0.5  # mm
 OVERSIZE_WARNING = 0.5  # mm
+MARK_SIDE_TOLERANCE = 0.05  # mm; a pin 1 mark or pad this close to the pad centre is on neither side
 
 
 def _rotate90(v: tuple[float, float, float], axis: int, quarter_turns: int) -> tuple[float, float, float]:
@@ -88,8 +91,51 @@ def _symmetric_pads(footprint: Footprint, cx: float, cy: float) -> bool:
     return all(any(abs(2 * cx - x - u) < 0.05 and abs(2 * cy - y - v) < 0.05 for u, v in pts) for x, y in pts)
 
 
+def _check_pin1_mark(footprint: Footprint, marks: list[dict], pad_box: dict, errors: list[str], warnings: list[str],
+                     measured: dict) -> None:
+    """On pads that look the same turned 180 degrees (or 90 for square parts), the box cannot tell the model's
+    orientation; its pin 1 mark can. The mark must sit on pin 1's side of the pad centre, along each axis where
+    pin 1 is off centre."""
+    pin1 = footprint.pin1
+    if pin1 is None or len(footprint.signal_pads()) < 4:
+        return
+    cx, cy = (pad_box["xmin"] + pad_box["xmax"]) / 2, (pad_box["ymin"] + pad_box["ymax"]) / 2
+    if not _symmetric_pads(footprint, cx, cy):
+        return  # the box and the pads already pin the orientation down
+
+    def side(v: float) -> int:
+        return 0 if abs(v) < MARK_SIDE_TOLERANCE else (1 if v > 0 else -1)
+
+    want = (side(pin1.x - cx), side(-pin1.y - cy))
+    if want == (0, 0):
+        return
+    if not marks:
+        warnings.append("no round pin 1 mark found on top of the model, so its orientation on these pads (which look the same "
+                        "turned 180 degrees) is not checked; add a dimple at pin 1 or check the 3D view")
+        return
+    found = []
+    for m in marks:
+        got = (side(m["x"] - cx), side(m["y"] - cy))
+        axes = [i for i in (0, 1) if want[i] and got[i]]
+        if axes and all(got[i] == want[i] for i in axes):
+            measured["pin1_mark"] = (round(m["x"], 4), round(-m["y"], 4))
+            return
+        if axes:
+            found.append((m, axes, got))
+    if not found:
+        warnings.append("the model's pin 1 mark lies on the pad centre line, so its orientation is not checked")
+        return
+    m, axes, got = found[0]
+    where = f"the model's pin 1 mark is at ({m['x']:.2f}, {-m['y']:.2f}) and pad 1 at ({pin1.x:.2f}, {pin1.y:.2f})"
+    if len(axes) == 2 and all(got[i] == -want[i] for i in axes):
+        errors.append(f"{where}, opposite corners: the model is turned 180 degrees about Z; add 180 to its Z rotation")
+    else:
+        flipped = " and ".join("XY"[i] for i in axes if got[i] != want[i])
+        errors.append(f"{where}, on the other side along {flipped}: the model is turned 90 degrees or mirrored")
+
+
 def check_model(footprint: Footprint, bbox: dict, model: Model | None = None, expected: dict | None = None, cutout: bool = False,
-                by_solid: bool = False) -> dict:
+                by_solid: bool = False, marks: list[dict] | None = None) -> dict:
     """Compare a model bounding box with the footprint.
 
     bbox: xmin..zmax of the model as read from its STEP file.
@@ -100,6 +146,8 @@ def check_model(footprint: Footprint, bbox: dict, model: Model | None = None, ex
     (a module with parts on its underside, soldered flat).
     by_solid: leave out the courtyard and below-the-board checks, because review.review_footprint makes
     them solid by solid (the overall box cannot tell a lead from a part under a module).
+    marks: the model's round pin 1 marks, placed (x, y in the 3D frame), as inspect_model.py finds them; None when
+    nobody looked. On pads that look the same turned round, the mark is what shows the model's orientation.
     """
     model = model or Model(path="")
     if any(abs(r - 90 * round(r / 90)) > 1e-6 for r in model.rotate):
@@ -141,6 +189,9 @@ def check_model(footprint: Footprint, bbox: dict, model: Model | None = None, ex
             warnings.append(f"model is mostly below the board (z {b['zmin']:.2f}..{b['zmax']:.2f}); it may be upside down, check the rotation")
         if pad_box:
             _covers_holes(footprint, b, pad_box, errors, warnings, "holes")
+
+    if marks is not None and pad_box:
+        _check_pin1_mark(footprint, marks, pad_box, errors, warnings, measured)
 
     court = footprint.courtyard
     if court is not None and not by_solid:

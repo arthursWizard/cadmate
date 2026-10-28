@@ -15,7 +15,13 @@ Uses the cadmate MCP server (KiCad side and checks) and FreeCAD. When the user w
 2. Get the body dimensions from the datasheet's package drawing. Ask the user for the datasheet or the part number if you don't have them. Never guess a dimension; ask. Use nominal values, not min or max; where the drawing gives only a maximum (often the height), use it and say so.
 3. Pick the family from `list_package_families` and run `package_params` with the footprint path. Fix every error before modelling. Show the user the warnings.
 4. Build the model in FreeCAD, live in the user's window or as a script run with `freecadcmd`, in the Part workbench so it stays parametric (see "Building" below). Look at a screenshot or render before going on.
-5. Export STEP next to where the model will live (see "Files"). Export VRML too if the user wants KiCad's renderer to show colours.
+5. Export STEP next to where the model will live (see "Files"). KiCad reads the STEP's colours. In a headless script, `ShapeColor` doesn't exist (there is no view object), so pass each object with one colour per face; this needs FreeCAD 1.0 or later:
+   ```python
+   import Import
+   Import.export([(body, [(0.15, 0.15, 0.15)] * len(body.Shape.Faces)),
+                  (leads, [(0.82, 0.82, 0.84)] * len(leads.Shape.Faces))], "part.step")
+   ```
+   `check_model_vs_footprint` reports `colours: false` when the STEP has none.
 6. `link_model_to_footprint` with the path written using a KiCad variable, never an absolute path.
 7. `check_model_vs_footprint` with the datasheet's overall size: `body_width` along the footprint's X, `body_length` along its Y (as in the footprint families), `body_height`. Fix every error and re-check. Report warnings to the user.
 8. Ask the user to open the footprint in KiCad's 3D viewer and confirm before calling it done.

@@ -77,7 +77,7 @@ def _dimple(body: BBox, pin1: Pad | None, top: float) -> dict:
     inset = r + min(0.3, min(w, h) / 10)
     x = cx + sx * (w / 2 - inset)
     y = cy + sy * (h / 2 - inset)
-    return {"cyl": [round(x, 6), round(y, 6), round(top - DIMPLE_DEPTH, 6), r, DIMPLE_DEPTH + 0.01]}
+    return {"cyl": [round(x, 6), round(y, 6), round(top - DIMPLE_DEPTH, 6), r, DIMPLE_DEPTH + 0.01], "pin1": True}
 
 
 def _body3d(fp_body: BBox) -> BBox:
@@ -241,13 +241,28 @@ def bbox(solids: list[dict]) -> dict:
     return {"xmin": min(xs), "xmax": max(xs), "ymin": min(ys), "ymax": max(ys), "zmin": min(zs), "zmax": max(zs)}
 
 
+def planned_marks(solids: list[dict]) -> list[dict]:
+    """The pin 1 dimples of planned solids, as inspect_model.py reports marks (3D frame, model not moved)."""
+    return [{"x": c["cyl"][0], "y": c["cyl"][1], "r": c["cyl"][3]} for s in solids for c in s.get("cut", []) if c.get("pin1")]
+
+
 def build(solids: list[dict], out: Path, name: str) -> dict:
     """Write the planned solids as a STEP file through FreeCADCmd. Returns what FreeCAD measured."""
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         spec = Path(tmp) / "model.json"
         spec.write_text(json.dumps({"name": name, "solids": solids, "out": str(out)}))
-        return apps.run_freecad_script(Path(__file__).parent / "freecad_scripts" / "build_model.py", env={"CADMATE_SPEC": str(spec)})
+        info = apps.run_freecad_script(Path(__file__).parent / "freecad_scripts" / "build_model.py", env={"CADMATE_SPEC": str(spec)})
+    info["colours"] = has_colours(out)
+    return info
+
+
+def has_colours(step: Path) -> bool:
+    """Whether a STEP file carries colours (AP214 COLOUR_RGB entities, which KiCad reads)."""
+    try:
+        return "COLOUR_RGB" in step.read_text(errors="replace")
+    except OSError:
+        return False
 
 
 def resolve(path: str, footprint_dir: Path | None = None, project_dir: Path | None = None) -> Path:
@@ -271,12 +286,14 @@ def resolve(path: str, footprint_dir: Path | None = None, project_dir: Path | No
     return Path(_VAR.sub(sub, path)).expanduser()
 
 
-def inspect(model_file: Path, placement: Model | None = None, board_thickness: float = 1.6) -> dict:
-    """Read a STEP file in FreeCAD: its box, solid count and validity, and with a placement every solid placed as
-    KiCad places it, cut at the board's mid-plane (see freecad_scripts/inspect_model.py)."""
+def inspect(model_file: Path, placement: Model | None = None, board_thickness: float = 1.6, parts: bool = True) -> dict:
+    """Read a STEP file in FreeCAD: its box, solid count and validity, and with a placement its pin 1 marks and
+    (with parts) every solid placed as KiCad places it, cut at the board's mid-plane (see
+    freecad_scripts/inspect_model.py)."""
     env = {"CADMATE_MODEL": str(model_file)}
     if placement is not None:
-        env["CADMATE_PLACEMENT"] = json.dumps({"matrix": check.placement_matrix(placement), "section_z": -board_thickness / 2})
+        env["CADMATE_PLACEMENT"] = json.dumps({"matrix": check.placement_matrix(placement), "section_z": -board_thickness / 2,
+                                               "parts": parts})
     return apps.run_freecad_script(Path(__file__).parent / "freecad_scripts" / "inspect_model.py", env=env)
 
 
@@ -300,8 +317,8 @@ def check_file(fp: Footprint, model_file: Path, placement: Model, expected: dict
     model_file, problem = _step_for(model_file)
     if problem:
         return {"ok": False, "errors": [problem], "warnings": []}
-    info = inspect(model_file, placement if by_solid else None, board_thickness)
-    result = check.check_model(fp, info["bbox"], placement, expected or None, cutout, by_solid=by_solid)
+    info = inspect(model_file, placement, board_thickness, parts=by_solid)
+    result = check.check_model(fp, info["bbox"], placement, expected or None, cutout, by_solid=by_solid, marks=info.get("marks"))
     if not info.get("valid", True):
         result["errors"].append("FreeCAD reports the shape as invalid")
     if info.get("solids", 1) == 0:
@@ -309,6 +326,7 @@ def check_file(fp: Footprint, model_file: Path, placement: Model, expected: dict
     result["ok"] = not result["errors"]
     result["model_file"] = str(model_file)
     result["solids"] = info.get("solids")
+    result["colours"] = has_colours(model_file)
     if by_solid:
         result["parts"] = info.get("parts", [])
     return result

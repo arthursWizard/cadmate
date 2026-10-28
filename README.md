@@ -6,11 +6,12 @@ cadmate is an [MCP](https://modelcontextprotocol.io) server. You talk to Claude 
 
 ## Status
 
-Early. Four workflows work end to end:
+Early. Five workflows work end to end:
 
 - **Make the missing 3D model**: point Claude at a footprint and the part's datasheet, and get a checked STEP model linked into that footprint.
 - **Make a footprint from a datasheet**: Claude reads the package drawing, cadmate computes IPC-7351B pads (or places the datasheet's recommended land pattern) and writes a checked `.kicad_mod`. For JEDEC packages the pads and courtyard match KiCad's own library footprints exactly.
 - **Make a whole part from one datasheet**: symbol, footprint and 3D model from one reading of the datasheet, linked to each other (the symbol's Footprint field, the footprint's model link), checked together and registered in the project's library tables.
+- **Work on a model together in FreeCAD**: Claude opens or builds the model in your FreeCAD window, you comment or edit it by hand, and Claude edits on top of what you changed, until you're both happy. Then it exports the STEP and checks it against the footprint. See "Live editing in FreeCAD" below.
 - **Make a symbol from a datasheet**: Claude reads the pin table, cadmate lays out the symbol per KiCad's library conventions (grid, sides by pin type, stacked power pins, hidden NC pins, fields) and writes it into a `.kicad_sym` library, checked against the pin table and the footprint's pads.
 
 | Tool | What it does | Needs |
@@ -32,6 +33,13 @@ Early. Four workflows work end to end:
 | `compare_symbols` | Pin-by-pin differences between two symbols | nothing |
 | `generate_part` | Writes a linked symbol, footprint and 3D model from one datasheet into a project, checked together first | FreeCAD for the model |
 | `check_part` | Follows a symbol to its footprint and model and checks all three and the links between them | FreeCAD for the model check |
+| `freecad_live_status` | Whether your FreeCAD window is reachable, and the line that starts the bridge if not | FreeCAD bridge |
+| `freecad_live_state` | Objects in a document as they are now (properties, placement, exact bounding box) and what you edited by hand since Claude last looked | FreeCAD bridge |
+| `freecad_live_edit` | Runs one edit in your window as one undo step named "cadmate: ..." | FreeCAD bridge |
+| `freecad_live_open` | Opens an `.FCStd`, imports a STEP, or runs a model build script in your window | FreeCAD bridge |
+| `freecad_live_snapshot` | A picture of the model from a standard view | FreeCAD bridge |
+| `freecad_live_save` | Saves the document | FreeCAD bridge |
+| `freecad_live_export_step` | Exports STEP with colours and runs the footprint check on it | FreeCAD bridge |
 
 ## Version policy
 
@@ -62,7 +70,23 @@ claude mcp add --scope user cadmate -- uv run --directory /path/to/cadmate cadma
 
 `--scope user` makes it available in every folder. Without it, `claude mcp add` registers the server for the current folder only, and a session started in your KiCad project's folder won't see it. A Claude Code session that is already running doesn't pick up a newly added server: start a new one.
 
-cadmate builds and checks models itself with FreeCAD's command-line `freecadcmd` (the `environment` tool says where it found it), so FreeCAD installed is enough for generated models and for models Claude writes as a FreeCAD Python script and runs headless. A FreeCAD MCP server adds live modelling in the FreeCAD window, with screenshots along the way. The recommended one is [spkane/freecad-addon-robust-mcp-server](https://github.com/spkane/freecad-addon-robust-mcp-server) (MIT); follow its README. On macOS, run it against the FreeCAD app (socket/XML-RPC mode), not its embedded mode.
+cadmate builds and checks models itself with FreeCAD's command-line `freecadcmd` (the `environment` tool says where it found it), so FreeCAD installed is enough for generated models and for models Claude writes as a FreeCAD Python script and runs headless. For working on a model together in the FreeCAD window, start cadmate's bridge (below); no addon is needed.
+
+### Live editing in FreeCAD
+
+FreeCAD has no built-in way for another program to work in a window that's already open, so cadmate ships a small bridge script that runs inside FreeCAD. It only runs when you start it:
+
+1. Ask Claude for the start line (the `freecad_live_status` tool gives it). It looks like `exec(open('~/Library/Application Support/cadmate/cadmate_bridge.py').read())` with your home folder spelled out.
+2. In FreeCAD, open View > Panels > Python console and paste it. The Report view shows `[cadmate] bridge listening on ...`.
+3. To stop it, run `App._cadmate_bridge.stop()` in the same console, or quit FreeCAD. Running the start line again replaces a running bridge. It doesn't start with FreeCAD; to have it do that, add the start line to a macro of your own that FreeCAD runs at startup.
+
+What it does to your document:
+
+- Every command cadmate sends is printed in the Report view as `[cadmate] ...`, and errors in red.
+- Every edit is one undo step named `cadmate: <what changed>`, so the undo list shows Claude's edits apart from yours and Ctrl+Z takes one back. An edit that fails is undone as a whole.
+- Claude edits the objects that are there, it doesn't regenerate the document, so your hand edits stay. Before each edit it reads the bridge's change log, which records every change with whether it came from cadmate or from you.
+
+The bridge listens on a Unix socket in a folder only your account can open (`~/Library/Application Support/cadmate/` on macOS, `$XDG_RUNTIME_DIR/cadmate/` on Linux), not on a network port, so a web page or another account can't reach it. Any program running as you can, the same as with your files, and what it sends is Python that FreeCAD runs: start the bridge when you want to work with Claude, and stop it afterwards if that matters to you. Windows isn't supported yet. `CADMATE_BRIDGE_SOCKET` moves the socket, in both FreeCAD's and the cadmate server's environment.
 
 cadmate finds KiCad and FreeCAD in their usual install locations on macOS, Linux and Windows. To point it elsewhere, set these in the server's environment:
 
@@ -96,8 +120,8 @@ To read datasheets, Claude needs a way to read PDFs and to look at drawings as i
 3. Symbols from datasheets (rectangular and opamp bodies, multi-unit, alternate pin functions; logic gate shapes next)
 4. Board review: ERC/DRC with explanations and fixes
 5. Fab export per fab house
-6. Enclosure from the board
-7. Live PCB help through the IPC API
+6. Enclosure from the board, worked on live in FreeCAD
+7. Live KiCad work: footprints and symbols with KiCad open (their editors have no API, so cadmate edits the files and KiCad reloads them), and PCB help through the IPC API
 8. Schematic help (live once KiCad 11's schematic API ships)
 9. Buttons inside KiCad and FreeCAD that hand the current selection to Claude
 

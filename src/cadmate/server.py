@@ -6,12 +6,13 @@ cover the KiCad side and the checks that tie the two together.
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Image, MCPServer
 
-from . import apps, check, footprint, generate, ipc, model, packages, part, review, symbol, symbol_check, symbol_generate
+from . import apps, check, footprint, generate, ipc, live, model, packages, part, review, symbol, symbol_check, symbol_generate
 from .footprint import read as _read_footprint  # generate_symbol's footprint argument shadows the module
 
 server = MCPServer("cadmate")
@@ -40,6 +41,7 @@ def environment() -> dict:
             "generate_part": True,
             "generate_part_model": freecad.available,
             "check_part": True,
+            "freecad_live": _live_running(),
         },
     }
 
@@ -432,6 +434,139 @@ def check_part(
     options = {k: v for k, v in (("datasheet_pads", datasheet_pads), ("leads", leads), ("body", body), ("castellated", castellated),
                                  ("underside_parts", underside_parts)) if v is not None}
     return part.check_part(symbol_path, name, footprint_path, pins, expected or None, cutout, options)
+
+
+# The interactive loop in the user's FreeCAD window, through the bridge they start (live.py).
+
+_live_session = live.Session()
+
+
+def _live_running() -> bool:
+    try:
+        return live.call("ping", timeout=2)["ok"]
+    except live.BridgeUnavailable:
+        return False
+
+
+def _live(op: str, **args) -> dict:
+    """Call the bridge, reporting the user's edits since the last call alongside the reply."""
+    try:
+        changes = _live_session.user_changes()
+        reply = live.call(op, **args)
+    except live.BridgeUnavailable as e:
+        return live.not_running() | {"error": str(e)}
+    return reply | {"user_changes": changes}
+
+
+@server.tool()
+def freecad_live_status() -> dict:
+    """Check whether the user's FreeCAD window is reachable for live editing, and how to start the bridge if not.
+
+    The live tools work on the FreeCAD window the user has open, through a
+    bridge script the user starts from FreeCAD's Python console (the returned
+    "start" line); cadmate never starts it on its own. Every command shows in
+    FreeCAD's Report view and every edit is one undo step named "cadmate: ...".
+    """
+    try:
+        reply = live.call("ping", timeout=5)
+        if reply.get("bridge") != live.BRIDGE_VERSION:
+            raise live.BridgeUnavailable(f"the bridge running in FreeCAD is version {reply.get('bridge')}, cadmate needs {live.BRIDGE_VERSION}; "
+                                         "paste the start line again to replace it")
+    except live.BridgeUnavailable as e:
+        return live.not_running() | {"error": str(e)}
+    return reply | {"running": True}
+
+
+@server.tool()
+def freecad_live_state(doc: str | None = None) -> dict:
+    """Read a document in the user's FreeCAD window as it is now, and what the user changed by hand since cadmate last looked.
+
+    Each object has its name, label, type, editable properties (lengths,
+    angles, links...), placement (position, yaw/pitch/roll in degrees),
+    colour, visibility and exact bounding box [xmin, ymin, zmin, xmax, ymax,
+    zmax] in mm. user_changes lists the objects the user created, deleted or
+    edited (and which properties), and undo/redo they did. doc defaults to the
+    active document. Read this before every edit and build on what is there.
+    """
+    return _live("state", doc=doc)
+
+
+@server.tool()
+def freecad_live_edit(code: str, label: str, doc: str | None = None) -> dict:
+    """Run Python in the user's FreeCAD window as one undo step named "cadmate: <label>".
+
+    Edit what is there, don't rebuild: change the properties of existing
+    objects (doc.getObject("Box").Length = 25), move them, add features on top
+    of them. Objects the user edited keep their edits that way. The code sees
+    App, Gui, Part, V (App.Vector) and doc (the document); set `result` to
+    return a value. The document is recomputed afterwards. If the code raises,
+    the whole step is undone and the error comes back. label is short and says
+    what changed ("move USB-C 0.5 mm toward the edge"); the user sees it in the
+    undo list and the Report view.
+    """
+    return _live("run", code=code, label=label, doc=doc)
+
+
+@server.tool()
+def freecad_live_open(path: str, doc: str | None = None) -> dict:
+    """Open a model in the user's FreeCAD window to work on it together.
+
+    .FCStd opens the document; STEP, IGES or BREP is imported into a new
+    document (or into doc); a FreeCAD Python script (a model build script,
+    .py or .FCMacro) is run in the window, leaving the document it builds open.
+    """
+    return _live("open", path=str(Path(path).expanduser()), doc=doc)
+
+
+@server.tool()
+def freecad_live_snapshot(doc: str | None = None, view: str = "isometric", width: int = 800, height: int = 600) -> Image:
+    """Picture of a document in the user's FreeCAD window, from a standard view, fitted to the model.
+
+    view: isometric, front, rear, top, bottom, left, right, or "" to keep the
+    user's current view (also skips the fit). This changes the view in the
+    user's window.
+    """
+    r = _live("snapshot", doc=doc, view=view, width=width, height=height, fit=bool(view))
+    if not r.get("ok"):
+        raise RuntimeError(r.get("error") or json.dumps(r))
+    return Image(path=r["file"])
+
+
+@server.tool()
+def freecad_live_save(doc: str | None = None, path: str | None = None) -> dict:
+    """Save a document in the user's FreeCAD window, to path (.FCStd) or where it was last saved."""
+    return _live("save", doc=doc, path=str(Path(path).expanduser()) if path else None)
+
+
+@server.tool()
+def freecad_live_export_step(
+    path: str,
+    doc: str | None = None,
+    objects: list[str] | None = None,
+    footprint_path: str | None = None,
+    body_length: float | None = None,
+    body_width: float | None = None,
+    body_height: float | None = None,
+) -> dict:
+    """Export the model in the user's FreeCAD window as STEP, with colours, and check it against its footprint.
+
+    Exports the named objects, or every visible solid that no other object is
+    built from. With footprint_path, runs the same check as
+    check_model_vs_footprint on the written file, using the footprint's model
+    placement and the body sizes passed in (body_width along the footprint's X,
+    body_length along its Y, body_height from the board's top surface up, not
+    counting parts or leads below the board). Use the footprint the model
+    will be linked into: its model offset and rotation are applied. Link it
+    with link_model_to_footprint once it passes.
+    """
+    out = Path(path).expanduser()
+    r = _live("export", path=str(out), doc=doc, objects=objects)
+    if not r.get("ok") or not footprint_path:
+        return r
+    fp = footprint.read(Path(footprint_path).expanduser())
+    placement = fp.models[0] if fp.models else footprint.Model(path="")
+    expected = {k: v for k, v in (("length", body_length), ("width", body_width), ("height", body_height)) if v is not None}
+    return r | {"check": model.check_file(fp, out, placement, expected or None)}
 
 
 def main() -> None:

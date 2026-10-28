@@ -282,11 +282,17 @@ def _check_stacks(sym: Symbol, errors: list[str], warnings: list[str]) -> None:
             errors.append(f"{where} ({pins[0].name}) mixes types {sorted(set(types))}; only one power or output pin over hidden passives is allowed (KLC S4.3)")
 
 
+def _connector(sym: Symbol) -> bool:
+    return (sym.prop("Reference") or "").upper().rstrip("?*") in ("J", "P")
+
+
 def _check_types(sym: Symbol, errors: list[str], warnings: list[str]) -> None:
+    # A connector's pins are passive in KiCad's library, supplies included: the power comes from the other board.
+    passive_ok = ("passive",) if _connector(sym) else ()
     for pins in _stacks(sym).values():
         visible = [p for p in pins if not p.hidden]
         p = (visible or pins)[0]
-        if _match(p.name.lower(), POWER_NAMES) and p.etype not in ("power_in", "power_out"):
+        if _match(p.name.lower(), POWER_NAMES) and p.etype not in ("power_in", "power_out") + passive_ok:
             errors.append(f"{_label(p)} is a power pin by its name but has type {p.etype}; use power_in, or "
                           f"power_out if the part drives this rail for other parts, like a regulator output (KLC S4.4)")
     for p in sym.pins:

@@ -7,14 +7,14 @@ description: Build, check and link a 3D model for a KiCad footprint that has non
 
 For a new part, `generate_part` (skill `kicad-parts`) builds the model for `soic` and `qfn` packages from the footprint's own values, so start there. Use this skill for footprints that already exist, and for modules and connectors that need a real model rather than `custom`'s placeholder box.
 
-Uses the cadmate MCP server (KiCad side and checks) and a FreeCAD MCP server (modelling).
+Uses the cadmate MCP server (KiCad side and checks) and FreeCAD. With a FreeCAD MCP server, model live in the FreeCAD window. Without one, write the model as a FreeCAD Python script (Part workbench, ending in a STEP export) and run it headless with the `freecadcmd` that `environment` reports: `freecadcmd model.py`. Then render it with `kicad-cli pcb render` on a test board, or ask the user to look at it in KiCad's 3D viewer.
 
 ## Workflow
 
 1. `read_footprint` on the footprint. Note SMD or through-hole, pad count, pitch, pin 1 position, courtyard.
 2. Get the body dimensions from the datasheet's package drawing. Ask the user for the datasheet or the part number if you don't have them. Never guess a dimension; ask. Use nominal values, not min or max; where the drawing gives only a maximum (often the height), use it and say so.
 3. Pick the family from `list_package_families` and run `package_params` with the footprint path. Fix every error before modelling. Show the user the warnings.
-4. Build the model in FreeCAD through the FreeCAD MCP server, as a Python script in the Part workbench so it stays parametric (see "Building" below). Take a screenshot and look at it before going on.
+4. Build the model in FreeCAD, through the FreeCAD MCP server or as a script run with `freecadcmd`, in the Part workbench so it stays parametric (see "Building" below). Look at a screenshot or render before going on.
 5. Export STEP next to where the model will live (see "Files"). Export VRML too if the user wants KiCad's renderer to show colours.
 6. `link_model_to_footprint` with the path written using a KiCad variable, never an absolute path.
 7. `check_model_vs_footprint` with the datasheet's overall size: `body_width` along the footprint's X, `body_length` along its Y (as in the footprint families), `body_height`. Fix every error and re-check. Report warnings to the user.
@@ -37,6 +37,8 @@ Uses the cadmate MCP server (KiCad side and checks) and a FreeCAD MCP server (mo
 - Gull-wing leads (soic, sot): a flat foot of `lead_length` on the board, a bend up to the body at mid height, `lead_width` wide, about 0.2 mm thick unless the datasheet gives `c`.
 - No-lead (qfn): lead pads flush with the body bottom and side, plus the exposed pad if any.
 - Fuse leads into one compound and keep the body separate; never fuse body and leads.
+- Connectors: model the mating face (the opening and what is inside it, a USB-C tongue for example), since that is what enclosures are cut around. Shell legs, tails and pegs are their own solids, never fused to the body or the insulator: the review judges each solid by its box, so a peg fused to the insulator reads as the whole insulator going into the board.
+- For `generate_part`'s `frame: "datasheet"`, build in the pad coordinates you gave the footprint, flipped as above: a pad at (x, y) there is at 3D (x, -y).
 
 ## Files
 

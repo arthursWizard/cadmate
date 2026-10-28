@@ -142,6 +142,8 @@ def generate_footprint(
     courtyard_clearance: float | None = None,
     datasheet: str | None = None,
     model_path: str | None = None,
+    description: str | None = None,
+    tags: str | None = None,
     overwrite: bool = False,
 ) -> dict:
     """Generate a KiCad footprint from datasheet dimensions and write it into a .pretty library folder.
@@ -151,13 +153,15 @@ def generate_footprint(
     "6.0+/-0.2". custom places pads exactly as the datasheet's recommended land
     pattern gives them. The result is checked before it is written; nothing is
     written when the check finds errors. An existing file is only replaced with
-    overwrite=True, and a .bak copy is kept.
+    overwrite=True, and a .bak copy is kept. description and tags replace the
+    family's own (KiCad's library style: "USB 3.2 Type-C receptacle, hybrid
+    SMD/THT, https://...", tags "USB C Type-C receptacle").
     """
     lib = Path(library_dir).expanduser()
     if lib.suffix != ".pretty":
         return {"ok": False, "errors": ["library_dir must be a KiCad footprint library folder ending in .pretty"]}
     result = generate.generate(family, params, name=name, density=density, courtyard_clearance=courtyard_clearance,
-                               datasheet=datasheet, model_path=model_path)
+                               datasheet=datasheet, model_path=model_path, description=description, tags=tags)
     text = result.pop("text")
     if not result["ok"]:
         return result
@@ -252,9 +256,13 @@ def review_footprint(
 
 
 @server.tool()
-def compare_footprints(path: str, reference_path: str) -> dict:
-    """Compare a footprint pad by pad with a reference, for example KiCad's library footprint for the same package."""
-    return check.compare_footprints(footprint.read(path), footprint.read(reference_path))
+def compare_footprints(path: str, reference_path: str, align: bool = True) -> dict:
+    """Compare a footprint pad by pad with a reference, for example KiCad's library footprint for the same package.
+
+    Footprints whose origins differ (one on pin 1, one on the pads' centre) are aligned on their pads first and the
+    offset is reported as origin_offset; align=False compares them as they are.
+    """
+    return check.compare_footprints(footprint.read(path), footprint.read(reference_path), align=align)
 
 
 @server.tool()
@@ -377,7 +385,7 @@ def generate_part(
     """Make a whole part from one datasheet: symbol, footprint and 3D model, linked to each other and checked together.
 
     symbol: {name, pins, description?, keywords?, reference?, fp_filters?, pin_length?, unit_shapes?}, as for generate_symbol.
-    footprint: {family, params, name?, density?, courtyard_clearance?}, as for generate_footprint. Put the package
+    footprint: {family, params, name?, density?, courtyard_clearance?, description?, tags?}, as for generate_footprint. Put the package
     height (and for soic the standoff) in params too; the 3D model is built from the same values.
     model: extra values for the 3D model (lead_thickness, terminal_thickness, standoff, lead_below, lead_diameter),
     or {path, offset?, rotate?, frame?} to link a model made by hand (frame "datasheet" when it was built in the

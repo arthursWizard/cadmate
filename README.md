@@ -60,9 +60,9 @@ Add it to Claude Code:
 claude mcp add --scope user cadmate -- uv run --directory /path/to/cadmate cadmate
 ```
 
-`--scope user` makes it available in every folder. Without it, `claude mcp add` registers the server for the current folder only, and a session started in your KiCad project's folder won't see it.
+`--scope user` makes it available in every folder. Without it, `claude mcp add` registers the server for the current folder only, and a session started in your KiCad project's folder won't see it. A Claude Code session that is already running doesn't pick up a newly added server: start a new one.
 
-For modelling, also add a FreeCAD MCP server. The recommended one is [spkane/freecad-addon-robust-mcp-server](https://github.com/spkane/freecad-addon-robust-mcp-server) (MIT); follow its README. On macOS, run it against the FreeCAD app (socket/XML-RPC mode), not its embedded mode.
+cadmate builds and checks models itself with FreeCAD's command-line `freecadcmd` (the `environment` tool says where it found it), so FreeCAD installed is enough for generated models and for models Claude writes as a FreeCAD Python script and runs headless. A FreeCAD MCP server adds live modelling in the FreeCAD window, with screenshots along the way. The recommended one is [spkane/freecad-addon-robust-mcp-server](https://github.com/spkane/freecad-addon-robust-mcp-server) (MIT); follow its README. On macOS, run it against the FreeCAD app (socket/XML-RPC mode), not its embedded mode.
 
 cadmate finds KiCad and FreeCAD in their usual install locations on macOS, Linux and Windows. To point it elsewhere, set these in the server's environment:
 
@@ -82,7 +82,7 @@ mkdir -p ~/.claude/skills
 for s in /path/to/cadmate/skills/*/; do ln -s "$s" ~/.claude/skills/; done
 ```
 
-To read datasheets, Claude needs a way to read PDFs and to look at drawings as images; `pip install pypdf pypdfium2` (or poppler's `pdftotext` and `pdftoppm`) covers both.
+To read datasheets, Claude needs a way to read PDFs and to look at drawings as images; `pip install pypdf cryptography pypdfium2 pillow` (or poppler's `pdftotext` and `pdftoppm`) covers both. `cryptography` is for the AES-encrypted PDFs some manufacturers publish (GCT's, for one), `pillow` for saving pypdfium2's page renders.
 
 - `kicad-3d-models`: how to build, check and link a 3D model for a KiCad footprint.
 - `kicad-footprints`: how to read a datasheet into a footprint, and review an existing one.

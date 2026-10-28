@@ -124,7 +124,9 @@ def generate(
     if errors:
         return _fail(errors, warnings)
 
-    length = pin_length if pin_length is not None else _pin_length(table, stack_power_pins)
+    # KiCad's connectors stack every pin that shares a name, passive ones too (USB_C_Receptacle's GND, VBUS).
+    connector = reference.upper() in CONNECTOR_REFERENCES
+    length = pin_length if pin_length is not None else _pin_length(table, stack_power_pins, connector)
     if length < GRID or abs(length / 1.27 - round(length / 1.27)) > 1e-6:
         return _fail([f"pin_length {length} mm must be at least {GRID} mm and a multiple of 1.27 mm (50 mil)"], warnings)
 
@@ -147,7 +149,7 @@ def generate(
             elif opamps and shapes.get(u) != "rectangle" and _supplies_only(pins_u):
                 unit = _layout_supply_unit(u, pins_u, report)
             else:
-                unit = _layout(u, pins_u, length, stack_power_pins, report, warnings)
+                unit = _layout(u, pins_u, length, stack_power_pins, report, warnings, connector)
         except ValueError as e:
             return _fail([str(e)], warnings)
         laid_out.append(unit)
@@ -282,10 +284,11 @@ def _table_errors(table: list[Pin], name: str, reference: str) -> list[str]:
     return errors
 
 
-def _pin_length(table: list[Pin], stacks: bool) -> float:
+def _pin_length(table: list[Pin], stacks: bool, connector: bool = False) -> float:
     longest = max(len(p.number) for p in table)
     length = GRID if longest <= 2 else 3.81 if longest == 3 else 5.08
-    names = [(p.unit, p.name.lower()) for p in table if p.etype in ("power_in", "power_out", "output") and p.name]
+    kinds = ("power_in", "power_out", "output") + (("passive",) if connector else ())
+    names = [(p.unit, p.name.lower()) for p in table if p.etype in kinds and p.name]
     if stacks and len(names) != len(set(names)):
         # KiCad draws a native stack's numbers as columns across the pin with braces 4.3 mm tall: on a 3.81 mm
         # pin the braces reach into the body, on 5.08 mm they clear it.
@@ -302,8 +305,9 @@ def text_width(name: str) -> float:
     return len(plain) * CHAR_WIDTH
 
 
-def _stacks(pins: list[Pin], stack_power: bool) -> list[_Slot]:
-    """One slot per pin drawn. Power and output pins sharing a name stack, as KLC S4.3 allows."""
+def _stacks(pins: list[Pin], stack_power: bool, connector: bool = False) -> list[_Slot]:
+    """One slot per pin drawn. Power and output pins sharing a name stack, as KLC S4.3 allows; on a connector,
+    passive pins sharing a name stack too, as in KiCad's library."""
     slots: list[_Slot] = []
     by_name: dict[str, _Slot] = {}
     for p in sorted(pins, key=lambda q: q._order):
@@ -326,7 +330,7 @@ def _stacks(pins: list[Pin], stack_power: bool) -> list[_Slot]:
             lead = min((p for p in s.pins if p.etype == "power_in"), key=_num_key)
             rest = [p for p in s.pins if p is not lead]
             out.append(_Slot([lead] + sorted(rest, key=_num_key), s.group, s.order))
-        elif types in ({"output"}, {"power_out"}):
+        elif types in ({"output"}, {"power_out"}) or (connector and types == {"passive"}):
             out.append(_Slot(sorted(s.pins, key=_num_key), s.group, s.order))
         else:  # passives alone may not stack (KLC S4.3); keep each pin
             out += [_Slot([p], p._group, p._order) for p in s.pins]
@@ -402,6 +406,7 @@ def _column(slots: list[_Slot]) -> list[_Slot | None]:
     return out
 
 
+CONNECTOR_REFERENCES = ("J", "P")
 STACK_NUMBER_WIDTH = 1.27  # KiCad 10 draws a native stack's numbers side by side across the pin, in braces
 STACK_BRACES = 2.0
 
@@ -435,11 +440,12 @@ def _ceil_grid(v: float, base: float = GRID) -> float:
     return round(math.ceil(v / base - 1e-9) * base, 4)
 
 
-def _layout(number: int, pins: list[Pin], length: float, stack_power: bool, report: dict, warnings: list[str]) -> _Unit:
+def _layout(number: int, pins: list[Pin], length: float, stack_power: bool, report: dict, warnings: list[str],
+            connector: bool = False) -> _Unit:
     nc = [p for p in pins if p.etype == "no_connect"]
     for p in nc:
         p.hidden = True  # KLC S4.6
-    slots = _stacks([p for p in pins if p.etype != "no_connect"], stack_power)
+    slots = _stacks([p for p in pins if p.etype != "no_connect"], stack_power, connector)
     sides = _sides(slots, warnings)
     left, right = _spread(_column(sides["left"])), _spread(_column(sides["right"]))
     top, bottom = _spread_across(sides["top"]), _spread_across(sides["bottom"])

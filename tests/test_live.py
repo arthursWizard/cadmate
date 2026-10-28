@@ -1,6 +1,8 @@
 import importlib.util
 import json
+import shutil
 import socket
+import tempfile
 import threading
 from pathlib import Path
 
@@ -19,10 +21,12 @@ def load_bridge():
 
 
 @pytest.fixture
-def sock(tmp_path, monkeypatch):
-    path = tmp_path / "b.sock"
+def sock(monkeypatch):
+    d = Path(tempfile.mkdtemp(dir="/tmp"))  # macOS caps socket paths at 104 bytes; pytest's tmp_path is longer
+    path = d / "b.sock"
     monkeypatch.setenv(live.SOCKET_ENV, str(path))
-    return path
+    yield path
+    shutil.rmtree(d, ignore_errors=True)
 
 
 def fake_bridge(path, replies):

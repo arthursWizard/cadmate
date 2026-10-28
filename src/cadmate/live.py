@@ -71,6 +71,8 @@ def call(op: str, timeout: float = 120, **args) -> dict:
         raise BridgeUnavailable(f"the FreeCAD bridge isn't running ({e.__class__.__name__} on {path})") from e
     except socket.timeout as e:
         raise BridgeUnavailable("the FreeCAD bridge didn't answer; FreeCAD may be busy or showing a dialog") from e
+    except OSError as e:  # e.g. a socket path over the OS limit (104 bytes on macOS)
+        raise BridgeUnavailable(f"can't reach the FreeCAD bridge at {path}: {e}") from e
     if not line:
         raise BridgeUnavailable("the FreeCAD bridge closed the connection without answering")
     return json.loads(line)

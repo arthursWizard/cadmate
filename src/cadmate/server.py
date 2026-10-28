@@ -554,8 +554,11 @@ def freecad_live_export_step(
     Exports the named objects, or every visible solid that no other object is
     built from. With footprint_path, runs the same check as
     check_model_vs_footprint on the written file, using the footprint's model
-    placement and the body sizes passed in. Link it with link_model_to_footprint
-    once it passes.
+    placement and the body sizes passed in (body_width along the footprint's X,
+    body_length along its Y, body_height from the board's top surface up, not
+    counting parts or leads below the board). Use the footprint the model
+    will be linked into: its model offset and rotation are applied. Link it
+    with link_model_to_footprint once it passes.
     """
     out = Path(path).expanduser()
     r = _live("export", path=str(out), doc=doc, objects=objects)

@@ -132,7 +132,8 @@ def _check_pin1_mark(footprint: Footprint, marks: list[dict], pad_box: dict, err
         errors.append(f"{where}, opposite corners: the model is turned 180 degrees about Z; add 180 to its Z rotation")
     else:
         flipped = " and ".join("XY"[i] for i in axes if got[i] != want[i])
-        errors.append(f"{where}, on the other side along {flipped}: the model is turned 90 degrees or mirrored")
+        how = "turned 90 degrees or mirrored" if len(axes) == 2 else f"turned 180 degrees about Z, or mirrored along {flipped}"
+        errors.append(f"{where}, on the other side along {flipped}: the model is {how}")
 
 
 def check_model(footprint: Footprint, bbox: dict, model: Model | None = None, expected: dict | None = None, cutout: bool = False,

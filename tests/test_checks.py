@@ -106,7 +106,7 @@ def test_dip_end_notch_tells_180_degrees():
     box = {"xmin": 0.64, "xmax": 6.98, "ymin": -8.7, "ymax": 1.08, "zmin": -3.0, "zmax": 5.0}
     assert check.check_model(dip, box, marks=[{"x": 3.81, "y": 1.08, "r": 0.75}])["ok"]
     r = check.check_model(dip, box, marks=[{"x": 3.81, "y": -8.7, "r": 0.75}])
-    assert any("along Y" in e for e in r["errors"]), r
+    assert any("along Y" in e and "turned 180 degrees" in e for e in r["errors"]), r
 
 
 def test_mirrored_mark_is_named():

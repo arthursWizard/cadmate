@@ -164,6 +164,30 @@ def _write(t: Target, text: str) -> None:
     old.unlink(missing_ok=True)
 
 
+# KiCad 10's footprint editor reloads a changed footprint from a copy of the library it keeps in memory, not from the
+# file, so on its own it shows the old footprint. The PCB editor's Redraw re-reads every library that changed on disk
+# into that copy, and it can be run through KiCad's API. Run right after the write, it lands before the footprint
+# editor's reload (a second after it notices the change).
+REDRAW_ACTION = "common.Control.zoomRedraw"
+
+
+def refresh_kicad(t: Target) -> dict:
+    if t.kind != "footprint":
+        return {}
+    from . import kicad_pcb_live
+
+    try:
+        kicad, _ = kicad_pcb_live.connect(timeout_ms=3000)
+        kicad.run_action(REDRAW_ACTION)
+        return {"kicad": "KiCad re-read the library; the footprint editor shows the change within about two seconds. If it "
+                         "doesn't, the user double-clicks the footprint in the editor's library tree to open it again."}
+    except Exception:
+        return {"kicad": "KiCad's footprint editor won't show this by itself: it keeps a copy of the library from when the "
+                         "project opened. With the project's board open in the PCB editor and KiCad's API on, cadmate refreshes "
+                         "that copy itself; otherwise the user closes the footprint editor, reopens the project and opens the "
+                         "footprint again. Say so, and show kicad_live_snapshot meanwhile."}
+
+
 # --- what changed -------------------------------------------------------------------------------
 
 
@@ -399,7 +423,7 @@ def edit(path: str, edits: list[dict], label: str, name: str | None = None) -> d
                         "before": current, "after": new_item})
     st["seen"] = new_item
     _save(t, st)
-    return {"ok": True, "written": str(t.path), "step": len(st["steps"]), "label": label.strip(), "user_changes": user,
+    return refresh_kicad(t) | {"ok": True, "written": str(t.path), "step": len(st["steps"]), "label": label.strip(), "user_changes": user,
             "check": {"ok": after_check["ok"], "errors": after_check["errors"]} | _new_findings(before_check, after_check), "changed": changes(t, current, new_item)["items"]}
 
 
@@ -430,7 +454,7 @@ def undo(path: str, name: str | None = None) -> dict:
     step["undone"] = True
     st["seen"] = reverted
     _save(t, st)
-    return {"ok": True, "undid": step["label"], "written": str(t.path), "user_changes": user, "changed": changes(t, current, reverted)["items"]}
+    return refresh_kicad(t) | {"ok": True, "undid": step["label"], "written": str(t.path), "user_changes": user, "changed": changes(t, current, reverted)["items"]}
 
 
 # --- pictures -----------------------------------------------------------------------------------

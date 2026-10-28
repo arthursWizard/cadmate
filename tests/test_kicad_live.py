@@ -194,3 +194,22 @@ def test_macos_write_moves_the_file_out_and_back(fp, monkeypatch):
     assert r["ok"]
     assert seen == [(fp.name, f".{fp.name}.cadmate-old"), (f".{fp.name}.cadmate-new", fp.name)]
     assert "(size 2.2 0.6)" in fp.read_text() and sorted(p.name for p in fp.parent.iterdir()) == [fp.name]
+
+
+def test_edit_asks_the_pcb_editor_to_reread_libraries(fp, monkeypatch):
+    from cadmate import kicad_pcb_live
+
+    actions = []
+
+    class K:
+        def run_action(self, a):
+            actions.append(a)
+
+    monkeypatch.setattr(kicad_pcb_live, "connect", lambda **kw: (K(), None))
+    r = kicad_live.edit(str(fp), [{"old": '(at -2.475 -1.905) (size 1.95 0.6)', "new": '(at -2.475 -1.905) (size 2.2 0.6)'}], "pad 1 longer")
+    assert r["ok"] and actions == [kicad_live.REDRAW_ACTION] and "re-read" in r["kicad"]
+
+
+def test_edit_without_kicad_says_how_to_see_it(fp):
+    r = kicad_live.edit(str(fp), [{"old": '(at -2.475 -1.905) (size 1.95 0.6)', "new": '(at -2.475 -1.905) (size 2.2 0.6)'}], "pad 1 longer")
+    assert r["ok"] and "reopens the project" in r["kicad"]

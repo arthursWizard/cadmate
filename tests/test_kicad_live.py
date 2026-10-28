@@ -120,6 +120,27 @@ def test_save_over_cadmate_step_is_reported(fp):
     assert s["user_changes"]["overwrote_cadmate_step"] == "pad 1 longer"
 
 
+def test_stale_save_after_undo_is_reported(fp):
+    # What happened in KiCad 10 on the Mac: cadmate's undo, then a save from the editor's stale copy that still had the
+    # step, with a pad dragged and the whole file reformatted.
+    kicad_live.state(str(fp))
+    kicad_live.edit(str(fp), [{"old": '(at -2.475 -1.905) (size 1.95 0.6)', "new": '(at -2.475 -1.905) (size 2.2 0.6)'}], "pad 1 longer")
+    stale = fp.read_text()
+    kicad_live.undo(str(fp))
+    fp.write_text(stale.replace('(pad "4" smd roundrect (at -2.475 1.905)', '(pad "4" smd roundrect (at -2.4 1.905)').replace(" (", "\n  ("))
+    u = kicad_live.state(str(fp))["user_changes"]
+    assert u["overwrote_cadmate_step"] == "undo 'pad 1 longer'"
+    assert u["reverted"] == [{"pad": "1", "changed": {"width": [2.2, 1.95]}}]
+
+
+def test_ordinary_user_edit_is_not_an_overwrite(fp):
+    kicad_live.state(str(fp))
+    kicad_live.edit(str(fp), [{"old": '(at -2.475 -1.905) (size 1.95 0.6)', "new": '(at -2.475 -1.905) (size 2.2 0.6)'}], "pad 1 longer")
+    hand_edit(fp, '(at -2.475 -1.905) (size 2.2 0.6)', '(at -2.475 -1.905) (size 2.3 0.6)')
+    u = kicad_live.state(str(fp))["user_changes"]
+    assert u["changed"] and "overwrote_cadmate_step" not in u
+
+
 def test_history_survives_a_new_session(fp):
     kicad_live.edit(str(fp), [{"old": '(at -2.475 -1.905) (size 1.95 0.6)', "new": '(at -2.475 -1.905) (size 2.2 0.6)'}], "pad 1 longer")
     s = kicad_live.state(str(fp))

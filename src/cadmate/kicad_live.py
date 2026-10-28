@@ -308,18 +308,37 @@ def changes(t: Target, before: str, after: str) -> dict:
     return out
 
 
-def _overwritten(st: dict, current: str) -> dict | None:
-    """The last step's change is gone again: typically KiCad saved over it from a copy that never reloaded it."""
-    steps = [s for s in st["steps"] if not s.get("undone")]
-    if not steps:
+_DETAIL = ("changed", "added", "removed", "was", "now")
+
+
+def _identity(item: dict) -> str:
+    return json.dumps({k: v for k, v in item.items() if k not in _DETAIL}, sort_keys=True)
+
+
+def _reverted(cadmate: list[dict], user: list[dict]) -> list[dict]:
+    """The parts of cadmate's last write that the user's changes put back the way they were."""
+    mine = {_identity(i): i for i in cadmate}
+    out = []
+    for u in user:
+        c = mine.get(_identity(u))
+        if not c:
+            continue
+        if (c.get("added") and u.get("removed")) or (c.get("removed") and u.get("added")):
+            out.append(c)
+        elif "changed" in c and "changed" in u:
+            back = {f: v for f, v in c["changed"].items() if u["changed"].get(f) == [v[1], v[0]]}
+            if back:
+                out.append({k: v for k, v in c.items() if k != "changed"} | {"changed": back})
+    return out
+
+
+def _overwritten(st: dict, user_items: list[dict]) -> dict | None:
+    """cadmate's last write is (partly) gone again: typically KiCad saved over it from a copy that never reloaded it."""
+    last = st.get("last_write")
+    if not last:
         return None
-    last = steps[-1]
-    if current in (last["after"], last["before"]):
-        return {"step": last["label"]} if current == last["before"] else None
-    gone = [e for e in last["edits"] if e["new"] and e["new"] not in current and e["old"] in current]
-    if gone and len(gone) == len([e for e in last["edits"] if e["new"]]):
-        return {"step": last["label"]}
-    return None
+    back = _reverted(last["items"], user_items)
+    return {"step": last["label"], "reverted": back} if back else None
 
 
 def _look(t: Target, st: dict, current: str) -> dict:
@@ -329,12 +348,12 @@ def _look(t: Target, st: dict, current: str) -> dict:
     else:
         out = changes(t, st["seen"], current)
         if out["changed"]:
-            lost = _overwritten(st, current)
+            lost = _overwritten(st, out["items"])
             if lost:
                 out["overwrote_cadmate_step"] = lost["step"]
-                out["note"] = (f"cadmate's last step '{lost['step']}' is no longer in the file: KiCad probably saved over it "
-                               "(the editor had unsaved edits when cadmate wrote, and the reload was declined). Ask the user "
-                               "before applying it again.")
+                out["reverted"] = lost["reverted"]
+                out["note"] = (f"these changes put back what cadmate's last write ('{lost['step']}') changed: KiCad probably saved "
+                               "over it from a copy that never reloaded it. Ask the user whether they meant it before redoing it.")
     st["seen"] = current
     return out
 
@@ -419,9 +438,11 @@ def edit(path: str, edits: list[dict], label: str, name: str | None = None) -> d
                         "edits": [{"old": e["old"], "new": e["new"], "all": bool(e.get("all"))} for e in edits],
                         "before": current, "after": new_item})
     st["seen"] = new_item
+    done = changes(t, current, new_item)["items"]
+    st["last_write"] = {"label": label.strip(), "items": done}
     _save(t, st)
     return refresh_kicad(t) | {"ok": True, "written": str(t.path), "step": len(st["steps"]), "label": label.strip(), "user_changes": user,
-            "check": {"ok": after_check["ok"], "errors": after_check["errors"]} | _new_findings(before_check, after_check), "changed": changes(t, current, new_item)["items"]}
+            "check": {"ok": after_check["ok"], "errors": after_check["errors"]} | _new_findings(before_check, after_check), "changed": done}
 
 
 def undo(path: str, name: str | None = None) -> dict:
@@ -450,8 +471,10 @@ def undo(path: str, name: str | None = None) -> dict:
     _write(t, t.replace(text, reverted))
     step["undone"] = True
     st["seen"] = reverted
+    done = changes(t, current, reverted)["items"]
+    st["last_write"] = {"label": f"undo '{step['label']}'", "items": done}
     _save(t, st)
-    return refresh_kicad(t) | {"ok": True, "undid": step["label"], "written": str(t.path), "user_changes": user, "changed": changes(t, current, reverted)["items"]}
+    return refresh_kicad(t) | {"ok": True, "undid": step["label"], "written": str(t.path), "user_changes": user, "changed": done}
 
 
 # --- pictures -----------------------------------------------------------------------------------

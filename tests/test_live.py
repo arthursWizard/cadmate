@@ -95,15 +95,16 @@ def test_summarize_keeps_user_edits_only():
 
 
 def test_session_reports_changes_since_last_look(sock):
-    fake_bridge(sock, [
+    seen = fake_bridge(sock, [
         {"ok": True, "seq": 4, "events": [ev(4, "changed", "Box", "Length")]},
         {"ok": True, "seq": 6, "events": [ev(5, "changed", "Box", "Height"), ev(6, "changed", "Box", "Width", source="cadmate")]},
-        {"ok": True, "seq": 1, "events": [ev(1, "changed", "Box", "Length")]},  # FreeCAD restarted
+        {"ok": True, "seq": 1, "events": []},  # FreeCAD restarted: asks again from the start
+        {"ok": True, "seq": 1, "events": [ev(1, "changed", "Box", "Radius")]},
     ])
-    s = live.Session()
-    assert s.user_changes() == []  # the first look reads the state instead
-    assert [c["properties"] for c in s.user_changes()] == [["Height"]]
-    assert s.user_changes() == [] and s.seen == 1
+    assert [c["properties"] for c in live.Session().user_changes()] == [["Length"]]  # edits before the first look count
+    assert [c["properties"] for c in live.Session().user_changes()] == [["Height"]]  # a new server carries on
+    assert [c["properties"] for c in live.Session().user_changes()] == [["Radius"]]
+    assert [r["since"] for r in seen] == [0, 4, 6, 0]
 
 
 def test_bridge_jsonable():

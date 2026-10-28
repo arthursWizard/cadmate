@@ -117,16 +117,35 @@ def summarize(events: list[dict], source: str = "user") -> list[dict]:
 
 
 class Session:
-    """Keeps the change-log position between calls, so each call reports what the user did since the last one."""
+    """Keeps the change-log position, so each call reports what the user did since cadmate last looked.
 
-    def __init__(self):
-        self.seen = None
+    The position is kept in a file next to the socket, so a new cadmate server
+    (a new Claude session) carries on where the last one stopped instead of
+    missing the edits made in between. With no position yet, every hand edit
+    since the bridge started counts.
+    """
+
+    def __init__(self, path: Path | None = None):
+        self.path = path
+
+    def _file(self) -> Path:
+        return self.path or socket_path().parent / "seen.json"
+
+    def _load(self) -> int:
+        try:
+            return int(json.loads(self._file().read_text())["seq"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return 0
 
     def user_changes(self) -> list[dict]:
-        r = call("changes", since=self.seen or 0)
+        seen = self._load()
+        r = call("changes", since=seen)
         if not r.get("ok") or "seq" not in r:
             raise BridgeUnavailable("the bridge running in FreeCAD is an older version; paste the start line again to replace it")
-        first = self.seen is None or r["seq"] < self.seen  # a restarted bridge counts from 0 again
-        self.seen = r["seq"]
-        # On the first look everything is new; the state itself says what is there.
-        return [] if first else summarize(r["events"])
+        if r["seq"] < seen:  # a restarted bridge counts from 0 again
+            r = call("changes", since=0)
+        try:
+            self._file().write_text(json.dumps({"seq": r["seq"]}))
+        except OSError:
+            pass
+        return summarize(r["events"])

@@ -167,3 +167,10 @@ def test_svg_gets_a_pixel_size(tmp_path):
     svg.write_text(original)
     kicad_live._pixel_size(svg, 900, square=True, margin=0.05)
     assert '<svg width="900" height="900" viewBox="-1.0000 -6.0000 22.0000 22.0000"' in svg.read_text()
+
+
+def test_empty_fields_kicad_adds_on_save_are_not_user_changes(fp):
+    kicad_live.state(str(fp))
+    hand_edit(fp, '\t(attr smd)', '\t(property "Datasheet" "" (at 0 0 0) (layer "F.Fab"))\n\t(property "Description" "" (at 0 0 0) (layer "F.Fab"))\n\t(attr smd)')
+    ch = kicad_live.state(str(fp))["user_changes"]
+    assert ch["changed"] and ch["items"] == [] and "note" in ch

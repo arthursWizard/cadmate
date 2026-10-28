@@ -196,9 +196,10 @@ def diff_footprints(a: footprint.Footprint, b: footprint.Footprint) -> list[dict
     ga, gb = {_graphic_key(g): g for g in a.graphics}, {_graphic_key(g): g for g in b.graphics}
     out += [{"graphic": _graphic_text(ga[k]), "removed": True} for k in ga if k not in gb]
     out += [{"graphic": _graphic_text(gb[k]), "added": True} for k in gb if k not in ga]
-    ta, tb = set(a.texts), set(b.texts)
-    out += [{"text": list(x), "removed": True} for x in a.texts if x not in tb]
-    out += [{"text": list(x), "added": True} for x in b.texts if x not in ta]
+    # KiCad 10 adds empty Datasheet and Description fields when it saves a footprint that lacks them: not the user's doing.
+    ta, tb = {x for x in a.texts if x[1] not in ("", "~")}, {x for x in b.texts if x[1] not in ("", "~")}
+    out += [{"text": list(x), "removed": True} for x in a.texts if x in ta and x not in tb]
+    out += [{"text": list(x), "added": True} for x in b.texts if x in tb and x not in ta]
     if [asdict(m) for m in a.models] != [asdict(m) for m in b.models]:
         out.append({"models": {"was": [asdict(m) for m in a.models], "now": [asdict(m) for m in b.models]}})
     if a.name != b.name:

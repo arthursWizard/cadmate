@@ -6,7 +6,7 @@ cadmate is an [MCP](https://modelcontextprotocol.io) server. You talk to Claude 
 
 ## Status
 
-Early. Seven workflows work end to end:
+Early. Eight workflows work end to end:
 
 - **Make the missing 3D model**: point Claude at a footprint and the part's datasheet, and get a checked STEP model linked into that footprint.
 - **Make a footprint from a datasheet**: Claude reads the package drawing, cadmate computes IPC-7351B pads (or places the datasheet's recommended land pattern) and writes a checked `.kicad_mod`. For JEDEC packages the pads and courtyard match KiCad's own library footprints exactly.
@@ -14,6 +14,7 @@ Early. Seven workflows work end to end:
 - **Work on a model together in FreeCAD**: Claude opens or builds the model in your FreeCAD window, you comment or edit it by hand, and Claude edits on top of what you changed, until you're both happy. Then it exports the STEP and checks it against the footprint. See "Live editing in FreeCAD" below.
 - **Work on a footprint or symbol together in KiCad**: you keep it open in KiCad's footprint or symbol editor, save and comment or edit by hand, and Claude edits on top of what you saved. The symbol editor reloads Claude's change by itself; the footprint editor needs a refresh. See "Live editing in KiCad" below.
 - **Work on a board together in KiCad's PCB editor**: Claude reads the board straight from your open window, saved or not, sees what you moved since its last look, and edits on top; each edit is one undo step in KiCad. See "Live editing in the PCB editor" below.
+- **Review a routed board**: after routing by hand or with Freerouting, cadmate points out what a reviewer would. A decap whose track wanders to its pin or loops back through a distant ground. A crystal trace that is long, uses vias or has another signal alongside. Fast signals crossing gaps in the ground pour. Tracks narrower than their net class or than IPC-2221 asks for the current. JLCPCB's spacing and via limits. Each finding comes with its location, the reasoning and a source. See "Reviewing a layout" below.
 - **Make a symbol from a datasheet**: Claude reads the pin table, cadmate lays out the symbol per KiCad's library conventions (grid, sides by pin type, stacked power pins, hidden NC pins, fields) and writes it into a `.kicad_sym` library, checked against the pin table and the footprint's pads.
 
 | Tool | What it does | Needs |
@@ -50,6 +51,7 @@ Early. Seven workflows work end to end:
 | `kicad_pcb_edit` | Edits the open board as one undo step named "cadmate: ..." | KiCad API on |
 | `kicad_pcb_undo` | Takes back Claude's last step, only if nothing happened after it | KiCad API on |
 | `kicad_pcb_save` | Saves the board | KiCad API on |
+| `review_pcb_layout` | Layout review of the open board or a `.kicad_pcb`: decoupling, crystal, switching nodes, return paths, width and current, vias, JLCPCB rules, and KiCad's DRC | nothing; kicad-cli for the DRC part |
 | `kicad_pcb_snapshot` | A picture of the open board, unsaved edits included | KiCad API on, and an SVG converter |
 
 ## Version policy
@@ -130,6 +132,21 @@ The API has no change log, so cadmate tells your changes from its own by compari
 
 The API is reachable by any program running as you on this computer, the same as your files. Turn it off again in the same place if that matters to you.
 
+### Reviewing a layout
+
+`review_pcb_layout` reads the board from the PCB editor (unsaved edits included) or from a `.kicad_pcb`, and from the project file and schematic next to it. The project file gives the net classes. The schematic gives the power symbols, which help tell what each net is.
+
+- **Decoupling.** For each IC power pin it takes the nearest bypass cap on that net, and checks how far the cap is placed, how long the track to the pin is compared to the straight line, the vias on the way, and the loop back through the IC's ground pin. Source: ADI MT-101.
+- **Crystal.** Track length and vias to the IC, other signals running alongside or through its area, load caps, and ground under it. Source: ST AN2867.
+- **Switching nodes.** Signals running next to a regulator's SW/LX net, feedback especially. Source: TI AN-1149.
+- **Return path.** Signals crossing a gap in the ground pour on the layer next to them. These are warnings on fast nets and grouped notes on others. Source: Altium's guidance.
+- **Width and current.** Tracks narrower than their net class, which KiCad's DRC doesn't check. For the nets you give currents for, width per IPC-2221.
+- **Vias.** Count per net, and sizes against JLCPCB's minimums.
+- **Assembly.** Package-to-package spacing from JLCPCB's SMD table, and parts close to the edge.
+- **KiCad's DRC.** Unrouted nets and clearances, when `kicad-cli` is found.
+
+It infers what each net carries (ground, power, switching node, crystal, fast signal) from net names, the pads' pin types, power symbols and the parts on the net, and says how it decided. When it can't tell, it says so; pass `roles` to correct it. Numbers no standard sets (for example, how far is too far for a decap) are cadmate's own heuristics, listed in the reply under `limits`, and findings based on them cite `heuristic`. Treat them as prompts to look, not as pass or fail.
+
 cadmate finds KiCad and FreeCAD in their usual install locations on macOS, Linux and Windows. To point it elsewhere, set these in the server's environment:
 
 | Variable | Example |
@@ -154,13 +171,15 @@ To read datasheets, Claude needs a way to read PDFs and to look at drawings as i
 - `kicad-footprints`: how to read a datasheet into a footprint, and review an existing one.
 - `kicad-symbols`: how to read a datasheet's pin table into a symbol, and review an existing one.
 - `kicad-parts`: how to make a whole part (symbol, footprint, model) in one go, and check an existing one.
+- `kicad-pcb-live`: working on a board in the open PCB editor.
+- `kicad-pcb-review`: reviewing a routed board, and how to use an autorouter without letting it decide the critical nets.
 
 ## Roadmap
 
 1. Missing 3D model for a footprint (done)
 2. Footprints from datasheets (gull-wing, QFN/DFN, custom land patterns, through-hole holes and slots sized from the leads; SOT, chip parts and DIP/header families next)
 3. Symbols from datasheets (rectangular and opamp bodies, multi-unit, alternate pin functions; logic gate shapes next)
-4. Board review: ERC/DRC with explanations and fixes
+4. Board review: layout review (done: decoupling, crystal, return paths, width and current, JLCPCB rules); ERC with explanations and fixes next
 5. Fab export per fab house
 6. Enclosure from the board, worked on live in FreeCAD
 7. More live PCB help: DRC findings explained and fixed in the open board

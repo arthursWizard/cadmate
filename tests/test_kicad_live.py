@@ -163,7 +163,7 @@ def test_svg_gets_a_pixel_size(tmp_path):
     svg.write_text(original)
     kicad_live._pixel_size(svg, 900, margin=0.05)
     text = svg.read_text()
-    assert '<svg width="900" height="500" viewBox="-1.0000 -1.0000 22.0000 12.0000"' in text and "mm" not in text
+    assert '<svg width="900" height="491" viewBox="-1.0000 -1.0000 22.0000 12.0000"' in text and "mm" not in text
     svg.write_text(original)
     kicad_live._pixel_size(svg, 900, square=True, margin=0.05)
     assert '<svg width="900" height="900" viewBox="-1.0000 -6.0000 22.0000 22.0000"' in svg.read_text()

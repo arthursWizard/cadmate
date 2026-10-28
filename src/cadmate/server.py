@@ -573,7 +573,7 @@ def freecad_live_export_step(
     return r | {"check": model.check_file(fp, out, placement, expected or None)}
 
 
-# Footprints and symbols open in KiCad's editors, which reload the file when it changes (kicad_live.py).
+# Footprints and symbols open in KiCad's editors, which have no API: cadmate works on the saved file (kicad_live.py).
 
 
 def _kicad_live(fn, *args, **kw) -> dict:
@@ -605,9 +605,10 @@ def kicad_live_edit(path: str, edits: list[dict], label: str, name: str | None =
     in order to the text as it is now (kicad_live_state gives it); old must occur once unless all is true. Change what
     is there: a pad's (at ...) or (size ...), a pin's (length ...), a field's value. Never rewrite the whole item or
     regenerate it, which throws away the user's edits. The result is parsed and checked before it is written; the reply
-    gives the user's changes found first, what this step changed, and new or fixed check findings. KiCad reloads the
-    file about a second later if the editor has no unsaved edits; otherwise it asks the user whether to reload, and
-    answering no keeps their copy, which overwrites this step when they save (kicad_live_state then reports it).
+    gives the user's changes found first, what this step changed, every check error (new_errors and fixed_errors
+    say what this step did) and "kicad": what the user has to do to see the change in KiCad, which KiCad 10 doesn't
+    pick up by itself. Pass that on. Saving from an editor that still shows the old version writes over the step;
+    kicad_live_state then reports it as overwrote_cadmate_step.
     label is one line the user will recognise in the history ("pads 2 and 3 0.1 mm longer").
     """
     return _kicad_live(kicad_live.edit, path, edits, label, name)
@@ -617,7 +618,7 @@ def kicad_live_edit(path: str, edits: list[dict], label: str, name: str | None =
 def kicad_live_undo(path: str, name: str | None = None) -> dict:
     """Take back cadmate's last step on a footprint or symbol, keeping the user's hand edits made since.
 
-    KiCad's own undo list starts over on every reload, so cadmate keeps its steps itself. When the user has changed
+    KiCad doesn't know cadmate's steps, so cadmate keeps them itself. When the user has changed
     the same text since, the undo is refused; make the reverse change as a new edit instead.
     """
     return _kicad_live(kicad_live.undo, path, name)

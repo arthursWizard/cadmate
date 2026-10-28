@@ -1,16 +1,21 @@
 """Work on a footprint or symbol together while it is open in KiCad's editor.
 
-KiCad's footprint and symbol editors have no API, but since KiCad 10 both watch
-the file of what they have open: when it changes on disk they reload it about a
-second later, without asking, unless the editor holds unsaved edits (then they
-ask). So the loop is: the user saves in KiCad and comments, cadmate reads the
-file, sees what the user changed since its last look, and writes its edit on
-top; KiCad reloads it.
+KiCad's footprint and symbol editors have no API, so cadmate works on the saved
+file: the user saves in KiCad and comments, cadmate reads the file, sees what the
+user changed since its last look, and writes its edit on top.
+
+Getting KiCad to show cadmate's write is the weak part (tried on KiCad 10.0.4,
+macOS). The footprint editor opens footprints from a copy of the library it keeps
+in memory; its Refresh button re-reads changed libraries into it, so Refresh and
+opening the footprint again shows the file. The symbol editor does re-read the
+library when its file watch fires, about a second after the write, unless it
+holds unsaved edits (then it asks); on macOS the watch only fires when the file
+leaves the folder and comes back, so cadmate writes symbols that way there.
 
 cadmate never regenerates the item. Edits are text replacements inside the
 footprint, or inside the one symbol of a library, so everything the user did by
 hand stays as KiCad wrote it. Each edit is a step with a label in cadmate's own
-history (KiCad's undo list starts over on every reload), and the last step can
+history (KiCad doesn't know about them), and the last step can
 be undone on top of whatever the user changed since.
 
 What cadmate last wrote or read is kept per item in cadmate's data folder, so a
@@ -22,6 +27,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
+import os
 import platform
 import re
 import shutil
@@ -136,19 +142,42 @@ def _save(t: Target, st: dict) -> None:
     f.write_text(json.dumps(st))
 
 
+MAC_SETTLE = 0.5  # seconds between the file leaving its folder and coming back, so KiCad sees both
+
+
 def _write(t: Target, text: str) -> None:
+    """Write the file so that KiCad's symbol editor notices.
+
+    KiCad watches the folder through wxWidgets. On Linux (inotify) and Windows a write to the file is reported with its
+    path. On macOS wxWidgets uses kqueue, which reports only names appearing in or leaving the folder, so a write in
+    place goes unseen; there a symbol library is moved aside and the new one moved in after a pause, long enough for
+    KiCad to list the folder in between (checked on KiCad 10.0.4). Footprints are written in place everywhere: the
+    footprint editor would reload from its stale library copy anyway, and a reload prompt would only risk the user's
+    unsaved edits.
+    """
     t.parse(t.item(text))  # never hand KiCad a file we can't read back
-    t.path.write_text(text, encoding="utf-8")
+    if t.kind != "symbol" or platform.system() != "Darwin":
+        t.path.write_text(text, encoding="utf-8")
+        return
+    new = t.path.with_name(f".{t.path.name}.cadmate-new")
+    old = t.path.with_name(f".{t.path.name}.cadmate-old")
+    new.write_text(text, encoding="utf-8")
+    os.replace(t.path, old)
+    try:
+        time.sleep(MAC_SETTLE)
+    finally:
+        os.replace(new, t.path)
+    old.unlink(missing_ok=True)
 
 
-# KiCad 10's footprint editor keeps a copy of each library and opens footprints from it. Its file watcher reloads a
-# changed footprint from that copy too, so it shows the old one; the toolbar's Refresh (View > Redraw) re-reads changed
-# libraries into the copy, and opening the footprint again then shows the file. The API can't reach the footprint
-# editor, so the user does those two clicks.
+# What the user does to see cadmate's write in KiCad 10 (see the module docstring). Until they do, their editor holds
+# the old version, and saving from it would write over cadmate's steps.
 SEE_IT = {
-    "footprint": "To see it in KiCad's footprint editor: click Refresh in its toolbar (View > Redraw), then double-click "
-                 "the footprint in the library tree. KiCad 10 doesn't pick up the file by itself.",
-    "symbol": "KiCad's symbol editor reloads the symbol about a second after the write, unless it holds unsaved edits.",
+    "footprint": "KiCad's footprint editor doesn't show this by itself. To see it: Refresh in the editor's toolbar, then "
+                 "double-click the footprint in the library tree. Until then the editor holds the old version, and saving "
+                 "from it would undo this step.",
+    "symbol": "KiCad's symbol editor reloads the symbol about a second after the write. If it had unsaved edits it asks "
+              "first: yes takes this step and drops them, no keeps them and the next save there undoes this step.",
 }
 
 

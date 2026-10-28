@@ -66,11 +66,11 @@ To review an existing symbol, run `check_symbol`, with `pins` from the datasheet
 
 ## Working live with the symbol open in KiCad
 
-For iterating with the user: they look at it in KiCad's symbol editor, comment or edit by hand, and you edit on top. KiCad's symbol editor has no API; since KiCad 10 it reloads the open symbol when its file changes, so cadmate works on the saved file.
+For iterating with the user: they look at it in KiCad's symbol editor, comment or edit by hand, and you edit on top. KiCad's symbol editor has no API, so cadmate works on the saved file.
 
 1. The symbol must be open in KiCad's symbol editor from a library KiCad knows (the project's or the global sym-lib-table; `generate_part` registers its libraries). Ask the user to open it if it isn't.
-2. Each round starts with the user saving in KiCad (Cmd+S on macOS, Ctrl+S elsewhere): their unsaved edits aren't in the file, and if the editor holds unsaved edits when you write, KiCad asks them whether to reload. Remind them once, at the start, then only when `user_changes` suggests they forgot.
+2. Each round starts with the user saving in KiCad (Cmd+S on macOS, Ctrl+S elsewhere): their unsaved edits aren't in the file. Remind them once, at the start, then only when `user_changes` suggests they forgot.
 3. `kicad_live_state` first, every round. Read `user_changes`: those are the user's hand edits since you last looked, pin by pin. Keep them and build on them; never revert one unless they ask. If one conflicts with the datasheet, say so and ask. When it reports `overwrote_cadmate_step`, a save in KiCad replaced your last step: ask before applying it again.
 4. `kicad_live_edit` with small text replacements in the item's text as `kicad_live_state` returned it, one step per change you'd describe in one line, with that line as the label. Never regenerate the symbol or rewrite it whole: that throws away the user's edits. Fix the `errors` the reply reports, including ones the user's edits caused (a dragged pad past the courtyard), or tell the user why they stay.
-5. `kicad_live_snapshot` and look at the picture before saying anything about the change. Then tell the user in a line what you changed and that KiCad has reloaded it (about a second after the write).
-6. `kicad_live_undo` takes back your last step and keeps their later edits; KiCad's own undo list starts over on every reload, so it can't.
+5. `kicad_live_snapshot` and look at the picture before saying anything about the change. Then tell the user in a line what you changed, and that KiCad has reloaded it (about a second after the write; the reply's `kicad` line says what happens if their editor had unsaved edits).
+6. `kicad_live_undo` takes back your last step and keeps their later edits; KiCad doesn't know your steps, so its undo can't.

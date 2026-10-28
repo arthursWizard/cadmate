@@ -187,3 +187,22 @@ def test_edit_reply_lists_errors_that_were_already_there(fp):
 def test_edit_says_how_to_see_it_in_kicad(fp):
     r = kicad_live.edit(str(fp), [{"old": '(at -2.475 -1.905) (size 1.95 0.6)', "new": '(at -2.475 -1.905) (size 2.2 0.6)'}], "pad 1 longer")
     assert r["ok"] and "Refresh" in r["kicad"] and "double-click" in r["kicad"]
+
+
+def test_macos_symbol_write_moves_the_file_out_and_back(lib, monkeypatch):
+    monkeypatch.setattr(kicad_live.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(kicad_live, "MAC_SETTLE", 0)
+    seen = []
+    real = kicad_live.os.replace
+    monkeypatch.setattr(kicad_live.os, "replace", lambda a, b: (seen.append((Path(a).name, Path(b).name)), real(a, b)))
+    r = kicad_live.edit(str(lib), [{"old": "(at 0 -10.16 90)\n\t\t\t\t(length 2.54)", "new": "(at 0 -12.7 90)\n\t\t\t\t(length 5.08)"}],
+                        "GND pin longer", name="NE555D")
+    assert r["ok"] and "reloads" in r["kicad"]
+    assert seen == [(lib.name, f".{lib.name}.cadmate-old"), (f".{lib.name}.cadmate-new", lib.name)]
+    assert sorted(p.name for p in lib.parent.iterdir()) == [lib.name]
+
+
+def test_macos_footprint_write_stays_in_place(fp, monkeypatch):
+    monkeypatch.setattr(kicad_live.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(kicad_live.os, "replace", lambda a, b: pytest.fail("footprints are written in place"))
+    assert kicad_live.edit(str(fp), [{"old": '(at -2.475 -1.905) (size 1.95 0.6)', "new": '(at -2.475 -1.905) (size 2.2 0.6)'}], "pad 1")["ok"]

@@ -469,9 +469,12 @@ def freecad_live_status() -> dict:
     """
     try:
         reply = live.call("ping", timeout=5)
+        if reply.get("bridge") != live.BRIDGE_VERSION:
+            raise live.BridgeUnavailable(f"the bridge running in FreeCAD is version {reply.get('bridge')}, cadmate needs {live.BRIDGE_VERSION}; "
+                                         "paste the start line again to replace it")
+        _live_session.user_changes()  # start the change log from here
     except live.BridgeUnavailable as e:
         return live.not_running() | {"error": str(e)}
-    _live_session.user_changes()  # start the change log from here
     return reply | {"running": True}
 
 

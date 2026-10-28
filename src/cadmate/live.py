@@ -21,6 +21,7 @@ import socket
 from pathlib import Path
 
 SOCKET_ENV = "CADMATE_BRIDGE_SOCKET"
+BRIDGE_VERSION = 1  # live_bridge.BRIDGE_VERSION this client speaks
 BRIDGE_SOURCE = Path(__file__).parent / "freecad_scripts" / "live_bridge.py"
 
 
@@ -123,6 +124,8 @@ class Session:
 
     def user_changes(self) -> list[dict]:
         r = call("changes", since=self.seen or 0)
+        if not r.get("ok") or "seq" not in r:
+            raise BridgeUnavailable("the bridge running in FreeCAD is an older version; paste the start line again to replace it")
         first = self.seen is None or r["seq"] < self.seen  # a restarted bridge counts from 0 again
         self.seen = r["seq"]
         # On the first look everything is new; the state itself says what is there.

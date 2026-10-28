@@ -116,3 +116,15 @@ def test_bridge_jsonable():
         x, y, z = 1, 2, 3
 
     assert b._jsonable({"a": Q(), "b": [Vec()], "c": None}) == {"a": 2.5, "b": [[1, 2, 3]], "c": None}
+
+
+def test_bridge_versions_agree():
+    assert load_bridge().BRIDGE_VERSION == live.BRIDGE_VERSION
+
+
+def test_old_bridge_is_reported_not_crashed(sock):
+    from cadmate import server
+
+    fake_bridge(sock, [{"ok": True, "pong": True}])
+    r = server.freecad_live_status()
+    assert not r["running"] and "version None" in r["error"]

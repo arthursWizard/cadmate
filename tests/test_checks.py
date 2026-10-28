@@ -78,6 +78,61 @@ def test_z_rotation_direction():
     assert (b["ymin"], b["ymax"], b["xmin"], b["xmax"]) == (-1.0, 0.0, 0.0, 0.0)
 
 
+# SOIC-8 pad 1 is top left in the footprint (Y down), so its pin 1 mark is at -X, +Y in the 3D frame (Y up).
+MARK = {"x": -1.5, "y": 1.0, "r": 0.3}
+
+
+def test_pin1_mark_on_pin1_passes():
+    r = check.check_model(SOIC, GOOD, marks=[MARK])
+    assert r["ok"] and not r["warnings"], r
+    assert r["measured"]["pin1_mark"] == (-1.5, -1.0)
+
+
+def test_model_turned_180_is_caught_by_its_pin1_mark():
+    # The box of a SOIC-8 is the same turned 180 degrees; only the mark moves, to the opposite corner.
+    r = check.check_model(SOIC, GOOD, marks=[MARK | {"x": 1.5, "y": -1.0}])
+    assert not r["ok"]
+    assert "turned 180 degrees" in r["errors"][0]
+    assert r["measured"]["pin1_mark"] == (1.5, 1.0)
+
+
+def test_dip_end_notch_tells_180_degrees():
+    # A DIP's notch sits on the centre line of its pin 1 end: it shows which end, not which side.
+    dip = footprint.parse('''(footprint "DIP-8" (pad "1" thru_hole oval (at 0 0) (size 1.6 1.6) (drill 0.8))
+      (pad "2" thru_hole oval (at 0 2.54) (size 1.6 1.6) (drill 0.8)) (pad "3" thru_hole oval (at 0 5.08) (size 1.6 1.6) (drill 0.8))
+      (pad "4" thru_hole oval (at 0 7.62) (size 1.6 1.6) (drill 0.8)) (pad "5" thru_hole oval (at 7.62 7.62) (size 1.6 1.6) (drill 0.8))
+      (pad "6" thru_hole oval (at 7.62 5.08) (size 1.6 1.6) (drill 0.8)) (pad "7" thru_hole oval (at 7.62 2.54) (size 1.6 1.6) (drill 0.8))
+      (pad "8" thru_hole oval (at 7.62 0) (size 1.6 1.6) (drill 0.8)))''')
+    box = {"xmin": 0.64, "xmax": 6.98, "ymin": -8.7, "ymax": 1.08, "zmin": -3.0, "zmax": 5.0}
+    assert check.check_model(dip, box, marks=[{"x": 3.81, "y": 1.08, "r": 0.75}])["ok"]
+    r = check.check_model(dip, box, marks=[{"x": 3.81, "y": -8.7, "r": 0.75}])
+    assert any("along Y" in e and "turned 180 degrees" in e for e in r["errors"]), r
+
+
+def test_mirrored_mark_is_named():
+    r = check.check_model(SOIC, GOOD, marks=[MARK | {"x": 1.5}])
+    assert not r["ok"]
+    assert "along X" in r["errors"][0]
+
+
+def test_any_mark_on_pin1_is_enough():
+    # Moulded parts often carry a second, larger round mark (an ejector pin) at another corner.
+    r = check.check_model(SOIC, GOOD, marks=[MARK | {"x": 1.5, "y": -1.0, "r": 0.6}, MARK])
+    assert r["ok"], r
+
+
+def test_model_without_a_mark_gets_a_warning_only_when_looked_at():
+    r = check.check_model(SOIC, GOOD, marks=[])
+    assert r["ok"]
+    assert any("no round pin 1 mark" in w for w in r["warnings"])
+    assert not check.check_model(SOIC, GOOD)["warnings"]
+
+
+def test_two_pad_parts_need_no_mark():
+    r = check.check_model(CAP, {"xmin": -1.5, "xmax": 3.5, "ymin": -2.5, "ymax": 2.5, "zmin": -3.0, "zmax": 11.0}, marks=[])
+    assert not any("pin 1 mark" in w for w in r["warnings"]), r
+
+
 def test_odd_angles_are_refused():
     r = check.check_model(SOIC, GOOD, footprint.Model(path="", rotate=(0, 0, 45)))
     assert not r["ok"]

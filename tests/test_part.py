@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from cadmate import apps, footprint, generate, model, packages, part, server, symbol
+from cadmate import apps, check, footprint, generate, model, packages, part, server, symbol
 from test_generate import QFN16, RGF40, SOIC8
 from test_symbols import NE555
 
@@ -21,6 +21,26 @@ def footprint_of(family, params):
     r = generate.generate(family, params)
     assert r["ok"], r
     return footprint.parse(r["text"]), footprint.BBox(**r["summary"]["body"])
+
+
+@pytest.mark.parametrize("family,params", [("soic", SOIC8), ("qfn", QFN16 | {"height": 0.9})])
+def test_planned_dimple_is_on_pin1_and_caught_turned_round(family, params):
+    fp, body = footprint_of(family, params)
+    plan = model.plan(family, params, fp, body)
+    marks = model.planned_marks(plan["solids"])
+    assert len(marks) == 1
+    assert not any("pin 1" in e for e in check.check_model(fp, plan["bbox"], marks=marks)["errors"])
+    turned = [m | {"x": -m["x"], "y": -m["y"]} for m in marks]  # the same model turned 180 degrees about the origin
+    r = check.check_model(fp, plan["bbox"], marks=turned)
+    assert any("turned 180 degrees" in e for e in r["errors"]), r
+
+
+def test_colours_are_read_from_the_step(tmp_path):
+    grey, coloured = tmp_path / "grey.step", tmp_path / "coloured.step"
+    grey.write_text("ISO-10303-21;\nDATA;\n#1=MANIFOLD_SOLID_BREP('',#2);\nENDSEC;\n")
+    coloured.write_text("ISO-10303-21;\nDATA;\n#1=COLOUR_RGB('',0.15,0.15,0.15);\nENDSEC;\n")
+    assert not model.has_colours(grey) and model.has_colours(coloured)
+    assert not model.has_colours(tmp_path / "missing.step")
 
 
 def test_soic_model_puts_a_lead_on_every_pad():

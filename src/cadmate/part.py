@@ -114,7 +114,8 @@ def generate_part(
         except (ValueError, TypeError) as e:
             return _fail(errors + [f"model: {e}"], warnings)
         placement = Model(path=f"${{KIPRJMOD}}/{library}.3dshapes/{fp_name}.step")
-        offline = check.check_model(fp, planned["bbox"], placement, planned["expected"], bool(model_spec.get("cutout")))
+        offline = check.check_model(fp, planned["bbox"], placement, planned["expected"], bool(model_spec.get("cutout")),
+                                    marks=model.planned_marks(planned["solids"]))
         model_report = {"source": "built", "link": placement.path, "expected": planned["expected"], "planned_bbox": planned["bbox"]}
         errors += [f"model: {e}" for e in offline["errors"]]
         if not offline["errors"]:
@@ -132,7 +133,8 @@ def generate_part(
                     errors += [f"model: {e}" for e in r["errors"]]
                     warnings += [f"model: {w}" for w in r["warnings"]]
                     if not info.get("colours"):
-                        warnings.append("model: built headless, so the STEP has no colours; KiCad shows it in its default grey")
+                        warnings.append("model: the STEP has no colours, so KiCad shows it grey; FreeCAD before 1.0 cannot write colours "
+                                        "headless (cadmate does with 1.0 and later)")
             else:
                 placement = None
                 model_report["source"] = "not built"

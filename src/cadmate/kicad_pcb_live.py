@@ -46,19 +46,41 @@ def _kipy():
     return kipy
 
 
+def _other_sockets() -> list[str]:
+    """KiCad's API sockets besides the default one. The project manager serves the default socket; a PCB editor
+    started on its own (opening a .kicad_pcb directly) serves api-<pid>.sock next to it. Windows uses named pipes,
+    which this can't list, so there it finds nothing."""
+    import glob
+    import os
+
+    from kipy.kicad import _default_socket_path
+
+    if os.environ.get("KICAD_API_SOCKET"):
+        return []
+    path = _default_socket_path().removeprefix("ipc://")
+    found = sorted(glob.glob(os.path.join(os.path.dirname(path), "api-*.sock")), key=os.path.getmtime, reverse=True)
+    return [f"ipc://{f}" for f in found]
+
+
 def connect(timeout_ms: int = TIMEOUT_MS):
     """KiCad and the board open in its PCB editor, as kipy objects."""
     kipy = _kipy()
-    try:
-        kicad = kipy.KiCad(timeout_ms=timeout_ms)
-        kicad.ping()
-    except Exception as e:
-        raise PcbUnavailable(f"can't reach KiCad's API ({e.__class__.__name__}: {e}). {ENABLE_HOW}") from e
-    try:
-        board = kicad.get_board()
-    except Exception as e:
-        raise PcbUnavailable(f"KiCad is running but has no board open in the PCB editor ({e})") from e
-    return kicad, board
+    reached, last = False, None
+    for sock in [None] + _other_sockets():
+        try:
+            kicad = kipy.KiCad(socket_path=sock, timeout_ms=timeout_ms)
+            kicad.ping()
+        except Exception as e:
+            last = last or e
+            continue
+        reached = True
+        try:
+            return kicad, kicad.get_board()
+        except Exception as e:
+            last = e
+    if not reached:
+        raise PcbUnavailable(f"can't reach KiCad's API ({last.__class__.__name__}: {last}). {ENABLE_HOW}") from last
+    raise PcbUnavailable(f"KiCad is running but has no board open in the PCB editor ({last})") from last
 
 
 def busy_hint(e: Exception) -> str:

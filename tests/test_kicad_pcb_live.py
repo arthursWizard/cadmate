@@ -193,3 +193,31 @@ def test_undo_that_takes_back_something_else_is_redone(board):
     r = pcb.undo()
     assert not r["ok"] and "redid" in r["error"] and board.text == edited
     assert pcb.state()["history"] == ["C1 down"]
+
+
+def test_connect_falls_back_to_a_standalone_pcb_editor(monkeypatch):
+    """The project manager answers on the default socket without a board; a PCB editor opened on its own has api-<pid>.sock."""
+    import kipy
+
+    from cadmate import kicad_pcb_live
+
+    class Fake:
+        def __init__(self, socket_path=None, timeout_ms=0):
+            self.sock = socket_path
+
+        def ping(self):
+            pass
+
+        def get_board(self):
+            if self.sock is None:
+                raise RuntimeError("no handler available for GetOpenDocuments")
+            return "board on " + self.sock
+
+    monkeypatch.undo()  # conftest's refusal of connect
+    monkeypatch.setattr(kipy, "KiCad", Fake)
+    monkeypatch.setattr(kicad_pcb_live, "_other_sockets", lambda: ["ipc:///tmp/kicad/api-123.sock"])
+    kicad, board = kicad_pcb_live.connect()
+    assert board == "board on ipc:///tmp/kicad/api-123.sock"
+    monkeypatch.setattr(kicad_pcb_live, "_other_sockets", lambda: [])
+    with pytest.raises(kicad_pcb_live.PcbUnavailable, match="no board open"):
+        kicad_pcb_live.connect()

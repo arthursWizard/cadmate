@@ -19,7 +19,7 @@ SOURCES = {
               "0.2mm', and a 0.2-0.25 mm hole with a via pad under 0.45 mm costs more.",
     "pcbway": "PCBWay capabilities (pcbway.com/capabilities.html): standard table 'Min manufacturable trace is 4mil(0.1mm)', "
               "'Min manufacturable spacing is 4mil(0.1mm)'; drills under 0.2 mm cost extra; annular ring 0.15 mm; advanced table, "
-              "normal process: via hole to hole ≥11 mil, line to CNC-milled edge 0.25 mm.",
+              "normal process: outer 1 oz width/spacing 5/6 mil, via hole to hole ≥11 mil, line to CNC-milled edge 0.25 mm.",
 }
 
 # hard minimums, mm
@@ -28,6 +28,12 @@ PROFILES = {
     "jlcpcb-multilayer": {"track": 0.09, "clearance": 0.09, "via_drill": 0.20, "via_diameter": 0.45, "hole_to_hole": 0.20,
                           "edge": 0.20},
     "pcbway": {"track": 0.10, "clearance": 0.10, "via_drill": 0.20, "via_diameter": 0.50, "hole_to_hole": 0.28, "edge": 0.25},
+}
+
+# where a fab names a comfortable value of its own, that is the preferred one instead of the margin's
+PREFERRED = {
+    "pcbway": {"track": 0.127, "clearance": 0.152},  # its normal process, 1 oz outer: 5/6 mil
+    "*": {"via_drill": 0.30, "via_diameter": 0.60},  # the standard via at both fabs; smaller ones cost more
 }
 
 
@@ -40,5 +46,6 @@ def limits(fab: str, layers: int = 2, margin: float = MARGIN) -> dict:
     if key not in PROFILES:
         raise ValueError(f"no profile for fab '{fab}'; known: jlcpcb, pcbway")
     up = lambda v: math.ceil(v * (1 + margin) * 1000 - 1e-6) / 1000  # noqa: E731
+    named = PREFERRED["*"] | PREFERRED.get(key.split("-")[0], {})
     return {"fab": key, "margin": margin, "source": SOURCES[key.split("-")[0]],
-            "rules": {k: {"hard": v, "preferred": up(v)} for k, v in PROFILES[key].items()}}
+            "rules": {k: {"hard": v, "preferred": max(up(v), named.get(k, 0))} for k, v in PROFILES[key].items()}}

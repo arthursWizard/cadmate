@@ -9,7 +9,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from . import freerouting, pcb_critical, pcb_route
+from . import fab, freerouting, pcb_critical, pcb_route
 from .pcb_board import Board, load_project, load_schematic, parse
 
 
@@ -97,9 +97,14 @@ def route_critical(path: str | None = None, out_path: str | None = None, roles: 
 
 
 def autoroute(path: str | None = None, out_path: str | None = None, currents: dict | None = None, roles: dict | None = None,
-              passes: int = 30, timeout: int = 1200) -> dict:
-    """Freerouting on everything not routed yet, with the widths the high-current items ask for."""
+              passes: int = 30, timeout: int = 1200, fab_name: str | None = "jlcpcb", margin: float = fab.MARGIN) -> dict:
+    """Freerouting on everything not routed yet, with the widths the high-current items ask for. Its narrow tracks are
+    checked against the fab's minimums (fab_name, None to skip) plus the margin."""
     b, live = load(path)
+    try:
+        lim = fab.limits(fab_name, len(b.copper_layers), margin) if fab_name else None
+    except ValueError as e:
+        raise FlowError(str(e)) from None
     plan = pcb_critical.classify(b, roles, currents, None, None, ["high_current"])
     widths, capped = {}, []
     for it in plan["items"]:
@@ -115,17 +120,19 @@ def autoroute(path: str | None = None, out_path: str | None = None, currents: di
                            "what_to_do": "the autorouter can't neck down at one pad, so the main path needs widening by hand or a "
                                          "pour on this net; review_pcb_layout with the same currents checks it"})
     if live is not None:
-        out = freerouting.autoroute_live(widths, passes, timeout)
+        out = freerouting.autoroute_live(widths, passes, timeout, lim)
     else:
         src = Path(path).expanduser()
         dst = Path(out_path).expanduser() if out_path else src.with_name(src.stem + "-routed" + src.suffix)
         if dst.resolve() == src.resolve():
             raise FlowError("out_path is the input board; give a new file so the original is kept")
-        out = freerouting.autoroute_file(src, dst, widths, passes, timeout)
+        out = freerouting.autoroute_file(src, dst, widths, passes, timeout, lim)
     out["widths_from_currents"] = widths
     narrow = [w for w in out.get("widened", []) if "wanted_mm" in w]
     if narrow:
         out["still_narrow"] = narrow  # Freerouting necked these down where there's no room for the full width
+    if lim:
+        out["fab"] = {k: lim[k] for k in ("fab", "margin", "rules", "source")}
     if capped:
         out["widths_capped"] = capped
     out["next"] = "review_pcb_layout on the result; fix what it finds (by hand, or route_critical_nets for an item), then review again"

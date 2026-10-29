@@ -356,6 +356,27 @@ def widen(board: Board, tracks: list[Track], widths: dict[str, float], vias: lis
     return list(changed.values())
 
 
+def fab_check(board: Board, tracks: list[Track], lim: dict) -> dict:
+    """Sort the new tracks narrower than the fab's preferred width: below its hard minimum is an error, between the two a
+    warning. A neck is the short end of a track going into a pad; anything else narrow was squeezed between other copper."""
+    rule = lim["rules"]["track"]
+    hard, pref = rule["hard"], rule["preferred"]
+    out: dict[str, list] = {"errors": [], "warnings": []}
+    for t in tracks:
+        if t.width >= pref - 1e-6:
+            continue
+        pad = next((q for q in board.pads if q.net == t.net and (q.contains(t.start) or q.contains(t.end))), None)
+        e = {"net": t.net, "width_mm": round(t.width, 4), "length_mm": round(t.length, 2), "layer": t.layer,
+             "at": [round(t.start[0], 2), round(t.start[1], 2)],
+             "what": f"neck into {pad.name}" if pad and t.length <= 1.0 else "narrow between other copper"}
+        if t.width < hard - 1e-6:
+            out["errors"].append(e | {"why": f"under {lim['fab']}'s {hard:g} mm minimum: reroute it, or route it by hand"})
+        else:
+            out["warnings"].append(e | {"why": f"{lim['fab']} can make it, but it's under {pref:g} mm, their minimum plus "
+                                               f"{lim['margin']:.0%}: keep it only where there's no room"})
+    return out
+
+
 def unrouted(board: Board) -> list[dict]:
     """Nets whose pads aren't all joined by copper (pours as filled now), biggest first."""
     out = []
@@ -372,7 +393,8 @@ def unrouted(board: Board) -> list[dict]:
 # --- the round trip --------------------------------------------------------------------------------------
 
 
-def autoroute_file(board_file: Path, out_file: Path, widths: dict[str, float] | None = None, passes: int = 30, timeout: int = 1200) -> dict:
+def autoroute_file(board_file: Path, out_file: Path, widths: dict[str, float] | None = None, passes: int = 30, timeout: int = 1200,
+                   fab_limits: dict | None = None) -> dict:
     from . import pcb_route
 
     widths = widths or {}
@@ -396,11 +418,14 @@ def autoroute_file(board_file: Path, out_file: Path, widths: dict[str, float] | 
         filled = str(e)
     after = parse(out_file.read_text(), out_file.name)
     load_project(after, out_file.with_suffix(".kicad_pro"))
-    return {"ok": True, "board": str(out_file), "freerouting": fr, "added": {"tracks": len(tracks), "vias": len(vias)},
-            "widened": widened, "zones_refilled": filled, "unrouted": unrouted(after), "work": str(work)}
+    out = {"ok": True, "board": str(out_file), "freerouting": fr, "added": {"tracks": len(tracks), "vias": len(vias)},
+           "widened": widened, "zones_refilled": filled, "unrouted": unrouted(after), "work": str(work)}
+    if fab_limits:
+        out["fab_check"] = fab_check(board, tracks, fab_limits)
+    return out
 
 
-def autoroute_live(widths: dict[str, float] | None = None, passes: int = 30, timeout: int = 1200) -> dict:
+def autoroute_live(widths: dict[str, float] | None = None, passes: int = 30, timeout: int = 1200, fab_limits: dict | None = None) -> dict:
     from . import kicad_pcb_live, pcb_route
     from .pcb_board import load_project
 
@@ -430,6 +455,9 @@ def autoroute_live(widths: dict[str, float] | None = None, passes: int = 30, tim
     _, live = kicad_pcb_live.connect()
     after = parse(live.get_as_string(), live.name)
     load_project(after, copy.with_suffix(".kicad_pro"))
-    return {"ok": True, "board": live.name, "freerouting": fr, "added": {"tracks": len(tracks), "vias": len(vias)}, "widened": widened,
-            "zones": refill_note, "unrouted": unrouted(after), "undo": "two steps in KiCad's undo list: 'cadmate: Freerouting …' and 'cadmate: refill zones'",
-            "work": str(work)}
+    out = {"ok": True, "board": live.name, "freerouting": fr, "added": {"tracks": len(tracks), "vias": len(vias)}, "widened": widened,
+           "zones": refill_note, "unrouted": unrouted(after),
+           "undo": "two steps in KiCad's undo list: 'cadmate: Freerouting …' and 'cadmate: refill zones'", "work": str(work)}
+    if fab_limits:
+        out["fab_check"] = fab_check(board, tracks, fab_limits)
+    return out

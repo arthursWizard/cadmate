@@ -352,3 +352,27 @@ def test_custom_pad_polygons_count_as_its_copper():
     [p] = b.part("JP1").copper_pads
     assert p.contains((21.8, 10)) and not p.contains((22.3, 10))  # the pad's own orientation is 0: not turned with the part
     assert p.distance((22.5, 10)) == pytest.approx(0.5)
+
+
+def test_fab_limits_have_a_buffer_over_the_fab_minimum():
+    from cadmate import fab
+
+    jlc = fab.limits("JLCPCB")["rules"]["track"]
+    assert jlc == {"hard": 0.10, "preferred": 0.125}
+    assert fab.limits("jlcpcb", layers=4)["rules"]["track"]["hard"] == 0.09
+    with pytest.raises(ValueError):
+        fab.limits("acme")
+
+
+def test_narrow_tracks_sorted_against_the_fab():
+    from cadmate import fab
+
+    b = board(ic())
+    lim = fab.limits("jlcpcb")
+    neck = pb.Track((27.3, 18.1), (26.5, 18.1), 0.1124, "F.Cu", "+3V3")  # into U1.1
+    thin = pb.Track((10, 10), (15, 10), 0.075, "F.Cu", "+3V3")
+    fine = pb.Track((10, 12), (15, 12), 0.15, "F.Cu", "+3V3")
+    out = fr.fab_check(b, [neck, thin, fine], lim)
+    [w], [e] = out["warnings"], out["errors"]
+    assert w["width_mm"] == 0.1124 and w["what"].startswith("neck into U1 pad 1")
+    assert e["width_mm"] == 0.075 and e["what"] == "narrow between other copper"

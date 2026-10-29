@@ -183,6 +183,8 @@ class NetClass:
     clearance: float | None
     via_diameter: float | None
     via_drill: float | None
+    diff_pair_width: float | None = None
+    diff_pair_gap: float | None = None
 
 
 @dataclass
@@ -461,11 +463,12 @@ def load_project(board: Board, project_file: Path | None) -> None:
     ns = pro.get("net_settings", {})
     for c in ns.get("classes", []):
         board.net_classes[c.get("name", "?")] = NetClass(c.get("name", "?"), c.get("track_width"), c.get("clearance"),
-                                                         c.get("via_diameter"), c.get("via_drill"))
+                                                         c.get("via_diameter"), c.get("via_drill"), c.get("diff_pair_width"),
+                                                         c.get("diff_pair_gap"))
     default = board.net_classes.get("Default")
     for c in board.net_classes.values():  # KiCad 8+ leaves values a class doesn't set to the Default class
         if default and c is not default:
-            for f in ("track_width", "clearance", "via_diameter", "via_drill"):
+            for f in ("track_width", "clearance", "via_diameter", "via_drill", "diff_pair_width", "diff_pair_gap"):
                 if getattr(c, f) is None:
                     setattr(c, f, getattr(default, f))
     assigned = ns.get("netclass_assignments") or {}

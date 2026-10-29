@@ -19,15 +19,19 @@ SOURCES = {
               "0.2mm', and a 0.2-0.25 mm hole with a via pad under 0.45 mm costs more.",
     "pcbway": "PCBWay capabilities (pcbway.com/capabilities.html): standard table 'Min manufacturable trace is 4mil(0.1mm)', "
               "'Min manufacturable spacing is 4mil(0.1mm)'; drills under 0.2 mm cost extra; annular ring 0.15 mm; advanced table, "
-              "normal process: outer 1 oz width/spacing 5/6 mil, via hole to hole ≥11 mil, line to CNC-milled edge 0.25 mm.",
+              "normal process: outer 1 oz width/spacing 5/6 mil, via hole to hole ≥11 mil, component hole to hole ≥16 mil, line to "
+              "CNC-milled edge 0.25 mm. The via pad (0.5 mm) is cadmate's: 0.2 mm drill plus the 0.15 mm ring each side.",
 }
 
-# hard minimums, mm
+# hard minimums, mm. via_drill and via_diameter are the smallest via at standard price: both fabs drill 0.15 mm for more
 PROFILES = {
-    "jlcpcb": {"track": 0.10, "clearance": 0.10, "via_drill": 0.20, "via_diameter": 0.45, "hole_to_hole": 0.20, "edge": 0.20},
-    "jlcpcb-multilayer": {"track": 0.09, "clearance": 0.09, "via_drill": 0.20, "via_diameter": 0.45, "hole_to_hole": 0.20,
-                          "edge": 0.20},
-    "pcbway": {"track": 0.10, "clearance": 0.10, "via_drill": 0.20, "via_diameter": 0.50, "hole_to_hole": 0.28, "edge": 0.25},
+    "jlcpcb": {"track": 0.10, "clearance": 0.10, "pad_to_track": 0.10, "via_drill": 0.20, "via_diameter": 0.45,
+               "via_hole_to_hole": 0.20, "pth_hole_to_hole": 0.45, "edge": 0.20},
+    "jlcpcb-multilayer": {"track": 0.09, "clearance": 0.09, "pad_to_track": 0.10, "via_drill": 0.20, "via_diameter": 0.45,
+                          "via_hole_to_hole": 0.20, "pth_hole_to_hole": 0.45, "edge": 0.20},
+    # PCBWay's via pad is worked out (0.2 mm drill + 2 × its 0.15 mm ring), not quoted
+    "pcbway": {"track": 0.10, "clearance": 0.10, "pad_to_track": 0.10, "via_drill": 0.20, "via_diameter": 0.50,
+               "via_hole_to_hole": 0.28, "pth_hole_to_hole": 0.41, "edge": 0.25},
 }
 
 # where a fab names a comfortable value of its own, that is the preferred one instead of the margin's

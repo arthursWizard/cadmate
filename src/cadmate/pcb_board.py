@@ -646,6 +646,12 @@ class NetGraph:
             a, b = self._add("end", t.start, t.layer), self._add("end", t.end, t.layer)
             self._link(a, b, t.length, "track")
             ends += [(a, t.start, t.layer, t), (b, t.end, t.layer, t)]
+            for pad in pads:  # a track passing over a pad joins it, as KiCad's connectivity has it
+                if pad.on(t.layer) and not pad.contains(t.start, tol=t.width / 2) and not pad.contains(t.end, tol=t.width / 2):
+                    along = self._touch(t, pad)
+                    if along is not None:
+                        self._link(a, self.pad_node[id(pad)], along, "pad")
+                        self._link(b, self.pad_node[id(pad)], t.length - along, "pad")
         for i, (n, p, lay, t) in enumerate(ends):
             for m, q, lay2, t2 in ends[i + 1:]:
                 if lay == lay2 and dist(p, q) <= max(0.01, min(t.width, t2.width) / 2):
@@ -691,6 +697,19 @@ class NetGraph:
                 hub = self._add("pour", f, f.layer)
                 for n, p in members:
                     self._link(n, hub, 0.0, "pour")
+
+    @staticmethod
+    def _touch(t: Track, pad: Pad) -> float | None:
+        """How far along t its copper first touches the pad, or None."""
+        r = math.hypot(pad.w, pad.h) / 2 + max((dist((pad.x, pad.y), q) for poly in pad.extra for q in poly), default=0)
+        if point_seg((pad.x, pad.y), t.start, t.end)[0] > r + t.width / 2 or t.mid is not None:
+            return None
+        n = max(2, int(t.length / 0.02))
+        for k in range(n + 1):
+            q = (t.start[0] + (t.end[0] - t.start[0]) * k / n, t.start[1] + (t.end[1] - t.start[1]) * k / n)
+            if pad.distance(q) <= t.width / 2 + 1e-6:
+                return t.length * k / n
+        return None
 
     def _add(self, kind: str, item, layer: str | None) -> int:
         self.nodes.append((kind, item, layer))

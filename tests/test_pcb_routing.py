@@ -376,3 +376,11 @@ def test_narrow_tracks_sorted_against_the_fab():
     [w], [e] = out["warnings"], out["errors"]
     assert w["width_mm"] == 0.1124 and w["what"].startswith("neck into U1 pad 1")
     assert e["width_mm"] == 0.075 and e["what"] == "narrow between other copper"
+
+
+def test_track_passing_over_a_pad_connects_it():
+    b = board(ic(), cap("C1", 20, 17.6))
+    b.tracks.append(pb.Track((19.2, 17.6), (28.5, 17.6), 0.5, "F.Cu", "+3V3"))  # grazes U1.1's top edge, ends outside it
+    assert len(pb.NetGraph(b, "+3V3").islands()) == 1
+    b.tracks[-1] = pb.Track((19.2, 17.6), (28.5, 17.6), 0.3, "F.Cu", "+3V3")  # 0.05 mm short of it
+    assert len(pb.NetGraph(b, "+3V3").islands()) == 2

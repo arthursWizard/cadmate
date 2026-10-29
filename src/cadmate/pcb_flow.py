@@ -150,14 +150,21 @@ def autoroute(path: str | None = None, out_path: str | None = None, currents: di
         out["fab"] = {k: lim[k] for k in ("fab", "margin", "rules", "source")}
         if neck_rules:
             dru = _rules_file(path, out_path, live)
-            block = fab.neck_rules(out.get("fab_check", {}).get("warnings", []), lim["rules"]["track"]["hard"])
+            warns = out.get("fab_check", {}).get("warnings", [])
+            # the rule matches by courtyard: a part without one would leave its neck a DRC error
+            bare = sorted({w["ref"] for w in warns if w.get("ref") and not getattr(b.part(w["ref"]), "courtyard", None)})
+            block = fab.neck_rules([w for w in warns if w.get("ref") not in bare], lim["rules"]["track"]["hard"])
             if dru is not None and (block or dru.exists()):
                 src = Path(path).expanduser().with_suffix(".kicad_dru") if path else dru
                 before = src.read_text() if src.exists() else ""
                 dru.write_text(fab.merge_rules(before, block))
                 out["neck_rules"] = {"file": str(dru), "rules": block.count("(rule "),
                                      "what": "KiCad custom rules allowing these nets down to the fab's minimum inside the "
-                                             "courtyard of the part they neck into; tracks squeezed elsewhere stay DRC errors"}
+                                             "courtyard of the part they neck into; tracks squeezed elsewhere stay DRC errors",
+                                     "check": "kicad-cli doesn't report a broken rules file, it falls back to the board rules: "
+                                              "after DRC, the necks in fab_check.warnings should not be track_width errors"}
+                if bare:
+                    out["neck_rules"]["no_courtyard"] = bare
     if capped:
         out["widths_capped"] = capped
     out["next"] = "review_pcb_layout on the result; fix what it finds (by hand, or route_critical_nets for an item), then review again"

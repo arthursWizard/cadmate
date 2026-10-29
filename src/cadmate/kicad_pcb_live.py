@@ -344,32 +344,40 @@ def _namespace(kicad, board) -> dict:
 
 
 def edit(code: str, label: str) -> dict:
+    def run(kicad, board):
+        ns = _namespace(kicad, board)
+        exec(compile(code, "<cadmate edit>", "exec"), ns)
+        return ns.get("result")
+
+    return commit(label, run)
+
+
+def commit(label: str, fn) -> dict:
+    """Run fn(kicad, board) inside one commit, so it is one undo step named "cadmate: <label>", and track it like an edit."""
     if not label or not label.strip():
         return {"ok": False, "error": "give a label: one line saying what this step changes"}
     kicad, board = connect()
     s = Session(board, kicad)
     before, user = s.look()
-    ns = _namespace(kicad, board)
     try:
-        commit = board.begin_commit()
+        c = board.begin_commit()
     except Exception as e:
         return {"ok": False, "error": busy_hint(e), "user_changes": user}
     try:
-        exec(compile(code, "<cadmate edit>", "exec"), ns)
+        result = fn(kicad, board)
     except Exception as e:
         try:
-            board.drop_commit(commit)
+            board.drop_commit(c)
         except Exception:
             pass
         return {"ok": False, "error": f"{e.__class__.__name__}: {busy_hint(e)}", "traceback": traceback.format_exc(limit=4)[-2000:],
                 "undone": "nothing was changed on the board", "user_changes": user}
-    board.push_commit(commit, f"cadmate: {label.strip()}")
+    board.push_commit(c, f"cadmate: {label.strip()}")
     after = s.snapshot()
     s.st["seen"] = after
     s.st["steps"].append({"label": label.strip(), "before": digest(before), "after": digest(after),
                           "items": sorted(_touched(before, after))})
     _save(s.file, s.st)
-    result = ns.get("result")
     try:
         json.dumps(result)
     except TypeError:

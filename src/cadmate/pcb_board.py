@@ -44,6 +44,7 @@ class Pad:
     kind: str  # smd, thru_hole, np_thru_hole, connect
     pintype: str | None = None
     pinfunction: str | None = None
+    extra: list[list[Point]] = field(default_factory=list)  # a custom pad's polygons, board coordinates
 
     @property
     def name(self) -> str:
@@ -51,6 +52,8 @@ class Pad:
         return f"{self.ref} pad {self.number}{fn}"
 
     def contains(self, p: Point, tol: float = 0.01) -> bool:
+        if self.extra and any(point_in_polygon(p, poly) for poly in self.extra):
+            return True
         dx, dy = p[0] - self.x, p[1] - self.y
         if self.shape == "circle":
             return math.hypot(dx, dy) <= max(self.w, self.h) / 2 + tol
@@ -60,6 +63,15 @@ class Pad:
 
     def distance(self, p: Point) -> float:
         """From p to the pad's copper edge (0 inside); rounded corners count as square."""
+        if self.extra:
+            d = min(0.0 if point_in_polygon(p, poly) else min(point_seg(p, a, b)[0] for a, b in zip(poly, poly[1:] + poly[:1]))
+                    for poly in self.extra)
+            if d == 0.0:
+                return 0.0
+            return min(d, self._anchor_distance(p))
+        return self._anchor_distance(p)
+
+    def _anchor_distance(self, p: Point) -> float:
         dx, dy = p[0] - self.x, p[1] - self.y
         if self.shape == "circle":
             return max(0.0, math.hypot(dx, dy) - max(self.w, self.h) / 2)
@@ -183,6 +195,8 @@ class NetClass:
     clearance: float | None
     via_diameter: float | None
     via_drill: float | None
+    diff_pair_width: float | None = None
+    diff_pair_gap: float | None = None
 
 
 @dataclass
@@ -201,6 +215,7 @@ class Board:
     net_class_of: dict[str, str] = field(default_factory=dict)
     rules: dict = field(default_factory=dict)  # the project's design rules, KiCad's keys
     edges: list[tuple[Point, Point]] = field(default_factory=list)
+    mask_openings: list[tuple[str, list[Point]]] = field(default_factory=list)  # (copper layer it exposes, hull), from graphics
     power_symbol_nets: set[str] = field(default_factory=set)  # from the schematic's power symbols
     sources: list[str] = field(default_factory=list)  # files read besides the board
 
@@ -357,14 +372,14 @@ def parse(text: str, name: str = "board") -> Board:
             if a and a[0] in cu_t and t is not None and t.floats():
                 cu_t[a[0]] = t.floats()[0]
 
-    parts, tracks, vias, fills, edges = [], [], [], [], []
+    parts, tracks, vias, fills, edges, masks = [], [], [], [], [], []
     zone_nets: dict[str, list[str]] = {}
     for node in root.items:
         if not isinstance(node, sexpr.Node):
             continue
         h = node.head
         if h == "footprint":
-            parts.append(_part(node, names, copper, edges))
+            parts.append(_part(node, names, copper, edges, masks))
         elif h in ("segment", "arc"):
             s, e = _xy(node.child("start")), _xy(node.child("end"))
             if s and e:
@@ -394,11 +409,22 @@ def parse(text: str, name: str = "board") -> Board:
                     fills.append(Fill(net, lay[0], pts, (min(xs), min(ys), max(xs), max(ys))))
         elif h and h.startswith("gr_") and "Edge.Cuts" in _layers(node, copper):
             edges += _edge_segments(node)
+        elif h and h.startswith("gr_"):
+            _mask_opening(node, _layers(node, copper), copper, _shape_points(node), masks)
     nets = sorted({v for v in names.values() if v} | {t.net for t in tracks if t.net} | {p.net for pt in parts for p in pt.pads if p.net})
-    return Board(name, parts, tracks, vias, fills, zone_nets, copper, cu_t, thickness, nets, edges=edges)
+    return Board(name, parts, tracks, vias, fills, zone_nets, copper, cu_t, thickness, nets, edges=edges, mask_openings=masks)
 
 
-def _part(node: sexpr.Node, names: dict[str, str], copper: list[str], edges: list) -> Part:
+def _mask_opening(node: sexpr.Node, lays: list[str], copper: list[str], pts: list[Point], masks: list) -> None:
+    """A filled shape drawn on a mask layer (a logo, a test area) bares the copper under it: anything routed there is exposed."""
+    if not copper or node.head[3:] not in ("rect", "circle", "poly") or len(pts) < 3:
+        return
+    for mask, cu in (("F.Mask", copper[0]), ("B.Mask", copper[-1])):
+        if mask in lays:
+            masks.append((cu, convex_hull(pts)))
+
+
+def _part(node: sexpr.Node, names: dict[str, str], copper: list[str], edges: list, masks: list | None = None) -> Part:
     at = node.child("at").floats() if node.child("at") is not None else [0, 0]
     fx, fy = at[0], at[1]
     frot = at[2] if len(at) > 2 else 0.0
@@ -411,9 +437,17 @@ def _part(node: sexpr.Node, names: dict[str, str], copper: list[str], edges: lis
         dx, dy = _rotate(pat[0], pat[1], frot)
         size = p.child("size").floats() if p.child("size") is not None else [0, 0]
         pf, pt = p.child("pinfunction"), p.child("pintype")
+        pang = pat[2] if len(pat) > 2 else 0.0  # the file has the pad's own orientation, left out when it is 0
+        extra = []
+        prim = p.child("primitives")
+        for g in prim.children("gr_poly") if prim is not None else []:
+            pts = _shape_points(g)
+            if len(pts) >= 3:
+                extra.append([(fx + dx + r[0], fy + dy + r[1]) for r in (_rotate(x, y, pang) for x, y in pts)])
         pads.append(Pad(ref, a[0] if a else "", _net(p, names), fx + dx, fy + dy, size[0], size[1] if len(size) > 1 else size[0],
-                        pat[2] if len(pat) > 2 else frot, a[2] if len(a) > 2 else "rect", _layers(p, copper), a[1] if len(a) > 1 else "",
-                        pt.atoms()[0] if pt is not None and pt.atoms() else None, pf.atoms()[0] if pf is not None and pf.atoms() else None))
+                        pang, a[2] if len(a) > 2 else "rect", _layers(p, copper), a[1] if len(a) > 1 else "",
+                        pt.atoms()[0] if pt is not None and pt.atoms() else None, pf.atoms()[0] if pf is not None and pf.atoms() else None,
+                        extra))
     court = []
     for g in node.items:
         if isinstance(g, sexpr.Node) and g.head and g.head.startswith("fp_"):
@@ -423,6 +457,8 @@ def _part(node: sexpr.Node, names: dict[str, str], copper: list[str], edges: lis
                 court += pts
             if "Edge.Cuts" in lays:
                 edges += _edge_segments_abs(g, fx, fy, frot)
+            if masks is not None:
+                _mask_opening(g, lays, copper, pts, masks)
     attr = node.child("attr")
     attrs = attr.atoms() if attr is not None else []
     return Part(ref, _prop(node, "Value"), (node.atoms() or [""])[0], fx, fy, frot, side, pads, convex_hull(court),
@@ -461,11 +497,12 @@ def load_project(board: Board, project_file: Path | None) -> None:
     ns = pro.get("net_settings", {})
     for c in ns.get("classes", []):
         board.net_classes[c.get("name", "?")] = NetClass(c.get("name", "?"), c.get("track_width"), c.get("clearance"),
-                                                         c.get("via_diameter"), c.get("via_drill"))
+                                                         c.get("via_diameter"), c.get("via_drill"), c.get("diff_pair_width"),
+                                                         c.get("diff_pair_gap"))
     default = board.net_classes.get("Default")
     for c in board.net_classes.values():  # KiCad 8+ leaves values a class doesn't set to the Default class
         if default and c is not default:
-            for f in ("track_width", "clearance", "via_diameter", "via_drill"):
+            for f in ("track_width", "clearance", "via_diameter", "via_drill", "diff_pair_width", "diff_pair_gap"):
                 if getattr(c, f) is None:
                     setattr(c, f, getattr(default, f))
     assigned = ns.get("netclass_assignments") or {}
@@ -609,6 +646,12 @@ class NetGraph:
             a, b = self._add("end", t.start, t.layer), self._add("end", t.end, t.layer)
             self._link(a, b, t.length, "track")
             ends += [(a, t.start, t.layer, t), (b, t.end, t.layer, t)]
+            for pad in pads:  # a track passing over a pad joins it, as KiCad's connectivity has it
+                if pad.on(t.layer) and not pad.contains(t.start, tol=t.width / 2) and not pad.contains(t.end, tol=t.width / 2):
+                    along = self._touch(t, pad)
+                    if along is not None:
+                        self._link(a, self.pad_node[id(pad)], along, "pad")
+                        self._link(b, self.pad_node[id(pad)], t.length - along, "pad")
         for i, (n, p, lay, t) in enumerate(ends):
             for m, q, lay2, t2 in ends[i + 1:]:
                 if lay == lay2 and dist(p, q) <= max(0.01, min(t.width, t2.width) / 2):
@@ -654,6 +697,19 @@ class NetGraph:
                 hub = self._add("pour", f, f.layer)
                 for n, p in members:
                     self._link(n, hub, 0.0, "pour")
+
+    @staticmethod
+    def _touch(t: Track, pad: Pad) -> float | None:
+        """How far along t its copper first touches the pad, or None."""
+        r = math.hypot(pad.w, pad.h) / 2 + max((dist((pad.x, pad.y), q) for poly in pad.extra for q in poly), default=0)
+        if point_seg((pad.x, pad.y), t.start, t.end)[0] > r + t.width / 2 or t.mid is not None:
+            return None
+        n = max(2, int(t.length / 0.02))
+        for k in range(n + 1):
+            q = (t.start[0] + (t.end[0] - t.start[0]) * k / n, t.start[1] + (t.end[1] - t.start[1]) * k / n)
+            if pad.distance(q) <= t.width / 2 + 1e-6:
+                return t.length * k / n
+        return None
 
     def _add(self, kind: str, item, layer: str | None) -> int:
         self.nodes.append((kind, item, layer))

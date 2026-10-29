@@ -14,6 +14,7 @@ Early. Eight workflows work end to end:
 - **Work on a model together in FreeCAD**: Claude opens or builds the model in your FreeCAD window, you comment or edit it by hand, and Claude edits on top of what you changed, until you're both happy. Then it exports the STEP and checks it against the footprint. See "Live editing in FreeCAD" below.
 - **Work on a footprint or symbol together in KiCad**: you keep it open in KiCad's footprint or symbol editor, save and comment or edit by hand, and Claude edits on top of what you saved. The symbol editor reloads Claude's change by itself; the footprint editor needs a refresh. See "Live editing in KiCad" below.
 - **Work on a board together in KiCad's PCB editor**: Claude reads the board straight from your open window, saved or not, sees what you moved since its last look, and edits on top; each edit is one undo step in KiCad. See "Live editing in the PCB editor" below.
+- **Route a board, critical connections first**: cadmate finds the connections that need care before anything is routed: decap to pin, crystals, USB and other differential pairs, switching regulator hot loops, ESD protection, feedback and ADC nets, reset and strap nets, RF feeds, high-current paths and ground returns. Each comes with its rule and the source the rule comes from, and you confirm or change the list. cadmate routes those, locks only what it routed, lets Freerouting do the rest, then the review checks the result. See "Routing a board" below.
 - **Review a routed board**: after routing by hand or with Freerouting, cadmate points out what a reviewer would. A decap whose track wanders to its pin or loops back through a distant ground. A crystal trace that is long, uses vias or has another signal alongside. Fast signals crossing gaps in the ground pour. Tracks narrower than their net class or than IPC-2221 asks for the current. JLCPCB's spacing and via limits. Each finding comes with its location, the reasoning and a source. See "Reviewing a layout" below.
 - **Make a symbol from a datasheet**: Claude reads the pin table, cadmate lays out the symbol per KiCad's library conventions (grid, sides by pin type, stacked power pins, hidden NC pins, fields) and writes it into a `.kicad_sym` library, checked against the pin table and the footprint's pads.
 
@@ -51,6 +52,9 @@ Early. Eight workflows work end to end:
 | `kicad_pcb_edit` | Edits the open board as one undo step named "cadmate: ..." | KiCad API on |
 | `kicad_pcb_undo` | Takes back Claude's last step, only if nothing happened after it | KiCad API on |
 | `kicad_pcb_save` | Saves the board | KiCad API on |
+| `classify_critical_nets` | The connections on a board that need care, by class, each with its rule, source, connections and what to do with it, as a table to confirm or override | nothing |
+| `route_critical_nets` | Routes and locks the confirmed critical connections on the open board (one undo step) or into a copy of a `.kicad_pcb`; lists what it couldn't route and why | nothing |
+| `autoroute_rest` | Freerouting on the rest, around the locked tracks, with IPC-2221 widths for nets with a current; brings the result back, widens tracks below the net class, refills zones | Freerouting's jar, java, KiCad's bundled Python |
 | `review_pcb_layout` | Layout review of the open board or a `.kicad_pcb`: decoupling, crystal, switching nodes, return paths, width and current, vias, JLCPCB rules, and KiCad's DRC | nothing; kicad-cli for the DRC part |
 | `kicad_pcb_snapshot` | A picture of the open board, unsaved edits included | KiCad API on, and an SVG converter |
 
@@ -132,6 +136,31 @@ The API has no change log, so cadmate tells your changes from its own by compari
 
 The API is reachable by any program running as you on this computer, the same as your files. Turn it off again in the same place if that matters to you.
 
+### Routing a board
+
+The flow: place the parts, classify the critical connections and confirm them, route those first and lock them, let Freerouting route the rest, review, fix, and review again.
+
+`classify_critical_nets` sorts what it finds into classes. Each class is a detector with its rule and sources (`pcb_critical.py`); adding a class is adding a detector.
+
+| Class | Rule | Source |
+| --- | --- | --- |
+| RF and antenna feed | 50 Ω, short, no vias, ground stitching, nothing nearby. Routed by hand. | Espressif ESP hardware design guidelines |
+| Switching regulator hot loop | Input cap at VIN and PGND, no vias in the loop, inductor at SW, output cap at the inductor | ADI AN-139, TI AN-1149 |
+| Decoupling cap to pin | Nearest small cap straight to the pin on one layer, ground into the pour at the pad | ADI MT-101 |
+| Crystal or oscillator | Short, one layer, no vias, load caps at the crystal, nothing under it | ST AN2867 |
+| Differential pair | USB 2.0 90 Ω, 50 mil skew, ≤ 4 vias per trace; PCIe/HDMI 100 Ω; routed together, through ESD pads | TI SPRAAR7 |
+| ESD/TVS protection | TVS at the connector, line through the TVS pad, one via at its ground pin | TI SLVA680 |
+| Sensitive analog | Feedback, ADC, reference and sense parts at the pin, away from switching nodes and clocks | ADI MT-031, TI AN-1149 |
+| Reset, boot and strap | Pull and filter parts at the pin, short track | the datasheet; cadmate heuristic |
+| High-current path | IPC-2221 width for the current, given to Freerouting as a net class | IPC-2221 |
+| Ground return and pours | Fast nets over unbroken ground, checked after routing | Altium; TI SPRAAR7 |
+
+Each item says what to do with it: `route` (cadmate routes and locks it), `place` (a part is too far for routing to fix), `hand`, `netclass`, `ask` (needs a current) or `check`. `overrides` changes it.
+
+`route_critical_nets` is a grid router for short critical connections: clearances from the net classes, checked again exactly on the final tracks, pairs routed as one and split at width and gap, ground vias placed after the tracks so they don't wall them in. What it can't route within the rule it lists with the reason, rather than route badly. On KiCad's StickHub demo with all tracks removed, it routes 79 of 82 critical connections in about 10 seconds. Pairs whose two ends are on different layers through separate TVS parts can still come out a few mm apart in length; tune those with KiCad's skew tuner.
+
+`autoroute_rest` exports a DSN with KiCad's own exporter (in KiCad's bundled Python; kicad-cli has no DSN export), runs Freerouting headless, and reads its session file itself, so the result goes into the open board as one undo step. Lock only the critical tracks: locking whole power nets boxes Freerouting in. Freerouting 2.2.4 throws on boards with locked tracks; use 2.5 or later.
+
 ### Reviewing a layout
 
 `review_pcb_layout` reads the board from the PCB editor (unsaved edits included) or from a `.kicad_pcb`, and from the project file and schematic next to it. The project file gives the net classes. The schematic gives the power symbols, which help tell what each net is.
@@ -153,6 +182,9 @@ cadmate finds KiCad and FreeCAD in their usual install locations on macOS, Linux
 | --- | --- |
 | `CADMATE_KICAD_CLI` | `/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli` |
 | `CADMATE_FREECADCMD` | `/Applications/FreeCAD.app/Contents/Resources/bin/freecadcmd` |
+| `CADMATE_FREEROUTING_JAR` | `~/Documents/KiCad/10.0/3rdparty/plugins/app_freerouting_kicad-plugin/jar/freerouting-2.5.0.jar` |
+| `CADMATE_JAVA` | `/opt/homebrew/opt/openjdk/bin/java` |
+| `CADMATE_KICAD_PYTHON` | `/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/3.9/bin/python3` |
 
 KiCad path variables in model paths (for example `${KICAD10_3DMODEL_DIR}`) are expanded from the same environment. `${KIPRJMOD}` falls back to the footprint's folder.
 
@@ -172,6 +204,7 @@ To read datasheets, Claude needs a way to read PDFs and to look at drawings as i
 - `kicad-symbols`: how to read a datasheet's pin table into a symbol, and review an existing one.
 - `kicad-parts`: how to make a whole part (symbol, footprint, model) in one go, and check an existing one.
 - `kicad-pcb-live`: working on a board in the open PCB editor.
+- `kicad-pcb-route`: routing a board with the user: critical connections first, then Freerouting, then review.
 - `kicad-pcb-review`: reviewing a routed board, and how to use an autorouter without letting it decide the critical nets.
 
 ## Roadmap

@@ -266,6 +266,34 @@ def test_ses_is_read_in_board_coordinates_and_narrow_tracks_widened():
     assert widened == [{"net": "GND", "from_mm": 0.1124, "to_mm": 0.2, "segments": 2}] and tracks[0].width == 0.2
 
 
+def test_widen_stops_where_clearance_would_break():
+    b = board(ic())
+    b.net_classes["Default"] = pb.NetClass("Default", 0.2, 0.2, 0.6, 0.3)
+    t = pb.Track((26.0, 17.0), (26.0, 19.365), 0.1124, "F.Cu", "GND")  # 0.55 mm from U1.1's edge
+    [w] = fr.widen(b, [t], {"GND": 1.0})
+    assert w["to_mm"] == pytest.approx(0.7, abs=0.006) and w["wanted_mm"] == 1.0 and w["held_back_by"].startswith("U1 pad 1")
+    assert t.width == w["to_mm"] and "below_board_minimum" not in w
+
+
+def test_vias_keep_hole_to_hole_on_the_same_net():
+    b = board(gnd_pour())
+    r = rt.Router(b)
+    r.commit(rt.Result({}, "x", True, vias=[pb.Via(10, 10, 0.6, 0.3, ["F.Cu", "B.Cu"], "GND")]))
+    assert not r._via_fits((10.4, 10), "GND", 0.6)
+    assert r._via_fits((10.9, 10), "GND", 0.6)
+
+
+def test_nothing_is_routed_in_a_solder_mask_opening():
+    logo = footprint("Logo:Small", "LOGO1", "LOGO", 40, 10, ['(fp_poly (pts (xy -1 -1) (xy 1 -1) (xy 1 1) (xy -1 1)) (layer "B.Mask"))'])
+    opening = '(gr_rect (start 10 10) (end 12 12) (fill solid) (layer "F.Mask"))\n'
+    b = board(logo, opening)
+    assert sorted(l for l, _ in b.mask_openings) == ["B.Cu", "F.Cu"]
+    obs = rt.Obstacles(b)
+    assert obs.clear("F.Cu", (11, 11), "X", 0.1) == (False, "a solder mask opening")
+    assert obs.clear("B.Cu", (11, 11), "X", 0.1)[0]
+    assert not obs.clear("B.Cu", (40, 10), "X", 0.1)[0] and obs.clear("F.Cu", (40, 10), "X", 0.1)[0]
+
+
 def test_ses_items_already_on_the_board_are_not_added_twice():
     b = board(ic(), cap("C1", 25.2, 17.0))
     tracks, vias = fr.parse_ses(SES, b)

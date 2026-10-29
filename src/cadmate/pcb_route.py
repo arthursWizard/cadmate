@@ -30,16 +30,21 @@ DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)]
 
 @dataclass
 class Shape:
-    kind: str  # pad, track, via, edge
+    kind: str  # pad, track, via, edge, mask (an opening in the solder mask: nothing routed may sit in it)
     net: str | None
     clearance: float
     pad: Pad | None = None
     a: Point | None = None
     b: Point | None = None
     half: float = 0.0  # track half width, via radius
+    poly: list[Point] | None = None
 
     def gap(self, p: Point) -> float:
         """Distance from p to this shape's copper edge."""
+        if self.kind == "mask":
+            if point_in_polygon(p, self.poly):
+                return -1.0
+            return min(point_seg(p, a, b)[0] for a, b in zip(self.poly, self.poly[1:] + self.poly[:1]))
         if self.kind == "pad":
             return self.pad.distance(p)
         if self.kind == "via":
@@ -48,6 +53,9 @@ class Shape:
         return d - self.half
 
     def box(self) -> tuple[float, float, float, float]:
+        if self.kind == "mask":
+            xs, ys = [q[0] for q in self.poly], [q[1] for q in self.poly]
+            return min(xs), min(ys), max(xs), max(ys)
         if self.kind == "pad":
             r = math.hypot(self.pad.w, self.pad.h) / 2
             return self.pad.x - r, self.pad.y - r, self.pad.x + r, self.pad.y + r
@@ -81,6 +89,9 @@ class Obstacles:
         for v in b.vias:
             for l in self._via_layers(v.layers):
                 self.add(l, Shape("via", v.net, self.clr(v.net), a=(v.x, v.y), half=v.size / 2))
+        for l, poly in b.mask_openings:  # copper there would be bare, and bridge to whatever else the opening bares
+            if l in self.buckets:
+                self.add(l, Shape("mask", None, self.min_clearance, poly=poly))
         self.edge = [Shape("edge", None, self.edge_clearance, a=s, b=e) for s, e in b.edges]
         box = b.bbox()
         self.outline = box
@@ -145,7 +156,8 @@ class Obstacles:
                 continue
             need = half + max(own, s.clearance) + margin
             if s.gap(p) < need - 1e-6:
-                return False, (s.pad.name if s.kind == "pad" else f"{s.kind} on {s.net or 'no net'}")
+                return False, (s.pad.name if s.kind == "pad" else "a solder mask opening" if s.kind == "mask"
+                               else f"{s.kind} on {s.net or 'no net'}")
         if self.outline:
             x0, y0, x1, y1 = self.outline
             if not (x0 < p[0] < x1 and y0 < p[1] < y1):
@@ -174,6 +186,7 @@ class Result:
     length: float = 0.0
     note: str = ""
     shapes: list = field(default_factory=list)
+    over: bool = False  # routed, but longer than the item's rule allows
 
     def to_dict(self) -> dict:
         c = self.conn
@@ -182,6 +195,8 @@ class Result:
         if self.ok:
             out |= {"length_mm": round(self.length, 2), "vias": len(self.vias), "segments": len(self.tracks),
                     "layers": sorted({t.layer for t in self.tracks}), "width_mm": self.tracks[0].width if self.tracks else None}
+            if self.over:
+                out["over_rule"] = True
             if self.note:
                 out["note"] = self.note
         else:
@@ -215,8 +230,9 @@ class Router:
     def _via_fits(self, p: Point, net: str, size: float, margin: float = 0.0) -> bool:
         if not all(self.obs.clear(l, p, net, size / 2, margin)[0] for l in self.obs.layers):
             return False
-        for v in self.b.vias:  # hole to hole
-            if dist(p, (v.x, v.y)) < (v.drill + size) / 2 + self.obs.hole_to_hole and v.net != net:
+        drill = self.via_size(net)[1]
+        for v in self.b.vias:  # hole to hole applies between vias of the same net too
+            if dist(p, (v.x, v.y)) < (v.drill + drill) / 2 + self.obs.hole_to_hole:
                 return False
         return True
 
@@ -713,8 +729,53 @@ def _jog(a: Point, b: Point) -> list[Point]:
 # --- routing a plan --------------------------------------------------------------------------------------
 
 
+PROMOTE = 3  # items moved to the front, one at a time, when they failed or broke their rule
+
+
 def route_plan(b: Board, plan: dict, ids: list[str] | None = None, skip: list[str] | None = None, grid: float = GRID) -> dict:
-    """Route every connection of the plan's items whose action is "route" (or the ids given), in the plan's order."""
+    """Route every connection of the plan's items whose action is "route" (or the ids given), in the plan's order.
+
+    An item that fails or comes out over its rule (a crystal trace the long way round, a pair out of skew) is often boxed
+    in by items routed before it. So it is moved to the front and everything routed again; the better run is kept."""
+    items = [it for it in plan["items"] if (it["id"] in ids if ids else it["action"] == "route") and it["id"] not in (skip or [])]
+    tracks0, vias0 = list(b.tracks), list(b.vias)
+    best, tried = None, []
+    order = items
+    for _ in range(PROMOTE + 1):
+        b.tracks, b.vias = list(tracks0), list(vias0)
+        results = _route_once(b, plan, order, grid)
+        pairs = _pair_report(plan, items, results)
+        bad = {x.item: 3 for x in results if not x.ok}
+        for x in results:
+            if x.ok and x.over:
+                bad.setdefault(x.item, 1)
+        for e in pairs:
+            if e.get("within") is False:
+                bad.setdefault(e["item"], 1)
+        score = sum(3 if not x.ok else 1 if x.over else 0 for x in results) + sum(e.get("within") is False for e in pairs)
+        if best is None or score < best[0]:
+            best = (score, results, pairs, [it["id"] for it in order[:len(tried)]])
+        nxt = next((it for it in items if it["id"] in bad and it["id"] not in tried), None)
+        if nxt is None or best[0] == 0:
+            break
+        tried.append(nxt["id"])
+        front = [it for it in items if it["id"] in tried]
+        order = sorted(front, key=lambda it: tried.index(it["id"])) + [it for it in items if it["id"] not in tried]
+    _, results, pairs, first = best
+    tracks = [t for res in results for t in res.tracks]
+    vias = [v for res in results for v in res.vias]
+    b.tracks, b.vias = tracks0 + tracks, vias0 + vias
+    by_item: dict[str, dict] = {}
+    for res in results:
+        e = by_item.setdefault(res.item, {"routed": 0, "failed": 0})
+        e["routed" if res.ok else "failed"] += 1
+    check = [res.to_dict() for res in results if res.ok and res.over] + [e for e in pairs if e.get("within") is False]
+    return {"tracks": tracks, "vias": vias, "connections": [res.to_dict() for res in results], "items": by_item, "pairs": pairs,
+            "routed": sum(1 for x in results if x.ok), "failed": sum(1 for x in results if not x.ok), "over_rule": check,
+            "routed_first": first}
+
+
+def _route_once(b: Board, plan: dict, items: list[dict], grid: float) -> list[Result]:
     r = Router(b, grid)
     for it in plan["items"]:  # keep other signals out from under the crystal (AN2867): costly to cross, not forbidden
         if it["class"] == "crystal":
@@ -723,7 +784,6 @@ def route_plan(b: Board, plan: dict, ids: list[str] | None = None, skip: list[st
                 if part is not None and not ref.startswith(("U", "IC")) and part.courtyard:
                     r.soft.append((part.courtyard, set(b.copper_layers), set(it["nets"]) | {n for n in b.nets if r_ground(plan, n)}, 6.0))
     results: list[Result] = []
-    items = [it for it in plan["items"] if (it["id"] in ids if ids else it["action"] == "route") and it["id"] not in (skip or [])]
     pair_tracks: dict[str, list[Track]] = {}
 
     def one(it: dict, c: dict) -> Result:
@@ -743,6 +803,7 @@ def route_plan(b: Board, plan: dict, ids: list[str] | None = None, skip: list[st
                 res2.note = f"necked down to the net class width {narrow:g} mm to get through"
                 res = res2
         if res.ok and limit and res.length > limit:
+            res.over = True
             res.note = (res.note + "; " if res.note else "") + f"{res.length:.1f} mm, longer than the rule's {limit:g} mm: check it, or fix the placement"
         if res.ok and c.get("pair") and c["net"] == c["pair"]:
             pair_tracks.setdefault(c["pair"], []).extend(res.tracks)
@@ -806,15 +867,7 @@ def route_plan(b: Board, plan: dict, ids: list[str] | None = None, skip: list[st
         results += got
     for it in items:
         results += attempt(it, [c for c in it["connections"] if "via" in c["b"]])
-    tracks = [t for res in results for t in res.tracks]
-    vias = [v for res in results for v in res.vias]
-    by_item: dict[str, dict] = {}
-    for res in results:
-        e = by_item.setdefault(res.item, {"routed": 0, "failed": 0})
-        e["routed" if res.ok else "failed"] += 1
-    pairs = _pair_report(plan, items, results)
-    return {"tracks": tracks, "vias": vias, "connections": [res.to_dict() for res in results], "items": by_item, "pairs": pairs,
-            "routed": sum(1 for x in results if x.ok), "failed": sum(1 for x in results if not x.ok)}
+    return results
 
 
 def r_ground(plan: dict, net: str) -> bool:

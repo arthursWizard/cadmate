@@ -5,7 +5,7 @@ since kicad-cli has no DSN step), with the widths the high-current items need wr
 Freerouting runs headless on it. Its session file (SES) is read here rather than by KiCad's importer, so the result can
 go into the board open in the editor as one undo step, without the user reloading anything. On the way in, tracks
 narrower than their net class (Freerouting 2.5's fan-out puts down tracks below the board minimum) are widened to it
-and listed. Locked tracks go out as protected wiring, so Freerouting routes around them and leaves them alone.
+where clearance allows, and listed; where it doesn't, they stay as wide as they can and are reported. Locked tracks go out as protected wiring, so Freerouting routes around them and leaves them alone.
 """
 
 from __future__ import annotations
@@ -282,18 +282,57 @@ def new_items(board: Board, tracks: list[Track], vias: list[Via]) -> tuple[list[
     return ([t for t in tracks if tkey(t) not in have], [v for v in vias if (v.net, round(v.x, 3), round(v.y, 3)) not in vhave])
 
 
-def widen(board: Board, tracks: list[Track], widths: dict[str, float]) -> list[dict]:
-    """Bring tracks up to their net's width: the net class's, or the width asked for in widths. Returns what changed."""
+def widen(board: Board, tracks: list[Track], widths: dict[str, float], vias: list[Via] = ()) -> list[dict]:
+    """Bring tracks up to their net's width (the net class's, the board minimum, or the width asked for in widths) where
+    that keeps clearance. Freerouting necks tracks down between fine-pitch pins, sometimes below the board minimum; a
+    segment that can't be widened without breaking clearance is taken as wide as it can go and reported. Returns what
+    changed, and what is still narrower than wanted."""
+    import copy
+
+    from .pcb_route import Router
+
     rules = board.rules or {}
     floor = rules.get("min_track_width") or 0.0
-    changed: dict[tuple, dict] = {}
+    todo = []
     for t in tracks:
         nc = board.net_class(t.net)
         want = max(widths.get(t.net, 0), (nc.track_width if nc and nc.track_width else 0) or 0, floor)
         if t.width < want - 1e-4:
-            k = (t.net, t.width, want)
-            changed.setdefault(k, {"net": t.net, "from_mm": t.width, "to_mm": want, "segments": 0})["segments"] += 1
-            t.width = want
+            todo.append((t, want))
+    if not todo:
+        return []
+    whole = copy.copy(board)
+    whole.tracks, whole.vias = board.tracks + tracks, board.vias + list(vias)
+    r = Router(whole)
+
+    def blocked(t: Track, w: float, ends: tuple) -> str | None:
+        for a, b in t.pieces():
+            ok, what = r._segment_clear(t.layer, a, b, t.net, w / 2, ends)
+            if not ok:
+                return what or "clearance"
+        return None
+
+    changed: dict[tuple, dict] = {}
+    for t, want in todo:
+        ends = tuple(q for q in whole.pads if q.net == t.net and any(q.contains(e) for e in (t.start, t.end)))
+        w, what = want, None
+        while w > t.width + 1e-4:
+            hit = blocked(t, w, ends)
+            if hit is None:
+                break
+            what = what or hit
+            w = round(w - 0.005, 4)
+        w = max(w, t.width)
+        k = (t.net, t.width, want, round(w, 4))
+        e = changed.setdefault(k, {"net": t.net, "from_mm": t.width, "to_mm": round(w, 4), "segments": 0})
+        e["segments"] += 1
+        if w < want - 1e-4:
+            e |= {"wanted_mm": want, "held_back_by": what, "at": [round(t.start[0], 2), round(t.start[1], 2)]}
+            if w < floor - 1e-4:
+                e["below_board_minimum"] = floor
+        if w > t.width + 1e-4:
+            t.width = w
+            r.obs.add_track(t)
     return list(changed.values())
 
 
@@ -328,7 +367,7 @@ def autoroute_file(board_file: Path, out_file: Path, widths: dict[str, float] | 
     load_project(board, board_file.with_suffix(".kicad_pro"))
     tracks, vias = parse_ses(ses.read_text(), board)
     tracks, vias = new_items(board, tracks, vias)
-    widened = widen(board, tracks, widths)
+    widened = widen(board, tracks, widths, vias)
     pcb_route.write_file(board_file, out_file, tracks, vias, locked=False)
     filled = True
     try:
@@ -358,7 +397,7 @@ def autoroute_live(widths: dict[str, float] | None = None, passes: int = 30, tim
     load_project(board, copy.with_suffix(".kicad_pro"))
     tracks, vias = parse_ses(ses.read_text(), board)
     tracks, vias = new_items(board, tracks, vias)
-    widened = widen(board, tracks, widths)
+    widened = widen(board, tracks, widths, vias)
 
     res = kicad_pcb_live.commit(f"Freerouting: {len(tracks)} tracks, {len(vias)} vias",
                                 lambda kicad, b: pcb_route.apply_live(b, tracks, vias, locked=False))

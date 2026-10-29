@@ -203,6 +203,7 @@ class Board:
     net_class_of: dict[str, str] = field(default_factory=dict)
     rules: dict = field(default_factory=dict)  # the project's design rules, KiCad's keys
     edges: list[tuple[Point, Point]] = field(default_factory=list)
+    mask_openings: list[tuple[str, list[Point]]] = field(default_factory=list)  # (copper layer it exposes, hull), from graphics
     power_symbol_nets: set[str] = field(default_factory=set)  # from the schematic's power symbols
     sources: list[str] = field(default_factory=list)  # files read besides the board
 
@@ -359,14 +360,14 @@ def parse(text: str, name: str = "board") -> Board:
             if a and a[0] in cu_t and t is not None and t.floats():
                 cu_t[a[0]] = t.floats()[0]
 
-    parts, tracks, vias, fills, edges = [], [], [], [], []
+    parts, tracks, vias, fills, edges, masks = [], [], [], [], [], []
     zone_nets: dict[str, list[str]] = {}
     for node in root.items:
         if not isinstance(node, sexpr.Node):
             continue
         h = node.head
         if h == "footprint":
-            parts.append(_part(node, names, copper, edges))
+            parts.append(_part(node, names, copper, edges, masks))
         elif h in ("segment", "arc"):
             s, e = _xy(node.child("start")), _xy(node.child("end"))
             if s and e:
@@ -396,11 +397,22 @@ def parse(text: str, name: str = "board") -> Board:
                     fills.append(Fill(net, lay[0], pts, (min(xs), min(ys), max(xs), max(ys))))
         elif h and h.startswith("gr_") and "Edge.Cuts" in _layers(node, copper):
             edges += _edge_segments(node)
+        elif h and h.startswith("gr_"):
+            _mask_opening(node, _layers(node, copper), copper, _shape_points(node), masks)
     nets = sorted({v for v in names.values() if v} | {t.net for t in tracks if t.net} | {p.net for pt in parts for p in pt.pads if p.net})
-    return Board(name, parts, tracks, vias, fills, zone_nets, copper, cu_t, thickness, nets, edges=edges)
+    return Board(name, parts, tracks, vias, fills, zone_nets, copper, cu_t, thickness, nets, edges=edges, mask_openings=masks)
 
 
-def _part(node: sexpr.Node, names: dict[str, str], copper: list[str], edges: list) -> Part:
+def _mask_opening(node: sexpr.Node, lays: list[str], copper: list[str], pts: list[Point], masks: list) -> None:
+    """A filled shape drawn on a mask layer (a logo, a test area) bares the copper under it: anything routed there is exposed."""
+    if not copper or node.head[3:] not in ("rect", "circle", "poly") or len(pts) < 3:
+        return
+    for mask, cu in (("F.Mask", copper[0]), ("B.Mask", copper[-1])):
+        if mask in lays:
+            masks.append((cu, convex_hull(pts)))
+
+
+def _part(node: sexpr.Node, names: dict[str, str], copper: list[str], edges: list, masks: list | None = None) -> Part:
     at = node.child("at").floats() if node.child("at") is not None else [0, 0]
     fx, fy = at[0], at[1]
     frot = at[2] if len(at) > 2 else 0.0
@@ -425,6 +437,8 @@ def _part(node: sexpr.Node, names: dict[str, str], copper: list[str], edges: lis
                 court += pts
             if "Edge.Cuts" in lays:
                 edges += _edge_segments_abs(g, fx, fy, frot)
+            if masks is not None:
+                _mask_opening(g, lays, copper, pts, masks)
     attr = node.child("attr")
     attrs = attr.atoms() if attr is not None else []
     return Part(ref, _prop(node, "Value"), (node.atoms() or [""])[0], fx, fy, frot, side, pads, convex_hull(court),

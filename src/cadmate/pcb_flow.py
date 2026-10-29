@@ -68,6 +68,8 @@ def route_critical(path: str | None = None, out_path: str | None = None, roles: 
     out = {"ok": True, "routed": res["routed"], "failed": res["failed"], "added": {"tracks": len(tracks), "vias": len(vias)},
            "connections": res["connections"], "pairs": res["pairs"],
            "by_hand": [c for c in res["connections"] if not c["ok"]],
+           "over_rule": res["over_rule"],
+           "routed_first": res["routed_first"],
            "not_routed_here": [{"id": it["id"], "action": it["action"], "title": it["title"]} for it in plan["items"]
                                if it["action"] != "route" and not (items and it["id"] in items)],
            "locked": "every segment and via added here is locked, so Freerouting routes around it",
@@ -89,7 +91,8 @@ def route_critical(path: str | None = None, out_path: str | None = None, roles: 
             raise FlowError("out_path is the input board; give a new file so the original is kept")
         pcb_route.write_file(src, dst, tracks, vias)
         out["written"] = str(dst)
-    out["next"] = "autoroute_rest, then review_pcb_layout"
+    out["next"] = ("tell the user what's in by_hand and over_rule (routed but longer than the rule, or a pair out of skew: "
+                   "KiCad's skew tuner, or better placement), then autoroute_rest and review_pcb_layout")
     return out
 
 
@@ -120,6 +123,9 @@ def autoroute(path: str | None = None, out_path: str | None = None, currents: di
             raise FlowError("out_path is the input board; give a new file so the original is kept")
         out = freerouting.autoroute_file(src, dst, widths, passes, timeout)
     out["widths_from_currents"] = widths
+    narrow = [w for w in out.get("widened", []) if "wanted_mm" in w]
+    if narrow:
+        out["still_narrow"] = narrow  # Freerouting necked these down where there's no room for the full width
     if capped:
         out["widths_capped"] = capped
     out["next"] = "review_pcb_layout on the result; fix what it finds (by hand, or route_critical_nets for an item), then review again"

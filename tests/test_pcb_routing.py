@@ -229,6 +229,14 @@ def test_dsn_widths_moves_a_net_into_its_own_class():
     assert out.index("cadmate_wide_0") < out.index("(wiring")
 
 
+
+def test_dsn_gets_mask_openings_as_keepouts():
+    b = board(cap("C1", 25.2, 17.0), '(gr_rect (start 10 10) (end 12 12) (fill solid) (layer "F.Mask"))\n')
+    out = fr.dsn_keepouts(DSN, b)
+    k = out[out.index("(keepout"):]
+    assert k.startswith('(keepout "" (polygon F.Cu 0 ') and "10000.0 -10000.0" in k and "12000.0 -12000.0" in k
+    assert out.index("(keepout") < out.index("(placement")
+
 SES = """(session b.ses
   (base_design b.dsn)
   (placement

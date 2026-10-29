@@ -472,7 +472,7 @@ class Review:
                 if thin:
                     t = min(thin, key=lambda t: t.width)
                     self.add("track_width", "warning" if role in ("power", "ground") else "note",
-                             f"{net}: {len(thin)} track(s), {sum(x.length for x in thin):.1f} mm, narrower than its net class "
+                             f"{net}: {len(thin)} track(s) ({sum(x.length for x in thin):.1f} mm in all) narrower than its net class "
                              f"'{cls.name}' ({want:g} mm), down to {t.width:g} mm",
                              "KiCad's DRC checks the minimum width, not the class width, so a router or a hand edit can go narrower "
                              "without an error. Short necks into small pads are left out.", "heuristic", t.start[0], t.start[1], t.layer,

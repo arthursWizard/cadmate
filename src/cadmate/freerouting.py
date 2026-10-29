@@ -145,6 +145,26 @@ def dsn_widths(text: str, widths: dict[str, float]) -> str:
     return text[:idx] + "".join(classes) + text[idx:]
 
 
+def dsn_keepouts(text: str, board: Board) -> str:
+    """Solder mask openings (logos, test areas) as keepouts: KiCad's exporter leaves them out, so Freerouting would run
+    tracks through them, bare under the opening."""
+    if not board.mask_openings:
+        return text
+    start, end = text.find("(placement"), _section_end(text, "(placement")
+    # only the placement is parsed: the header's (string_quote ") isn't valid s-expression
+    root = sexpr.parse("(pcb " + text[start:end + 1] + ")") if start != -1 and end else sexpr.parse("(pcb)")
+    to_board, scale = _transform(root, board, dsn_scale(text))
+    ox, oy = to_board(0, 0)
+    out = []
+    for layer, poly in board.mask_openings:
+        pts = " ".join(f"{(x - ox) * scale:.1f} {-(y - oy) * scale:.1f}" for x, y in poly + poly[:1])
+        out.append(f"    (keepout \"\" (polygon {layer} 0 {pts}))\n")
+    idx = _section_end(text, "(structure")
+    if idx is None:
+        raise RouteError("couldn't find the DSN's structure section")
+    return text[:idx] + "".join(out) + text[idx:]
+
+
 def _section_end(text: str, head: str) -> int | None:
     """Index of the closing paren of the first section starting with head, skipping quoted strings."""
     start = text.find(head)
@@ -358,13 +378,13 @@ def autoroute_file(board_file: Path, out_file: Path, widths: dict[str, float] | 
     widths = widths or {}
     work = Path(tempfile.mkdtemp(prefix="cadmate-fr-"))
     dsn, ses = work / (board_file.stem + ".dsn"), work / (board_file.stem + ".ses")
-    export_dsn(board_file, dsn)
-    dsn.write_text(dsn_widths(dsn.read_text(), widths))
-    fr = run_freerouting(dsn, ses, passes, timeout)
     board = parse(board_file.read_text(), board_file.name)
     from .pcb_board import load_project
 
     load_project(board, board_file.with_suffix(".kicad_pro"))
+    export_dsn(board_file, dsn)
+    dsn.write_text(dsn_keepouts(dsn_widths(dsn.read_text(), widths), board))
+    fr = run_freerouting(dsn, ses, passes, timeout)
     tracks, vias = parse_ses(ses.read_text(), board)
     tracks, vias = new_items(board, tracks, vias)
     widened = widen(board, tracks, widths, vias)
@@ -390,11 +410,11 @@ def autoroute_live(widths: dict[str, float] | None = None, passes: int = 30, tim
     copy = work / Path(live.name).name
     live.save_as(str(copy), overwrite=True, include_project=True)
     dsn, ses = copy.with_suffix(".dsn"), copy.with_suffix(".ses")
-    export_dsn(copy, dsn)
-    dsn.write_text(dsn_widths(dsn.read_text(), widths))
-    fr = run_freerouting(dsn, ses, passes, timeout)
     board = parse(copy.read_text(), copy.name)
     load_project(board, copy.with_suffix(".kicad_pro"))
+    export_dsn(copy, dsn)
+    dsn.write_text(dsn_keepouts(dsn_widths(dsn.read_text(), widths), board))
+    fr = run_freerouting(dsn, ses, passes, timeout)
     tracks, vias = parse_ses(ses.read_text(), board)
     tracks, vias = new_items(board, tracks, vias)
     widened = widen(board, tracks, widths, vias)

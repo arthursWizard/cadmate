@@ -343,3 +343,12 @@ def test_autoroute_says_what_is_missing(tmp_path, monkeypatch):
     dsn.write_text(DSN)
     with pytest.raises(fr.RouteError, match="jar not found"):
         fr.run_freerouting(dsn, ses)
+
+
+def test_custom_pad_polygons_count_as_its_copper():
+    jp = ('(pad "2" smd custom (at 0 0) (size 1 1) (layers "F.Cu") (net "VIN") '
+          '(primitives (gr_poly (pts (xy 0 -0.5) (xy 2 -0.5) (xy 2 0.5) (xy 0 0.5)) (width 0) (fill yes))))')
+    b = board(footprint("Jumper:SolderJumper", "JP1", "JP", 20, 10, [jp], rot=90))
+    [p] = b.part("JP1").copper_pads
+    assert p.contains((21.8, 10)) and not p.contains((22.3, 10))  # the pad's own orientation is 0: not turned with the part
+    assert p.distance((22.5, 10)) == pytest.approx(0.5)

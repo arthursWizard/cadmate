@@ -736,31 +736,40 @@ def route_plan(b: Board, plan: dict, ids: list[str] | None = None, skip: list[st
     """Route every connection of the plan's items whose action is "route" (or the ids given), in the plan's order.
 
     An item that fails or comes out over its rule (a crystal trace the long way round, a pair out of skew) is often boxed
-    in by items routed before it. So it is moved to the front and everything routed again; the better run is kept."""
+    in by items routed before it. So the worst such item is moved to the front and everything routed again, a few times;
+    a move is kept when the run comes out better."""
     items = [it for it in plan["items"] if (it["id"] in ids if ids else it["action"] == "route") and it["id"] not in (skip or [])]
     tracks0, vias0 = list(b.tracks), list(b.vias)
-    best, tried = None, []
-    order = items
-    for _ in range(PROMOTE + 1):
+
+    def run(order: list[dict]) -> tuple[int, list[Result], list[dict], dict[str, int]]:
         b.tracks, b.vias = list(tracks0), list(vias0)
         results = _route_once(b, plan, order, grid)
         pairs = _pair_report(plan, items, results)
-        bad = {x.item: 3 for x in results if not x.ok}
+        bad: dict[str, int] = {}
         for x in results:
-            if x.ok and x.over:
-                bad.setdefault(x.item, 1)
+            if not x.ok or x.over:
+                bad[x.item] = bad.get(x.item, 0) + (3 if not x.ok else 1)
         for e in pairs:
             if e.get("within") is False:
-                bad.setdefault(e["item"], 1)
-        score = sum(3 if not x.ok else 1 if x.over else 0 for x in results) + sum(e.get("within") is False for e in pairs)
-        if best is None or score < best[0]:
-            best = (score, results, pairs, [it["id"] for it in order[:len(tried)]])
-        nxt = next((it for it in items if it["id"] in bad and it["id"] not in tried), None)
-        if nxt is None or best[0] == 0:
+                bad[e["item"]] = bad.get(e["item"], 0) + 1
+        return sum(bad.values()), results, pairs, bad
+
+    front: list[str] = []  # promotions that helped, in the order they were made
+    score, results, pairs, bad = run(items)
+    best = (score, results, pairs, [])
+    tried: set[str] = set()
+    for _ in range(PROMOTE):
+        # the worst item first (a failure outweighs a rule broken), in plan order among equals
+        nxt = next((it for it in sorted(items, key=lambda it: -bad.get(it["id"], 0)) if bad.get(it["id"]) and it["id"] not in tried), None)
+        if nxt is None:
             break
-        tried.append(nxt["id"])
-        front = [it for it in items if it["id"] in tried]
-        order = sorted(front, key=lambda it: tried.index(it["id"])) + [it for it in items if it["id"] not in tried]
+        tried.add(nxt["id"])
+        ids_ = [nxt["id"]] + front
+        order = [next(it for it in items if it["id"] == i) for i in ids_] + [it for it in items if it["id"] not in ids_]
+        score, results, pairs, got = run(order)
+        if score < best[0]:
+            front, bad = ids_, got
+            best = (score, results, pairs, list(front))
     _, results, pairs, first = best
     tracks = [t for res in results for t in res.tracks]
     vias = [v for res in results for v in res.vias]

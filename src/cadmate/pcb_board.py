@@ -44,6 +44,7 @@ class Pad:
     kind: str  # smd, thru_hole, np_thru_hole, connect
     pintype: str | None = None
     pinfunction: str | None = None
+    extra: list[list[Point]] = field(default_factory=list)  # a custom pad's polygons, board coordinates
 
     @property
     def name(self) -> str:
@@ -51,6 +52,8 @@ class Pad:
         return f"{self.ref} pad {self.number}{fn}"
 
     def contains(self, p: Point, tol: float = 0.01) -> bool:
+        if self.extra and any(point_in_polygon(p, poly) for poly in self.extra):
+            return True
         dx, dy = p[0] - self.x, p[1] - self.y
         if self.shape == "circle":
             return math.hypot(dx, dy) <= max(self.w, self.h) / 2 + tol
@@ -60,6 +63,15 @@ class Pad:
 
     def distance(self, p: Point) -> float:
         """From p to the pad's copper edge (0 inside); rounded corners count as square."""
+        if self.extra:
+            d = min(0.0 if point_in_polygon(p, poly) else min(point_seg(p, a, b)[0] for a, b in zip(poly, poly[1:] + poly[:1]))
+                    for poly in self.extra)
+            if d == 0.0:
+                return 0.0
+            return min(d, self._anchor_distance(p))
+        return self._anchor_distance(p)
+
+    def _anchor_distance(self, p: Point) -> float:
         dx, dy = p[0] - self.x, p[1] - self.y
         if self.shape == "circle":
             return max(0.0, math.hypot(dx, dy) - max(self.w, self.h) / 2)
@@ -425,9 +437,17 @@ def _part(node: sexpr.Node, names: dict[str, str], copper: list[str], edges: lis
         dx, dy = _rotate(pat[0], pat[1], frot)
         size = p.child("size").floats() if p.child("size") is not None else [0, 0]
         pf, pt = p.child("pinfunction"), p.child("pintype")
+        pang = pat[2] if len(pat) > 2 else 0.0  # the file has the pad's own orientation, left out when it is 0
+        extra = []
+        prim = p.child("primitives")
+        for g in prim.children("gr_poly") if prim is not None else []:
+            pts = _shape_points(g)
+            if len(pts) >= 3:
+                extra.append([(fx + dx + r[0], fy + dy + r[1]) for r in (_rotate(x, y, pang) for x, y in pts)])
         pads.append(Pad(ref, a[0] if a else "", _net(p, names), fx + dx, fy + dy, size[0], size[1] if len(size) > 1 else size[0],
-                        pat[2] if len(pat) > 2 else frot, a[2] if len(a) > 2 else "rect", _layers(p, copper), a[1] if len(a) > 1 else "",
-                        pt.atoms()[0] if pt is not None and pt.atoms() else None, pf.atoms()[0] if pf is not None and pf.atoms() else None))
+                        pang, a[2] if len(a) > 2 else "rect", _layers(p, copper), a[1] if len(a) > 1 else "",
+                        pt.atoms()[0] if pt is not None and pt.atoms() else None, pf.atoms()[0] if pf is not None and pf.atoms() else None,
+                        extra))
     court = []
     for g in node.items:
         if isinstance(g, sexpr.Node) and g.head and g.head.startswith("fp_"):

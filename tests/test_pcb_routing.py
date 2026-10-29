@@ -384,3 +384,17 @@ def test_track_passing_over_a_pad_connects_it():
     assert len(pb.NetGraph(b, "+3V3").islands()) == 1
     b.tracks[-1] = pb.Track((19.2, 17.6), (28.5, 17.6), 0.3, "F.Cu", "+3V3")  # 0.05 mm short of it
     assert len(pb.NetGraph(b, "+3V3").islands()) == 2
+
+
+def test_neck_rules_only_for_necks_into_pads_and_replaced_on_rerun():
+    from cadmate import fab
+
+    warnings = [{"net": "/LC", "ref": "D17", "what": "neck into D17 pad GK"}, {"net": "+3.3V", "what": "narrow between other copper"}]
+    block = fab.neck_rules(warnings, 0.1)
+    assert block.count("(rule ") == 1 and "A.NetName == '/LC' && A.intersectsCourtyard('D17')" in block
+    assert "(constraint track_width (min 0.1mm))" in block
+    mine = '(version 1)\n(rule "keep" (constraint clearance (min 0.2mm)))\n'
+    once = fab.merge_rules(mine, block)
+    assert once.startswith(mine.rstrip()) and once.count("cadmate neck") == 1
+    assert fab.merge_rules(once, block) == once
+    assert "cadmate" not in fab.merge_rules(once, "") and '(rule "keep"' in fab.merge_rules(once, "")

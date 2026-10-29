@@ -797,7 +797,7 @@ def route_critical_nets(path: str | None = None, out_path: str | None = None, ro
 @server.tool()
 def autoroute_rest(path: str | None = None, out_path: str | None = None, currents: dict[str, float] | None = None,
                    roles: dict[str, str] | None = None, passes: int = 30, timeout: int = 1200, fab: str | None = "jlcpcb",
-                   margin: float = 0.25) -> dict:
+                   margin: float = 0.25, neck_rules: bool = True) -> dict:
     """Let Freerouting route everything still unrouted, around the locked critical tracks, and bring the result back.
 
     Needs Freerouting's jar (KiCad's Freerouting plugin has one), java, and KiCad's bundled Python for the DSN export;
@@ -809,10 +809,11 @@ def autoroute_rest(path: str | None = None, out_path: str | None = None, current
     fab_check sorts Freerouting's narrow tracks against the fab's minimums ("jlcpcb" or "pcbway"; ask the user which):
     errors are under the fab's own minimum and must be rerouted, warnings are between it and the minimum plus margin
     (25 % by default) and stay only where there's no room. Freerouting necks tracks into small pads and can't be told not to
-    from its command line.
+    from its command line. With neck_rules, the necks into pads the fab can make get a KiCad custom rule (the board's
+    .kicad_dru, cadmate's block only) allowing them inside that part's courtyard, so DRC flags only what needs fixing.
     """
     return _flow_call(pcb_flow.autoroute, path=path, out_path=out_path, currents=currents, roles=roles, passes=passes, timeout=timeout,
-                      fab_name=fab, margin=margin)
+                      fab_name=fab, margin=margin, neck_rules=neck_rules)
 
 
 def main() -> None:

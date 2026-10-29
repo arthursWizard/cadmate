@@ -366,9 +366,12 @@ def fab_check(board: Board, tracks: list[Track], lim: dict) -> dict:
         if t.width >= pref - 1e-6:
             continue
         pad = next((q for q in board.pads if q.net == t.net and (q.contains(t.start) or q.contains(t.end))), None)
+        neck = pad is not None and t.length <= 1.0
         e = {"net": t.net, "width_mm": round(t.width, 4), "length_mm": round(t.length, 2), "layer": t.layer,
              "at": [round(t.start[0], 2), round(t.start[1], 2)],
-             "what": f"neck into {pad.name}" if pad and t.length <= 1.0 else "narrow between other copper"}
+             "what": f"neck into {pad.name}" if neck else "narrow between other copper"}
+        if neck:
+            e["ref"] = pad.ref
         if t.width < hard - 1e-6:
             out["errors"].append(e | {"why": f"under {lim['fab']}'s {hard:g} mm minimum: reroute it, or route it by hand"})
         else:

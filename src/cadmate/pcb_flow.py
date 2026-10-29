@@ -42,6 +42,19 @@ def load(path: str | None) -> tuple[Board, object | None]:
     return b, live
 
 
+def _rules_file(path: str | None, out_path: str | None, live) -> Path | None:
+    """Where the board's custom rules live: next to the routed copy, or in the open board's project."""
+    if path:
+        src = Path(path).expanduser()
+        dst = Path(out_path).expanduser() if out_path else src.with_name(src.stem + "-routed" + src.suffix)
+        return dst.with_suffix(".kicad_dru")
+    project = getattr(getattr(live.document, "project", None), "path", "") or ""
+    folder = Path(project) if project else None
+    if folder and folder.is_file():
+        folder = folder.parent
+    return folder / Path(live.name).with_suffix(".kicad_dru").name if folder else None
+
+
 def classify(path: str | None = None, roles: dict | None = None, currents: dict | None = None, overrides: dict | None = None,
              limits: dict | None = None, classes: list[str] | None = None) -> dict:
     b, live = load(path)
@@ -97,9 +110,11 @@ def route_critical(path: str | None = None, out_path: str | None = None, roles: 
 
 
 def autoroute(path: str | None = None, out_path: str | None = None, currents: dict | None = None, roles: dict | None = None,
-              passes: int = 30, timeout: int = 1200, fab_name: str | None = "jlcpcb", margin: float = fab.MARGIN) -> dict:
+              passes: int = 30, timeout: int = 1200, fab_name: str | None = "jlcpcb", margin: float = fab.MARGIN,
+              neck_rules: bool = True) -> dict:
     """Freerouting on everything not routed yet, with the widths the high-current items ask for. Its narrow tracks are
-    checked against the fab's minimums (fab_name, None to skip) plus the margin."""
+    checked against the fab's minimums (fab_name, None to skip) plus the margin. With neck_rules, the necks into pads that
+    the fab can make get a KiCad custom rule allowing them there, so DRC flags only what needs fixing."""
     b, live = load(path)
     try:
         lim = fab.limits(fab_name, len(b.copper_layers), margin) if fab_name else None
@@ -133,6 +148,16 @@ def autoroute(path: str | None = None, out_path: str | None = None, currents: di
         out["still_narrow"] = narrow  # Freerouting necked these down where there's no room for the full width
     if lim:
         out["fab"] = {k: lim[k] for k in ("fab", "margin", "rules", "source")}
+        if neck_rules:
+            dru = _rules_file(path, out_path, live)
+            block = fab.neck_rules(out.get("fab_check", {}).get("warnings", []), lim["rules"]["track"]["hard"])
+            if dru is not None and (block or dru.exists()):
+                src = Path(path).expanduser().with_suffix(".kicad_dru") if path else dru
+                before = src.read_text() if src.exists() else ""
+                dru.write_text(fab.merge_rules(before, block))
+                out["neck_rules"] = {"file": str(dru), "rules": block.count("(rule "),
+                                     "what": "KiCad custom rules allowing these nets down to the fab's minimum inside the "
+                                             "courtyard of the part they neck into; tracks squeezed elsewhere stay DRC errors"}
     if capped:
         out["widths_capped"] = capped
     out["next"] = "review_pcb_layout on the result; fix what it finds (by hand, or route_critical_nets for an item), then review again"

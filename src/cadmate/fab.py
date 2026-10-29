@@ -53,3 +53,35 @@ def limits(fab: str, layers: int = 2, margin: float = MARGIN) -> dict:
     named = PREFERRED["*"] | PREFERRED.get(key.split("-")[0], {})
     return {"fab": key, "margin": margin, "source": SOURCES[key.split("-")[0]],
             "rules": {k: {"hard": v, "preferred": max(up(v), named.get(k, 0))} for k, v in PROFILES[key].items()}}
+
+
+BEGIN, END = "# cadmate: necks into pads, begin", "# cadmate: necks into pads, end"
+
+
+def neck_rules(warnings: list[dict], hard: float) -> str:
+    """KiCad custom rules letting a net's tracks go down to the fab's minimum inside the courtyard of a part it necks into,
+    and nowhere else. Only for necks into pads; a track squeezed between other copper stays a DRC error."""
+    seen = sorted({(w["net"], w["ref"]) for w in warnings if w.get("ref")})
+    if not seen:
+        return ""
+    out = [BEGIN]
+    for net, ref in seen:
+        q = net.replace("'", "\\'")
+        out += [f'(rule "cadmate neck {net} into {ref}"',
+                f"  (condition \"A.Type == 'Track' && A.NetName == '{q}' && A.intersectsCourtyard('{ref}')\")",
+                f"  (constraint track_width (min {hard:g}mm)))"]
+    out.append(END)
+    return "\n".join(out) + "\n"
+
+
+def merge_rules(existing: str, block: str) -> str:
+    """The board's .kicad_dru with cadmate's block replaced (or added, or removed when block is empty)."""
+    text = existing or ""
+    if BEGIN in text and END in text:
+        a, b = text.index(BEGIN), text.index(END) + len(END)
+        text = (text[:a] + text[b:].lstrip("\n")).rstrip() + "\n"
+    if not block:
+        return text
+    if "(version" not in text:
+        text = "(version 1)\n" + text
+    return text.rstrip() + "\n\n" + block

@@ -13,7 +13,7 @@ from pathlib import Path
 
 from mcp.server.mcpserver import Image, MCPServer
 
-from . import apps, check, footprint, generate, ipc, kicad_live, kicad_pcb_live, live, model, packages, part, review, symbol, symbol_check, symbol_generate
+from . import apps, check, footprint, generate, ipc, kicad_live, kicad_pcb_live, live, model, packages, part, pcb_review, review, symbol, symbol_check, symbol_generate
 from .footprint import read as _read_footprint  # generate_symbol's footprint argument shadows the module
 
 server = MCPServer("cadmate")
@@ -46,6 +46,8 @@ def environment() -> dict:
             "kicad_live": True,
             "kicad_live_snapshot": kicad.available,
             "kicad_pcb_live": _pcb_running(),
+            "review_pcb_layout": True,
+            "review_pcb_layout_drc": kicad.available,
         },
     }
 
@@ -712,6 +714,33 @@ def kicad_pcb_snapshot(layers: str = "F.Cu,B.Cu,F.SilkS,B.SilkS,F.Fab,Edge.Cuts"
         return Image(path=kicad_pcb_live.snapshot(layers, width))
     except (kicad_pcb_live.PcbUnavailable, kicad_live.LiveError, OSError, subprocess.SubprocessError) as e:
         raise RuntimeError(str(e)) from e
+
+
+@server.tool()
+def review_pcb_layout(path: str | None = None, currents: dict[str, float] | None = None, roles: dict[str, str] | None = None,
+                      fab: str | None = "jlcpcb", limits: dict[str, float] | None = None, drc: bool = True) -> dict:
+    """Review a routed board's layout, by hand or by an autorouter: what an experienced reviewer would point out.
+
+    path is a .kicad_pcb; leave it out to review the board open in KiCad's PCB editor (unsaved edits included).
+    Checks: each IC power pin's nearest bypass cap (placement distance, track length against the straight line, vias,
+    and the loop through the ground pin); crystal traces (length, vias, other signals alongside or through its area,
+    ground under it); signals near switching nodes; tracks narrower than their net class; current per IPC-2221 for the
+    nets in currents ({net: amps}), and the capacity of power nets without one; vias per net; fast signals crossing
+    gaps in the ground pour; JLCPCB's SMD spacing, via and track minimums (fab="jlcpcb", or None to skip); and
+    KiCad's own DRC (unrouted nets, clearances) when kicad-cli is found. Net roles are inferred from names, pin types,
+    power symbols and parts; net_roles says what was inferred and why. Correct them with roles ({net: "ground" |
+    "power" | "switching" | "crystal" | "fast" | "sensitive" | "signal"}). limits overrides cadmate's own thresholds
+    (listed in the reply under limits; they are heuristics, not standards). Each finding has a location, the reasoning
+    and a source key into sources. not_checked says which rules didn't apply and why.
+    """
+    try:
+        kw = dict(currents=currents, roles=roles, fab=fab, limits=limits, drc=drc)
+        return pcb_review.review_file(path, **kw) if path else pcb_review.review_live(**kw)
+    except kicad_pcb_live.PcbUnavailable as e:
+        return {"ok": False, "running": False, "error": str(e), "how": kicad_pcb_live.ENABLE_HOW,
+                "or": "pass path to review a saved .kicad_pcb instead"}
+    except (pcb_review.ReviewError, OSError, ValueError) as e:
+        return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
 
 
 def main() -> None:

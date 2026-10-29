@@ -1,0 +1,33 @@
+---
+name: kicad-pcb-review
+description: Review a routed KiCad board's layout, routed by hand or by an autorouter such as Freerouting. Use when the user asks to check, review or critique a board, its routing, decoupling, crystal, power traces or return paths, or to look over what an autorouter did.
+---
+
+# Reviewing a board's layout
+
+Uses cadmate's `review_pcb_layout` tool. It reads the board open in KiCad's PCB editor, or a `.kicad_pcb` given by path, and returns findings. Each finding has a location, the reasoning and a source.
+
+1. Before reviewing, find out what the board carries. The tool infers net roles from net names, pin types, power symbols and the parts on each net. Read `net_roles` in the reply. If a net is in the wrong role, or something fast sits under `signal` (an SPI clock named `SCK_2` gets caught, a net named `DATA` doesn't), run it again with `roles`.
+2. Ask the user for the current on power nets, or read it from the datasheets (regulator output, motor or LED current), and pass it in `currents` (`{"+5V": 1.5}`). Without a current, power nets only report what their narrowest track can carry. That number is not a verdict.
+3. `fab="jlcpcb"` (the default) adds JLCPCB's track, via and SMD spacing minimums. Use `fab=None` for another fab, and say that you skipped those checks.
+4. Present findings by what to do about them, worst first, with the location and the part references. Don't paste the JSON. Group repeats, for example one line for "five USB pairs cross the same pour gap" rather than five.
+5. Say which thresholds are cadmate heuristics, not standards (`source: heuristic`; the numbers are in `limits`). If a finding conflicts with what the datasheet says, the datasheet wins. Tell the user so when it does.
+6. Read `not_checked` too. "No crystal found" on a board that has one means the crystal's reference or footprint wasn't recognised. Pass its nets in `roles` as `crystal`.
+
+## What the findings mean in practice
+
+- **Decoupling.** The distance between a cap and its pin comes from placement, and a router can't fix it. Track length against the straight line, vias, and the loop through the ground pin come from routing. Autorouters typically get the routing part wrong: they connect the cap's power pad to the rail somewhere, not straight to the pin.
+- **Crystal.** Short, on one layer, nothing alongside or underneath, ground under it. Load caps sit next to the crystal.
+- **Return path.** Only fast edges (clocks, USB, SPI) care about a gap in the plane under them. On 2-layer boards, bottom-side tracks cutting the ground pour is the usual cause. Fix it by moving the cutting track, or stitch the gap with a ground track or vias.
+- **Track width.** KiCad's DRC enforces the minimum width, not the net class width, so autorouted power nets often end up at the default width.
+
+## With an autorouter
+
+Push back on "autoroute everything, then fix it". Freerouting doesn't know which nets matter. The flow that works:
+
+1. Place the parts. Decaps go at their pins, and the crystal goes at the MCU.
+2. Route the critical nets by hand or together with Claude in the live PCB editor (`kicad_pcb_edit`): each decap to its pin, the crystal, USB and other pairs, power and ground. Lock them.
+3. Let Freerouting route the rest.
+4. Run `review_pcb_layout` and fix what it finds, then run it again.
+
+Re-review after every round of changes. Findings that persist across rounds are the ones to discuss with the user.

@@ -23,11 +23,6 @@ Uses cadmate's `review_pcb_layout` tool. It reads the board open in KiCad's PCB 
 
 ## With an autorouter
 
-Push back on "autoroute everything, then fix it". Freerouting doesn't know which nets matter. The flow that works:
-
-1. Place the parts. Decaps go at their pins, and the crystal goes at the MCU.
-2. Route the critical nets by hand or together with Claude in the live PCB editor (`kicad_pcb_edit`): each decap to its pin, the crystal, USB and other pairs, power and ground. Lock them.
-3. Let Freerouting route the rest.
-4. Run `review_pcb_layout` and fix what it finds, then run it again.
+Push back on "autoroute everything, then fix it". Freerouting doesn't know which nets matter. Use the `kicad-pcb-route` skill: classify the critical connections, confirm them with the user, route and lock those, let Freerouting route the rest, then review here.
 
 Re-review after every round of changes. Findings that persist across rounds are the ones to discuss with the user.

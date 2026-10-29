@@ -13,7 +13,8 @@ from pathlib import Path
 
 from mcp.server.mcpserver import Image, MCPServer
 
-from . import apps, check, footprint, generate, ipc, kicad_live, kicad_pcb_live, live, model, packages, part, pcb_review, review, symbol, symbol_check, symbol_generate
+from . import (apps, check, footprint, freerouting, generate, ipc, kicad_live, kicad_pcb_live, live, model, packages, part, pcb_flow, pcb_review,
+               pcb_route, review, symbol, symbol_check, symbol_generate)
 from .footprint import read as _read_footprint  # generate_symbol's footprint argument shadows the module
 
 server = MCPServer("cadmate")
@@ -48,6 +49,9 @@ def environment() -> dict:
             "kicad_pcb_live": _pcb_running(),
             "review_pcb_layout": True,
             "review_pcb_layout_drc": kicad.available,
+            "classify_critical_nets": True,
+            "route_critical_nets": True,
+            "autoroute_rest": freerouting.status(),
         },
     }
 
@@ -741,6 +745,75 @@ def review_pcb_layout(path: str | None = None, currents: dict[str, float] | None
                 "or": "pass path to review a saved .kicad_pcb instead"}
     except (pcb_review.ReviewError, OSError, ValueError) as e:
         return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
+
+
+def _flow_call(fn, **kw) -> dict:
+    try:
+        return fn(**kw)
+    except kicad_pcb_live.PcbUnavailable as e:
+        return {"ok": False, "running": False, "error": str(e), "how": kicad_pcb_live.ENABLE_HOW,
+                "or": "pass path to work on a saved .kicad_pcb instead"}
+    except (pcb_flow.FlowError, freerouting.RouteError, OSError, ValueError) as e:
+        return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
+
+
+@server.tool()
+def classify_critical_nets(path: str | None = None, roles: dict[str, str] | None = None, currents: dict[str, float] | None = None,
+                           overrides: dict[str, str] | None = None, limits: dict[str, float] | None = None,
+                           classes: list[str] | None = None) -> dict:
+    """Find the connections on a board that must be routed with care, before routing: the first step of routing a board.
+
+    path is a .kicad_pcb; leave it out for the board open in KiCad's PCB editor. Classes, in routing order: RF/antenna
+    feeds, switching-regulator hot loops, decoupling cap to pin, crystals and oscillators, differential pairs (USB,
+    Ethernet, LVDS, HDMI, PCIe, CAN) with length matching, ESD/TVS protection, sensitive analog (feedback, ADC, references,
+    sense), reset/boot/strap nets, high-current paths (IPC-2221 widths from currents), and ground return/pours. Each item
+    has the parts, nets and connections, the rule with its numbers, the sources (keys into sources), why cadmate put it in
+    that class, any placement problem, and an action: route (cadmate routes and locks it), place (move a part first),
+    hand (route by hand), netclass (width for the autorouter), ask (needs a current), check (review after routing).
+    table is the classification as Markdown: show it to the user and let them confirm or override before routing.
+    overrides {item id: action} changes an item's action; roles {net: role} and currents {net: amps} change what is found;
+    classes limits the classes run. limits overrides cadmate's heuristic numbers (in limits).
+    """
+    return _flow_call(pcb_flow.classify, path=path, roles=roles, currents=currents, overrides=overrides, limits=limits, classes=classes)
+
+
+@server.tool()
+def route_critical_nets(path: str | None = None, out_path: str | None = None, roles: dict[str, str] | None = None,
+                        currents: dict[str, float] | None = None, overrides: dict[str, str] | None = None,
+                        limits: dict[str, float] | None = None, items: list[str] | None = None, dry_run: bool = False) -> dict:
+    """Route the critical connections that classify_critical_nets marked "route" (or only the item ids in items), and lock them.
+
+    Pass the same roles, currents and overrides the user confirmed. Short, direct tracks on one layer where the rule asks
+    for it, ground pads into the pour with a via at the pad, pairs routed together; clearances from the net classes are
+    kept, and anything that can't be routed within its rule is listed under by_hand with the reason instead. Every
+    segment and via added is locked, so Freerouting routes around them; nothing else is locked. On the open board the
+    result is one undo step (not saved); for a file it goes to out_path (default <name>-critical.kicad_pcb).
+    pairs reports each pair's lengths and mismatch against its rule. dry_run routes without writing anything.
+    """
+    return _flow_call(pcb_flow.route_critical, path=path, out_path=out_path, roles=roles, currents=currents, overrides=overrides,
+                      limits=limits, items=items, dry_run=dry_run)
+
+
+@server.tool()
+def autoroute_rest(path: str | None = None, out_path: str | None = None, currents: dict[str, float] | None = None,
+                   roles: dict[str, str] | None = None, passes: int = 30, timeout: int = 1200, fab: str | None = "jlcpcb",
+                   margin: float = 0.25, neck_rules: bool = True) -> dict:
+    """Let Freerouting route everything still unrouted, around the locked critical tracks, and bring the result back.
+
+    Needs Freerouting's jar (KiCad's Freerouting plugin has one), java, and KiCad's bundled Python for the DSN export;
+    environment() says what was found. Nets with a current get the IPC-2221 width as a Freerouting class, capped at the
+    smallest pad on the net (widths_capped says where). On the way back, tracks narrower than their net class are widened
+    (widened lists them) and zones are refilled. On the open board the result is one undo step; for a file it goes to
+    out_path (default <name>-routed.kicad_pcb). unrouted lists nets still not joined. Then run review_pcb_layout.
+
+    fab_check sorts Freerouting's narrow tracks against the fab's minimums ("jlcpcb" or "pcbway"; ask the user which):
+    errors are under the fab's own minimum and must be rerouted, warnings are between it and the minimum plus margin
+    (25 % by default) and stay only where there's no room. Freerouting necks tracks into small pads and can't be told not to
+    from its command line. With neck_rules, the necks into pads the fab can make get a KiCad custom rule (the board's
+    .kicad_dru, cadmate's block only) allowing them inside that part's courtyard, so DRC flags only what needs fixing.
+    """
+    return _flow_call(pcb_flow.autoroute, path=path, out_path=out_path, currents=currents, roles=roles, passes=passes, timeout=timeout,
+                      fab_name=fab, margin=margin, neck_rules=neck_rules)
 
 
 def main() -> None:

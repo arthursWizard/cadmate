@@ -25,6 +25,7 @@ Point = tuple[float, float]
 
 GRID = 0.05  # mm
 MAX_EXPANSIONS = 200_000
+ESCAPE = 0.6  # mm from an end pad where the grid margin is dropped
 DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)]
 
 
@@ -356,7 +357,10 @@ class Router:
                 elif (lay in a.layers and a.contains(p, -0.0)) or (lay in b.layers and b.contains(p, -0.0)):
                     cache[k] = self.obs.clear(lay, p, net, min(half, 0.05), 0.0)[0] or True
                 else:
-                    cache[k] = self.obs.clear(lay, p, net, half, margin)[0]
+                    # right by an end pad, no grid margin: out of a 0.4 mm pitch pin row a track at the clearance has
+                    # none to spare, and the exact check on the final segments still holds it to the rule
+                    near = a.distance(p) < ESCAPE or b.distance(p) < ESCAPE
+                    cache[k] = self.obs.clear(lay, p, net, half, 0.0 if near else margin)[0]
             return cache[k]
 
         def goal(li: int, i: int, j: int) -> bool:

@@ -514,3 +514,26 @@ def test_router_keeps_out_of_keepout_areas_and_holds_hole_clearance():
     # 0.25 mm hole clearance (KiCad's default), not the 0.2 mm copper clearance
     assert not obs.clear("F.Cu", (40 + 1.1 + 0.1 + 0.22, 20), "A", 0.1)[0]
     assert obs.clear("F.Cu", (40 + 1.1 + 0.1 + 0.27, 20), "A", 0.1)[0]
+
+
+def test_router_leaves_a_fine_pitch_pin_row_at_full_clearance():
+    """Out of a 0.4 mm pitch row, a 0.2 mm track at 0.2 mm clearance has nothing to spare: the grid margin used elsewhere
+    must not apply right at the pad, or the pin can't be left at all."""
+    row = footprint("Package_DFN_QFN:QFN", "U1", "MCU", 30, 20,
+                    [pad(n, 0, (n - 3) * 0.4, "SIG" if n == 3 else f"N{n}", 0.8, 0.2) for n in range(1, 6)])
+    end = footprint("Resistor_SMD:R_0402", "R1", "1k", 34, 20, [pad(1, -0.5, 0, "SIG", 0.6, 0.6), pad(2, 0.5, 0, "X", 0.6, 0.6)])
+    b = board(row, end)
+    a, z = b.part("U1").copper_pads[2], b.part("R1").copper_pads[0]
+    conn = {"net": "SIG", "width": 0.2, "max_vias": 0, "a": {"pad": "U1.3", "x": a.x, "y": a.y}, "b": {"pad": "R1.1", "x": z.x, "y": z.y}}
+    res = rt.Router(b).route(conn, "test")
+    assert res.ok, res.why
+    _clear(b, res.tracks, res.vias)
+
+
+def test_net_on_two_connector_pins_leaves_from_the_pin_nearest_the_rest():
+    usb = footprint("Connector_USB:USB_C", "J1", "USB", 30, 10, [pad("A7", -0.25, 0, "DM"), pad("B7", 0.75, 0, "DM")])
+    tvs = footprint("Package_TO_SOT_SMD:SOT-23-6", "U3", "USBLC6", 29, 13, [pad(3, 0, 0, "DM")])
+    b = board(usb, tvs)
+    ctx = pc.Ctx(b, {}, {}, {})
+    chain = pc._chain(ctx, "DM")
+    assert [f"{p.ref}.{p.number}" for p in chain] == ["J1.B7", "J1.A7", "U3.3"]

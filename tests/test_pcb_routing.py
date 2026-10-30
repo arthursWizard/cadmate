@@ -432,6 +432,17 @@ def test_clearance_check_flags_copper_at_the_edge_and_holes():
     assert out["errors"][0]["gap_mm"] < 0
 
 
+def test_clearance_check_measures_a_slot_from_its_axis():
+    b = board(footprint("LED:LED", "LED1", "LED", 40, 20,
+                        ['(pad "" np_thru_hole oval (at 0 0) (size 1.8 2.4) (drill oval 1.8 2.4) (layers "*.Cu" "*.Mask"))']))
+    b.rules = {"min_hole_clearance": 0.25}
+    beside = pb.Track((41.4, 15), (41.4, 25), 0.2, "F.Cu", "A")   # along the long side: 1.4 - 0.1 - 0.9 = 0.4 mm
+    past_end = pb.Track((35, 21.6), (45, 21.6), 0.2, "F.Cu", "B")  # past the end: 1.6 - 0.1 - 1.2 = 0.3 mm
+    into_end = pb.Track((35, 21.4), (45, 21.4), 0.2, "F.Cu", "C")  # 1.4 - 0.1 - 1.2 = 0.1 mm
+    out = fr.clearance_check(b, [beside, past_end, into_end], [], None)
+    assert [e["net"] for e in out["errors"]] == ["C"] and abs(out["errors"][0]["gap_mm"] - 0.1) < 1e-3
+
+
 def test_stub_vias_and_their_dead_end_tracks_are_pruned():
     b = board(footprint("R:R", "R1", "1k", 10, 10, [pad("1", 0, 0, "A"), pad("2", 1, 0, "B")]),
               footprint("R:R", "R2", "1k", 30, 10, [pad("1", 0, 0, "A", layer="B.Cu"), pad("2", 1, 0, "C", layer="B.Cu")],

@@ -429,6 +429,8 @@ def fab_check(board: Board, tracks: list[Track], lim: dict) -> dict:
 def clearance_check(board: Board, tracks: list[Track], vias: list[Via], lim: dict | None) -> dict:
     """New copper too close to the board outline or a non-plated hole: under the fab's hard minimum (or the board's own
     rule, if larger) is an error, under the preferred value a warning."""
+    import math
+
     from .pcb_board import point_seg, seg_seg
 
     rules = board.rules or {}
@@ -453,8 +455,13 @@ def clearance_check(board: Board, tracks: list[Track], vias: list[Via], lim: dic
             gap = min(seg_seg(a, b, c, d) for c, d in board.edges) - r
             report("edge", f"{what} to the board edge", gap, e_hard, e_pref, a, net)
         for h in holes:
-            gap = point_seg((h.x, h.y), a, b)[0] - r - max(h.w, h.h) / 2 if abs(h.w - h.h) < 1e-6 else \
-                point_seg((h.x, h.y), a, b)[0] - r - min(h.w, h.h) / 2 - (max(h.w, h.h) - min(h.w, h.h)) / 2
+            if abs(h.w - h.h) < 1e-6:
+                gap = point_seg((h.x, h.y), a, b)[0] - r - h.w / 2
+            else:  # a slot: distance to its axis, less half its width
+                long, short = max(h.w, h.h), min(h.w, h.h)
+                ang = math.radians(h.angle + (0 if h.w >= h.h else 90))
+                dx, dy = math.cos(ang) * (long - short) / 2, -math.sin(ang) * (long - short) / 2
+                gap = seg_seg(a, b, (h.x - dx, h.y - dy), (h.x + dx, h.y + dy)) - r - short / 2
             if gap < max(h_hard, 0.0) - 1e-4:
                 report("hole", f"{what} to the hole of {h.ref}", gap, h_hard, h_hard, a, net)
     for k in out:

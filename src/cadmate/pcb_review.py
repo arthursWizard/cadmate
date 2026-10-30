@@ -861,8 +861,9 @@ def run_drc(board_file: Path) -> dict | None:
     out = Path(tempfile.mkdtemp(prefix="cadmate-drc-")) / "drc.json"
     try:
         parity = ["--schematic-parity"] if board_file.with_suffix(".kicad_sch").exists() else []
-        proc = subprocess.run([cli, "pcb", "drc", "--format", "json", "--severity-all", "--units", "mm", *parity, "--output", str(out),
-                               str(board_file)], capture_output=True, text=True, timeout=300)
+        # zones as they'd be after a refill: a saved board may hold unfilled pours, which DRC would count as unrouted
+        proc = subprocess.run([cli, "pcb", "drc", "--format", "json", "--severity-all", "--units", "mm", "--refill-zones", *parity,
+                               "--output", str(out), str(board_file)], capture_output=True, text=True, timeout=300)
     except (OSError, subprocess.SubprocessError) as e:
         return {"error": f"kicad-cli drc failed: {e}"}
     if not out.exists():
@@ -938,7 +939,11 @@ def review_board(board: Board, currents: dict[str, float] | None = None, roles: 
                 left = unrouted(board)
                 if left:
                     f["values"]["nets"] = [u["net"] for u in left][:30]
+                    f["values"]["items"] = [{"net": u["net"], "islands": u["islands"], "pads_apart": u["pads_apart"]} for u in left][:10]
                     f["what"] = f"{f['what'].split(', on ')[0]}, on {len(left)} net(s)"
+                    pad = next((p for p in board.pads if left[0]["pads_apart"] and p.name == left[0]["pads_apart"][0]), None)
+                    if pad is not None:
+                        f["where"] = {**f.get("where", {}), "x": round(pad.x, 2), "y": round(pad.y, 2)}
         findings = found + findings
         r.checked.append("kicad_drc")
     elif drc is not None:

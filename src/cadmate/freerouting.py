@@ -250,6 +250,7 @@ def run_freerouting(dsn: Path, ses: Path, passes: int = 30, timeout: int = 1200)
     unrouted = re.findall(r"(\d+)\s+unrouted", log, re.I)
     return {"jar": Path(jar).name, "exit": proc.returncode, "unrouted_reported": int(unrouted[-1]) if unrouted else None,
             "violations_reported": freerouting_violations(log),
+            "failed_connections": sorted(set(re.findall(r"([\w.$/+-]+-\w+)\s*->\s*([\w.$/+-]+-\w+)", log)))[:40],
             "errors": sorted(set(re.findall(r"(?:Exception|ERROR)[^\n]{0,160}", log)))[:8], "log_tail": log[-1500:]}
 
 

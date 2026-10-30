@@ -732,6 +732,56 @@ def _jog(a: Point, b: Point) -> list[Point]:
 PROMOTE = 3  # items moved to the front, one at a time, when they failed or broke their rule
 
 
+def plane_nets(b: Board) -> dict[str, list[str]]:
+    """Nets with a zone on an inner layer, and those layers: the planes of a 4+ layer board."""
+    outer = {b.copper_layers[0], b.copper_layers[-1]} if b.copper_layers else set()
+    planes = {n: [l for l in ls if l in b.copper_layers and l not in outer] for n, ls in b.zone_nets.items()}
+    return {n: ls for n, ls in planes.items() if ls}
+
+
+def _pad_joined(b: Board, p: Pad) -> bool:
+    """A via or track end of the pad's own net already in the pad."""
+    if any(v.net == p.net and p.contains((v.x, v.y)) for v in b.vias):
+        return True
+    return any(t.net == p.net and t.layer in p.layers and (p.contains(t.start) or p.contains(t.end)) for t in b.tracks)
+
+
+def plane_fanout(b: Board, grid: float = GRID) -> dict:
+    """A via beside every SMD pad on a plane net, into the plane, locked; added to the board.
+
+    Freerouting 2.5 doesn't fan out to planes on "power" layers: it routes those pins pad to pad on the outer layers,
+    and most fail. With a via down at each pad first, the plane joins them, and Freerouting only routes signals.
+    Pads that already have a via or track of their net are left alone (the critical pass, or stitching vias)."""
+    planes = plane_nets(b)
+    out: dict = {"planes": planes, "tracks": [], "vias": [], "no_room": []}
+    if not planes:
+        return out
+    r = Router(b, grid)
+    outer = (b.copper_layers[0], b.copper_layers[-1])
+    done: set[str] = set()
+    # biggest copy of a pad first: an exposed pad is listed again for its paste windows
+    for p in sorted(b.pads, key=lambda p: -p.w * p.h):
+        name = f"{p.ref}.{p.number}"
+        layer = next((l for l in p.layers if l in outer), None)
+        if p.net not in planes or p.kind != "smd" or layer is None or name in done:
+            continue
+        done.add(name)
+        if _pad_joined(b, p):
+            continue
+        nc = b.net_class(p.net)
+        w = min((nc.track_width if nc and nc.track_width else None) or 0.25, min(p.w, p.h))
+        conn = {"net": p.net, "width": w, "a": {"pad": name, "x": p.x, "y": p.y},
+                "b": {"pour_layers": [l for l in b.zone_nets.get(p.net, []) if l in outer]}}
+        res = r.via_beside(conn, "plane_fanout")
+        if res.ok and (res.tracks or res.vias):
+            r.commit(res)
+            out["tracks"] += res.tracks
+            out["vias"] += res.vias
+        elif not res.ok or res.note:
+            out["no_room"].append({"pad": name, "net": p.net, "why": res.why or res.note})
+    return out
+
+
 def route_plan(b: Board, plan: dict, ids: list[str] | None = None, skip: list[str] | None = None, grid: float = GRID) -> dict:
     """Route every connection of the plan's items whose action is "route" (or the ids given), in the plan's order.
 

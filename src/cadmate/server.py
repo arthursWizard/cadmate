@@ -823,6 +823,8 @@ def autoroute_rest(path: str | None = None, out_path: str | None = None, current
     smallest pad on the net (widths_capped says where). On the way back, tracks narrower than their net class are widened
     (widened lists them) and zones are refilled. On the open board the result is one undo step; for a file it goes to
     out_path (default <name>-routed.kicad_pcb). unrouted lists nets still not joined. Then run review_pcb_layout.
+    On a board with inner-layer planes, each SMD pad on a plane net first gets a locked via into its plane (plane_fanout
+    says how many, and which pads had no room), since Freerouting doesn't route to planes itself.
 
     fab_check sorts Freerouting's narrow tracks against the fab's minimums ("jlcpcb" or "pcbway"; ask the user which):
     errors are under the fab's own minimum and must be rerouted, warnings are between it and the minimum plus margin

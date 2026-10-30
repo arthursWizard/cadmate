@@ -460,3 +460,30 @@ def test_stub_vias_and_their_dead_end_tracks_are_pruned():
 def test_no_ground_net_means_no_pour_item():
     b = board(footprint("R:R", "R1", "1k", 20, 20, [pad("1", -0.5, 0, "A"), pad("2", 0.5, 0, "B")]))
     assert "return_path" not in pc.classify(b)["counts"]
+
+
+def four_layer(*items) -> pb.Board:
+    head = HEAD.replace('(2 "B.Cu" signal)', '(4 "In1.Cu" power) (6 "In2.Cu" power) (2 "B.Cu" signal)')
+    return pb.parse(head + "".join(items) + ")\n", "test.kicad_pcb")
+
+
+def test_plane_fanout_puts_a_locked_via_at_each_plane_pad():
+    b = four_layer(ic(), cap("C1", 22, 14), zone("GND", "In1.Cu", [[(0, 0), (60, 0), (60, 40), (0, 40)]]),
+                   zone("+3V3", "In2.Cu", [[(0, 0), (60, 0), (60, 40), (0, 40)]]))
+    assert rt.plane_nets(b) == {"GND": ["In1.Cu"], "+3V3": ["In2.Cu"]}
+    fan = rt.plane_fanout(b)
+    assert not fan["no_room"]
+    pads = {f"{p.ref}.{p.number}" for p in b.pads if p.net in ("GND", "+3V3")}
+    assert len(fan["vias"]) == len(pads) == 4
+    assert all(t.locked for t in fan["tracks"]) and all(v.layers == ["F.Cu", "B.Cu"] for v in fan["vias"])
+    for p in b.pads:
+        if p.net in ("GND", "+3V3"):  # a track from the pad to its own via, close by
+            [t] = [t for t in fan["tracks"] if p.contains(t.start)]
+            assert t.net == p.net and any((v.x, v.y) == t.end and v.net == p.net for v in fan["vias"]) and t.length < 2
+    _clear(b, fan["tracks"], fan["vias"])
+    assert rt.plane_fanout(b)["vias"] == []  # pads already joined are left alone
+
+
+def test_no_fanout_without_inner_planes():
+    b = board(ic(), cap("C1", 22, 14), gnd_pour())
+    assert rt.plane_nets(b) == {} and rt.plane_fanout(b)["vias"] == []

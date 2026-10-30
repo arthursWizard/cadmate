@@ -150,14 +150,16 @@ class Obstacles:
                     out += hit  # a shape in two buckets is checked twice; cheaper than de-duplicating
         return out
 
-    def clear(self, layer: str, p: Point, net: str | frozenset, half: float, margin: float = 0.0) -> tuple[bool, str | None]:
+    def clear(self, layer: str, p: Point, net: str | frozenset, half: float, margin: float = 0.0,
+              masks: bool = True) -> tuple[bool, str | None]:
         """Whether copper of this net (or these nets, for a pair routed as one), half wide, centred at p, keeps clearance to
-        everything else. Returns (ok, what's in the way)."""
+        everything else. Returns (ok, what's in the way). Without masks, solder mask openings don't count: for checking
+        copper already there, which may sit in its own pad's opening."""
         nets = net if isinstance(net, frozenset) else (net,)
         own = max(self.clr(n) for n in nets)
         reach = half + max(own, self.max_clr) + margin + 0.01
         for s in self.near(layer, p, reach):
-            if s.net is not None and s.net in nets:
+            if s.net is not None and s.net in nets or not masks and s.kind == "mask":
                 continue
             need = half + (0.0 if s.kind == "keepout" else max(own, s.clearance)) + margin
             if s.gap(p) < need - 1e-6:

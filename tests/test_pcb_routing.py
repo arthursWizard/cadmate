@@ -566,3 +566,22 @@ def test_finish_keeps_locked_tracks_and_good_ones():
     b = board(ic(), clk, seg((32.7, 21.9), (37.5, 21.9), "CLK"))
     res = pcb_finish.finish(b)
     assert not res["ripped"] and not res["removed"] and not res["tracks"]
+
+
+def test_finish_replaces_a_bad_neck_with_a_hop_to_the_rest_of_the_track(tmp_path):
+    from cadmate import pcb_finish
+    from test_pcb_review import seg
+
+    other = footprint("Resistor_SMD:R_0603", "R9", "0", 33.3, 22.75, [pad(1, 0, 0, "OTHER", 0.8, 0.8)])
+    clk = footprint("Resistor_SMD:R_0603", "R8", "0", 40.0, 22.3, [pad(1, 0, 0, "CLK", 0.8, 0.8)])
+    src = tmp_path / "b.kicad_pcb"
+    src.write_text(HEAD + ic() + other + clk + seg((32.7, 21.9), (34.2, 22.3), "CLK") + seg((34.2, 22.3), (40.0, 22.3), "CLK") + ")\n")
+    b = pb.parse(src.read_text(), src.name)
+    res = pcb_finish.finish(b)
+    assert len(res["ripped"]) == 1 and not res["open"] and res["open_after"] == 0, res
+    assert len(res["removed"]) == 1  # the long run stays
+    dst = tmp_path / "b-finished.kicad_pcb"
+    assert pcb_finish.write(src, dst, res) == 1
+    again = pb.parse(dst.read_text(), dst.name)
+    assert len(pb.NetGraph(again, "CLK").islands()) == 1 and not pcb_finish.faulty(again)
+    assert any(abs(t.start[0] - 34.2) < 1e-3 and abs(t.end[0] - 40.0) < 1e-3 for t in again.tracks)

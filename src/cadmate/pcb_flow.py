@@ -177,7 +177,6 @@ def finish_routing(path: str, out_path: str | None = None, outer_only: bool = Tr
     if not path:
         raise FlowError("finish_routing works on a saved .kicad_pcb: save the board and pass its path")
     b, _ = load(path)
-    before = freerouting.unrouted(b)
     res = pcb_finish.finish(b, outer_only)
     src = Path(path).expanduser()
     dst = Path(out_path).expanduser() if out_path else src.with_name(src.stem + "-finished" + src.suffix)
@@ -189,7 +188,10 @@ def finish_routing(path: str, out_path: str | None = None, outer_only: bool = Tr
             dst.with_suffix(ext).write_bytes(src.with_suffix(ext).read_bytes())
     out = {"ok": True, "written": str(dst), "ripped": res["ripped"], "segments_removed": cut,
            "added": {"tracks": len(res["tracks"]), "vias": len(res["vias"])},
-           "open_before": len(before), "still_open": res["open"]}
+           "open_before": res["open_before"], "open_after": res["open_after"], "still_open": res["open"]}
+    if res["open_after"] > res["open_before"]:
+        out["worse"] = ("more connections open than before: the bad tracks it took out couldn't all be replaced. Keep the "
+                        "input board and fix the ripped list by hand")
     try:
         freerouting.refill(dst)
         out["zones"] = "refilled"

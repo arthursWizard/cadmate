@@ -341,7 +341,8 @@ def parse_ses(text: str, board: Board, via_default: tuple[float, float] = (0.6, 
 
 
 def new_items(board: Board, tracks: list[Track], vias: list[Via]) -> tuple[list[Track], list[Via]]:
-    """The SES lists the protected wiring too; keep only what isn't on the board already."""
+    """The SES lists the protected wiring too; keep only what isn't on the board already. Zero-length tracks (Freerouting
+    leaves them at pad centres) are dropped: they join nothing and can still break clearance."""
 
     def tkey(t: Track):
         a, b = sorted([(round(t.start[0], 3), round(t.start[1], 3)), (round(t.end[0], 3), round(t.end[1], 3))])
@@ -349,7 +350,7 @@ def new_items(board: Board, tracks: list[Track], vias: list[Via]) -> tuple[list[
 
     have = {tkey(t) for t in board.tracks}
     vhave = {(v.net, round(v.x, 3), round(v.y, 3)) for v in board.vias}
-    return ([t for t in tracks if tkey(t) not in have], [v for v in vias if (v.net, round(v.x, 3), round(v.y, 3)) not in vhave])
+    return ([t for t in tracks if tkey(t) not in have and dist(t.start, t.end) > 1e-3], [v for v in vias if (v.net, round(v.x, 3), round(v.y, 3)) not in vhave])
 
 
 def widen(board: Board, tracks: list[Track], widths: dict[str, float], vias: list[Via] = ()) -> list[dict]:

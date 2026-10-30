@@ -80,8 +80,6 @@ def merge_rules(existing: str, block: str) -> str:
     if BEGIN in text and END in text:
         a, b = text.index(BEGIN), text.index(END) + len(END)
         text = (text[:a] + text[b:].lstrip("\n")).rstrip() + "\n"
-    if not block:
-        return text
-    if "(version" not in text:
+    if "(version" not in text:  # an empty rules file isn't one: KiCad wants the version line
         text = "(version 1)\n" + text
-    return text.rstrip() + "\n\n" + block
+    return text.rstrip() + "\n" + ("\n" + block if block else "")

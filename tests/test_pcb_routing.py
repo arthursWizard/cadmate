@@ -487,3 +487,16 @@ def test_plane_fanout_puts_a_locked_via_at_each_plane_pad():
 def test_no_fanout_without_inner_planes():
     b = board(ic(), cap("C1", 22, 14), gnd_pour())
     assert rt.plane_nets(b) == {} and rt.plane_fanout(b)["vias"] == []
+
+
+def test_zero_length_ses_tracks_are_dropped():
+    b = board(ic())
+    t = pb.Track((27.3, 18.1), (27.3005, 18.1), 0.25, "F.Cu", "+3V3")
+    keep = pb.Track((27.3, 18.1), (25.0, 18.1), 0.25, "F.Cu", "+3V3")
+    assert fr.new_items(b, [t, keep], [])[0] == [keep]
+
+
+def test_rules_file_keeps_its_version_line_when_cadmate_has_nothing_to_add():
+    from cadmate import fab
+
+    assert fab.merge_rules("", "") == "(version 1)\n"

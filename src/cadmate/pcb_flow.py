@@ -176,6 +176,9 @@ def finish_routing(path: str, out_path: str | None = None, outer_only: bool = Tr
     refill the zones. Saved boards only, written to out_path (default <name>-finished.kicad_pcb)."""
     if not path:
         raise FlowError("finish_routing works on a saved .kicad_pcb: save the board and pass its path")
+    if not Path(path).expanduser().with_suffix(".kicad_pro").exists():
+        raise FlowError("no .kicad_pro next to the board, so no design rules: copy the project's .kicad_pro (and .kicad_dru) "
+                        "beside it under the board's name, or the new tracks would follow KiCad's defaults, not the board's")
     b, _ = load(path)
     res = pcb_finish.finish(b, outer_only)
     src = Path(path).expanduser()

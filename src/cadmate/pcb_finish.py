@@ -130,7 +130,7 @@ def finish(b: Board, outer_only: bool = True, grid: float = GRID) -> dict:
                                key=lambda e: e[:2])
                 why = None
                 for _, _, a, c in [e for e in pairs if isinstance(e[2], Pad) or isinstance(e[3], Pad)][:TRIES]:
-                    for w in sorted({_width(b, net), max(floor, 0.1)}, reverse=True):  # the board minimum if full width won't go
+                    for w in sorted({_width(b, net), floor or _width(b, net)}, reverse=True):  # the board minimum if full width won't go
                         k += 1
                         conn = {"net": net, "width": w, "a": _end(r, net, a, k), "b": _end(r, net, c, -k)}
                         if outer_only and outer:

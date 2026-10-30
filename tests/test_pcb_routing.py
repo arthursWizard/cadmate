@@ -585,3 +585,12 @@ def test_finish_replaces_a_bad_neck_with_a_hop_to_the_rest_of_the_track(tmp_path
     again = pb.parse(dst.read_text(), dst.name)
     assert len(pb.NetGraph(again, "CLK").islands()) == 1 and not pcb_finish.faulty(again)
     assert any(abs(t.start[0] - 34.2) < 1e-3 and abs(t.end[0] - 40.0) < 1e-3 for t in again.tracks)
+
+
+def test_finish_routing_needs_the_project_rules(tmp_path):
+    from cadmate import pcb_flow
+
+    src = tmp_path / "b.kicad_pcb"
+    src.write_text(HEAD + ic() + ")\n")
+    with pytest.raises(pcb_flow.FlowError, match="kicad_pro"):
+        pcb_flow.finish_routing(str(src))

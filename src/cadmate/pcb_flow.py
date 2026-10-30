@@ -25,7 +25,7 @@ def load(path: str | None) -> tuple[Board, object | None]:
             raise FlowError(f"no board at {f}")
         b = parse(f.read_text(errors="replace"), f.name)
         load_project(b, f.with_suffix(".kicad_pro"))
-        load_schematic(b, f.parent)
+        load_schematic(b, f.parent, f.stem)
         return b, None
     from . import kicad_pcb_live
 
@@ -38,7 +38,7 @@ def load(path: str | None) -> tuple[Board, object | None]:
     if folder:
         pro = folder / Path(live.name).with_suffix(".kicad_pro").name
         load_project(b, pro if pro.exists() else next(iter(folder.glob("*.kicad_pro")), None))
-        load_schematic(b, folder)
+        load_schematic(b, folder, Path(live.name).stem)
     return b, live
 
 

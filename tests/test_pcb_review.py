@@ -356,3 +356,19 @@ def test_switch_with_back_socket_pads_counts_as_a_back_part():
                   layer="B.Cu")
     res = pr.review_board(board(sw, r))
     assert not [f for f in res["findings"] if f["what"].startswith("SMD parts on both sides")]
+
+
+def test_only_the_boards_own_schematic_is_read(tmp_path):
+    (tmp_path / "left.kicad_sch").write_text('(kicad_sch (sheet (property "Sheetfile" "sub.kicad_sch")))')
+    (tmp_path / "sub.kicad_sch").write_text("(kicad_sch)")
+    (tmp_path / "left-routed.kicad_sch").write_text("(kicad_sch)")
+    assert {f.name for f in pb.schematic_files(tmp_path, "left")} == {"left.kicad_sch", "sub.kicad_sch"}
+    assert len(pb.schematic_files(tmp_path, "nothing")) == 3
+
+
+def test_schematic_parity_from_drc_is_reported():
+    rep = {"violations": [], "unconnected_items": [],
+           "schematic_parity": [{"type": "net_conflict", "severity": "warning", "description": "Net mismatch",
+                                 "items": [{"description": "Pad 2 of D1", "pos": {"x": 1, "y": 2}}]}] * 3}
+    [f] = pr._drc_findings(rep)
+    assert f["rule"] == "parity" and f["severity"] == "warning" and "3 × net_conflict" in f["what"]

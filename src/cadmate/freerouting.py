@@ -20,7 +20,7 @@ import tempfile
 from pathlib import Path
 
 from . import sexpr
-from .pcb_board import Board, NetGraph, Track, Via, dist, parse
+from .pcb_board import Board, NetGraph, Track, Via, dist, parse, point_seg
 
 JAR_ENV = "CADMATE_FREEROUTING_JAR"
 JAVA_ENV = "CADMATE_JAVA"
@@ -462,15 +462,45 @@ def clearance_check(board: Board, tracks: list[Track], vias: list[Via], lim: dic
 
 
 def dangling_vias(board: Board, tracks: list[Track], vias: list[Via]) -> list[Via]:
-    """Vias that touch no track and no pad of their net: Freerouting leaves some behind after rip-up."""
-    out = []
-    for v in vias:
+    """Vias Freerouting left that join copper on one layer only (or none): KiCad's DRC calls them dangling."""
+    def on(layer, v):
         r = v.size / 2
-        touch = any(t.net == v.net and (dist(t.start, (v.x, v.y)) <= r + t.width / 2 or dist(t.end, (v.x, v.y)) <= r + t.width / 2)
-                    for t in tracks + board.tracks)
-        if not touch and not any(p.net == v.net and p.contains((v.x, v.y)) for p in board.pads):
-            out.append(v)
-    return out
+        if any(t.net == v.net and t.layer == layer and (dist(t.start, (v.x, v.y)) <= r + t.width / 2 or
+                                                         dist(t.end, (v.x, v.y)) <= r + t.width / 2)
+               for t in tracks + board.tracks):
+            return True
+        if any(p.net == v.net and layer in p.layers and p.contains((v.x, v.y)) for p in board.pads):
+            return True
+        return bool(board.zone_nets.get(v.net) and layer in board.zone_nets[v.net])
+
+    return [v for v in vias if sum(on(layer, v) for layer in (v.layers or board.copper_layers)) < 2]
+
+
+def prune_stubs(board: Board, tracks: list[Track], vias: list[Via]) -> tuple[list[Track], list[Via], dict]:
+    """Drop dangling vias and then the new track ends left touching nothing, until nothing changes."""
+    removed = {"vias": 0, "tracks": 0}
+    while True:
+        dv = dangling_vias(board, tracks, vias)
+        vias = [v for v in vias if v not in dv]
+
+        def touched(t: Track, end) -> bool:
+            if any(p.net == t.net and t.layer in p.layers and p.contains(end) for p in board.pads):
+                return True
+            if any(v.net == t.net and dist((v.x, v.y), end) <= v.size / 2 + t.width / 2 for v in vias + board.vias):
+                return True
+            if t.layer in board.zone_nets.get(t.net, []):
+                return True  # may end in the pour; kept to be safe
+            return any(o is not t and o.net == t.net and o.layer == t.layer and
+                       (dist(o.start, end) <= (o.width + t.width) / 2 or dist(o.end, end) <= (o.width + t.width) / 2 or
+                        point_seg(end, o.start, o.end)[0] <= (o.width + t.width) / 2)
+                       for o in tracks + board.tracks)
+
+        dead = [t for t in tracks if not (touched(t, t.start) and touched(t, t.end))]
+        tracks = [t for t in tracks if t not in dead]
+        removed["vias"] += len(dv)
+        removed["tracks"] += len(dead)
+        if not dv and not dead:
+            return tracks, vias, removed
 
 
 def freerouting_violations(log: str) -> int | None:
@@ -512,8 +542,7 @@ def autoroute_file(board_file: Path, out_file: Path, widths: dict[str, float] | 
     fr = run_freerouting(dsn, ses, passes, timeout)
     tracks, vias = parse_ses(ses.read_text(), board)
     tracks, vias = new_items(board, tracks, vias)
-    dangling = dangling_vias(board, tracks, vias)
-    vias = [v for v in vias if v not in dangling]
+    tracks, vias, pruned = prune_stubs(board, tracks, vias)
     widened = widen(board, tracks, widths, vias)
     pcb_route.write_file(board_file, out_file, tracks, vias, locked=False)
     filled = True
@@ -525,7 +554,7 @@ def autoroute_file(board_file: Path, out_file: Path, widths: dict[str, float] | 
     load_project(after, out_file.with_suffix(".kicad_pro"))
     left = unrouted(after)
     out = {"ok": True, "complete": not left, "board": str(out_file), "freerouting": fr,
-           "added": {"tracks": len(tracks), "vias": len(vias)}, "dangling_vias_removed": len(dangling),
+           "added": {"tracks": len(tracks), "vias": len(vias)}, "stubs_removed": pruned,
            "keepouts": {"edge_mm": edge, "hole_mm": hole}, "widened": widened, "zones_refilled": filled, "unrouted": left,
            "work": str(work)}
     if left:
@@ -564,8 +593,7 @@ def autoroute_live(widths: dict[str, float] | None = None, passes: int = 30, tim
     fr = run_freerouting(dsn, ses, passes, timeout)
     tracks, vias = parse_ses(ses.read_text(), board)
     tracks, vias = new_items(board, tracks, vias)
-    dangling = dangling_vias(board, tracks, vias)
-    vias = [v for v in vias if v not in dangling]
+    tracks, vias, pruned = prune_stubs(board, tracks, vias)
     widened = widen(board, tracks, widths, vias)
 
     res = kicad_pcb_live.commit(f"Freerouting: {len(tracks)} tracks, {len(vias)} vias",
@@ -581,7 +609,7 @@ def autoroute_live(widths: dict[str, float] | None = None, passes: int = 30, tim
     load_project(after, copy.with_suffix(".kicad_pro"))
     left = unrouted(after)
     out = {"ok": True, "complete": not left, "board": live.name, "freerouting": fr,
-           "added": {"tracks": len(tracks), "vias": len(vias)}, "dangling_vias_removed": len(dangling),
+           "added": {"tracks": len(tracks), "vias": len(vias)}, "stubs_removed": pruned,
            "keepouts": {"edge_mm": edge, "hole_mm": hole}, "widened": widened, "zones": refill_note, "unrouted": left,
            "undo": "two steps in KiCad's undo list: 'cadmate: Freerouting …' and 'cadmate: refill zones'", "work": str(work)}
     if left:

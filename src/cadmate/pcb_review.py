@@ -860,8 +860,9 @@ def run_drc(board_file: Path) -> dict | None:
         return None
     out = Path(tempfile.mkdtemp(prefix="cadmate-drc-")) / "drc.json"
     try:
-        proc = subprocess.run([cli, "pcb", "drc", "--format", "json", "--severity-all", "--units", "mm", "--output", str(out), str(board_file)],
-                              capture_output=True, text=True, timeout=300)
+        parity = ["--schematic-parity"] if board_file.with_suffix(".kicad_sch").exists() else []
+        proc = subprocess.run([cli, "pcb", "drc", "--format", "json", "--severity-all", "--units", "mm", *parity, "--output", str(out),
+                               str(board_file)], capture_output=True, text=True, timeout=300)
     except (OSError, subprocess.SubprocessError) as e:
         return {"error": f"kicad-cli drc failed: {e}"}
     if not out.exists():
@@ -895,6 +896,17 @@ def _drc_findings(rep: dict) -> list[dict]:
         out.append(_f("drc", "problem" if sev == "error" else "note", f"DRC {sev}: {len(vs)} × {kind}: {vs[0].get('description', '')}",
                       "From KiCad's own checker, with the board's rules.", "kicad_drc", pos.get("x"), pos.get("y"),
                       example="; ".join(i.get("description", "") for i in its)[:200]))
+    par: dict[tuple, list] = {}
+    for v in rep.get("schematic_parity", []):
+        par.setdefault((v.get("type", "?"), v.get("severity", "?")), []).append(v)
+    for (kind, sev), vs in sorted(par.items(), key=lambda kv: -len(kv[1])):
+        its = vs[0].get("items", [])
+        pos = its[0].get("pos", {}) if its else {}
+        out.append(_f("parity", "problem" if sev == "error" else "warning",
+                      f"Schematic parity {sev}: {len(vs)} × {kind}: {vs[0].get('description', '')}",
+                      "The board and its schematic disagree: Update PCB from Schematic (F8) brings them back together, or the "
+                      "schematic needs the change.", "kicad_drc", pos.get("x"), pos.get("y"),
+                      example="; ".join(i.get("description", "") for i in its)[:200]))
     return out
 
 
@@ -918,7 +930,16 @@ def review_board(board: Board, currents: dict[str, float] | None = None, roles: 
     r.fab_limits(fab)
     findings = r.findings
     if drc is not None and "error" not in drc:
-        findings = _drc_findings(drc) + findings
+        found = _drc_findings(drc)
+        for f in found:  # name the unrouted nets from the board's own copper; KiCad's item labels can be off
+            if f["rule"] == "unconnected":
+                from .freerouting import unrouted
+
+                left = unrouted(board)
+                if left:
+                    f["values"]["nets"] = [u["net"] for u in left][:30]
+                    f["what"] = f"{f['what'].split(', on ')[0]}, on {len(left)} net(s)"
+        findings = found + findings
         r.checked.append("kicad_drc")
     elif drc is not None:
         r.skipped.append({"rule": "kicad_drc", "why": drc["error"]})
@@ -950,7 +971,7 @@ def review_file(path: str, **kw) -> dict:
         raise ReviewError(f"no board at {f}")
     board = parse(f.read_text(errors="replace"), f.name)
     load_project(board, f.with_suffix(".kicad_pro"))
-    load_schematic(board, f.parent)
+    load_schematic(board, f.parent, f.stem)
     drc = run_drc(f) if kw.pop("drc", True) else None
     return review_board(board, drc=drc, **kw)
 
@@ -968,7 +989,7 @@ def review_live(**kw) -> dict:
     if folder:
         pro = folder / Path(live_board.name).with_suffix(".kicad_pro").name
         load_project(board, pro if pro.exists() else next(iter(folder.glob("*.kicad_pro")), None))
-        load_schematic(board, folder)
+        load_schematic(board, folder, Path(live_board.name).stem)
     drc = None
     if kw.pop("drc", True) and apps.find_kicad_cli():
         tmp = Path(tempfile.mkdtemp(prefix="cadmate-review-"))

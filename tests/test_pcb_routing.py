@@ -432,12 +432,18 @@ def test_clearance_check_flags_copper_at_the_edge_and_holes():
     assert out["errors"][0]["gap_mm"] < 0
 
 
-def test_dangling_vias_found():
-    b = board(cap("C1", 25.2, 17.0))
-    t = pb.Track((10, 10), (15, 10), 0.2, "F.Cu", "A")
-    keep = pb.Via(15, 10, 0.6, 0.3, ["F.Cu", "B.Cu"], "A")
-    lone = pb.Via(30, 30, 0.6, 0.3, ["F.Cu", "B.Cu"], "A")
-    assert fr.dangling_vias(b, [t], [keep, lone]) == [lone]
+def test_stub_vias_and_their_dead_end_tracks_are_pruned():
+    b = board(footprint("R:R", "R1", "1k", 10, 10, [pad("1", 0, 0, "A"), pad("2", 1, 0, "B")]),
+              footprint("R:R", "R2", "1k", 30, 10, [pad("1", 0, 0, "A", layer="B.Cu"), pad("2", 1, 0, "C", layer="B.Cu")],
+                        layer="B.Cu"))
+    a = pb.Track((10, 10), (20, 10), 0.2, "F.Cu", "A")
+    b2 = pb.Track((20, 10), (30, 10), 0.2, "B.Cu", "A")
+    keep = pb.Via(20, 10, 0.6, 0.3, ["F.Cu", "B.Cu"], "A")
+    stub = pb.Track((10, 10), (10, 20), 0.2, "F.Cu", "A")            # goes to a via with nothing on B.Cu
+    lone = pb.Via(10, 20, 0.6, 0.3, ["F.Cu", "B.Cu"], "A")
+    assert fr.dangling_vias(b, [a, b2, stub], [keep, lone]) == [lone]
+    tracks, vias, removed = fr.prune_stubs(b, [a, b2, stub], [keep, lone])
+    assert vias == [keep] and tracks == [a, b2] and removed == {"vias": 1, "tracks": 1}
 
 
 def test_no_ground_net_means_no_pour_item():

@@ -106,4 +106,5 @@ def _read_string(text: str, pos: int) -> tuple[int, str]:
 
 
 def quote(value: str) -> str:
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    # KiCad rejects a raw newline inside a string, so multi-line text is written as \n.
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'

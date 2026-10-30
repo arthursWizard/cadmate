@@ -48,6 +48,8 @@ class Pad:
 
     @property
     def name(self) -> str:
+        if not self.number and self.kind == "np_thru_hole":
+            return f"{self.ref} hole"
         fn = f" ({self.pinfunction})" if self.pinfunction else ""
         return f"{self.ref} pad {self.number}{fn}"
 
@@ -521,9 +523,29 @@ def load_project(board: Board, project_file: Path | None) -> None:
     board.rules = (pro.get("board", {}).get("design_settings", {}) or {}).get("rules", {}) or {}
 
 
-def load_schematic(board: Board, folder: Path) -> None:
-    """Net names of the schematic's power symbols (power:GND, power:+3V3 ...), from every sheet in the folder."""
-    for sch in sorted(folder.glob("*.kicad_sch")):
+def schematic_files(folder: Path, stem: str | None = None) -> list[Path]:
+    """The board's schematic: <stem>.kicad_sch and the sheets it includes, followed down the hierarchy. Without a
+    root sheet of that name, every sheet in the folder (a folder may hold other boards' schematics too)."""
+    root = folder / f"{stem}.kicad_sch" if stem else None
+    if root is None or not root.exists():
+        return sorted(folder.glob("*.kicad_sch"))
+    seen, todo = [], [root]
+    while todo:
+        f = todo.pop()
+        if f in seen or not f.exists():
+            continue
+        seen.append(f)
+        try:
+            text = f.read_text(errors="replace")
+        except OSError:
+            continue
+        todo += [f.parent / m for m in re.findall(r'\(property\s+"Sheetfile"\s+"([^"]+)"', text)]
+    return seen
+
+
+def load_schematic(board: Board, folder: Path, stem: str | None = None) -> None:
+    """Net names of the schematic's power symbols (power:GND, power:+3V3 ...), from the board's schematic sheets."""
+    for sch in schematic_files(folder, stem):
         try:
             root = sexpr.parse(sch.read_text(errors="replace"))
         except (OSError, sexpr.SexprError):

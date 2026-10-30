@@ -699,10 +699,17 @@ class Review:
                              "jlcpcb_smt", (a.x + b.x) / 2, (a.y + b.y) / 2, refs=[a.ref, b.ref], gap_mm=gap, recommended_mm=need)
         if unknown:
             self.skipped.append({"rule": "assembly", "why": f"package type not known for {', '.join(sorted(unknown)[:15])}; no JLCPCB spacing applied"})
-        sides = {p.side for p in self.b.parts if p.smd and not p.dnp}
+        # the side an SMD part is soldered on is where its SMD pads are: a key switch footprint sits on the front but
+        # carries its hotswap socket's pads on the back
+        def smd_side(p):
+            lays = {l for q in p.pads if q.kind == "smd" for l in q.layers if l.endswith(".Cu")}
+            return "back" if lays == {self.b.copper_layers[-1]} else "front" if lays == {self.b.copper_layers[0]} else p.side
+
+        smd = [p for p in self.b.parts if p.smd and not p.dnp]
+        sides = {smd_side(p) for p in smd}
         if len(sides) == 2:
-            back = sorted(p.ref for p in self.b.parts if p.smd and p.side == "back")
-            front = sorted(p.ref for p in self.b.parts if p.smd and p.side == "front")
+            back = sorted(p.ref for p in smd if smd_side(p) == "back")
+            front = sorted(p.ref for p in smd if smd_side(p) == "front")
             self.add("assembly", "note", f"SMD parts on both sides ({len(front)} front, {len(back)} back)",
                      "Assembling both sides costs a second pass. Fine if intended.", "heuristic", refs=(back if len(back) <= len(front) else front)[:20])
         if self.b.edges:
@@ -853,8 +860,10 @@ def run_drc(board_file: Path) -> dict | None:
         return None
     out = Path(tempfile.mkdtemp(prefix="cadmate-drc-")) / "drc.json"
     try:
-        proc = subprocess.run([cli, "pcb", "drc", "--format", "json", "--severity-all", "--units", "mm", "--output", str(out), str(board_file)],
-                              capture_output=True, text=True, timeout=300)
+        parity = ["--schematic-parity"] if board_file.with_suffix(".kicad_sch").exists() else []
+        # zones as they'd be after a refill: a saved board may hold unfilled pours, which DRC would count as unrouted
+        proc = subprocess.run([cli, "pcb", "drc", "--format", "json", "--severity-all", "--units", "mm", "--refill-zones", *parity,
+                               "--output", str(out), str(board_file)], capture_output=True, text=True, timeout=300)
     except (OSError, subprocess.SubprocessError) as e:
         return {"error": f"kicad-cli drc failed: {e}"}
     if not out.exists():
@@ -872,7 +881,9 @@ def _drc_findings(rep: dict) -> list[dict]:
             items.append({"what": "; ".join(i.get("description", "") for i in its)[:200],
                           "at": [its[0].get("pos", {}).get("x"), its[0].get("pos", {}).get("y")] if its else None})
         first = items[0]["at"] if items and items[0]["at"] else [None, None]
-        nets = sorted({m for u in un for i in u.get("items", []) for m in re.findall(r"\[([^\]]+)\]", i.get("description", ""))})
+        # both ends of an unconnected item are on one net; KiCad sometimes labels the second end differently, so the
+        # first end names it
+        nets = sorted({m for u in un for i in u.get("items", [])[:1] for m in re.findall(r"\[([^\]]+)\]", i.get("description", ""))[:1]})
         out.append(_f("unconnected", "problem", f"{len(un)} connection(s) not routed, on {len(nets)} net(s)",
                       "The ratsnest still shows these: the board doesn't work until they are routed. KiCad counts each missing "
                       "link, so one net split in three counts twice; autorouters usually count nets.", "kicad_drc", first[0], first[1],
@@ -885,6 +896,17 @@ def _drc_findings(rep: dict) -> list[dict]:
         pos = its[0].get("pos", {}) if its else {}
         out.append(_f("drc", "problem" if sev == "error" else "note", f"DRC {sev}: {len(vs)} × {kind}: {vs[0].get('description', '')}",
                       "From KiCad's own checker, with the board's rules.", "kicad_drc", pos.get("x"), pos.get("y"),
+                      example="; ".join(i.get("description", "") for i in its)[:200]))
+    par: dict[tuple, list] = {}
+    for v in rep.get("schematic_parity", []):
+        par.setdefault((v.get("type", "?"), v.get("severity", "?")), []).append(v)
+    for (kind, sev), vs in sorted(par.items(), key=lambda kv: -len(kv[1])):
+        its = vs[0].get("items", [])
+        pos = its[0].get("pos", {}) if its else {}
+        out.append(_f("parity", "problem" if sev == "error" else "warning",
+                      f"Schematic parity {sev}: {len(vs)} × {kind}: {vs[0].get('description', '')}",
+                      "The board and its schematic disagree: Update PCB from Schematic (F8) brings them back together, or the "
+                      "schematic needs the change.", "kicad_drc", pos.get("x"), pos.get("y"),
                       example="; ".join(i.get("description", "") for i in its)[:200]))
     return out
 
@@ -909,7 +931,20 @@ def review_board(board: Board, currents: dict[str, float] | None = None, roles: 
     r.fab_limits(fab)
     findings = r.findings
     if drc is not None and "error" not in drc:
-        findings = _drc_findings(drc) + findings
+        found = _drc_findings(drc)
+        for f in found:  # name the unrouted nets from the board's own copper; KiCad's item labels can be off
+            if f["rule"] == "unconnected":
+                from .freerouting import unrouted
+
+                left = unrouted(board)
+                if left:
+                    f["values"]["nets"] = [u["net"] for u in left][:30]
+                    f["values"]["items"] = [{"net": u["net"], "islands": u["islands"], "pads_apart": u["pads_apart"]} for u in left][:10]
+                    f["what"] = f"{f['what'].split(', on ')[0]}, on {len(left)} net(s)"
+                    pad = next((p for p in board.pads if left[0]["pads_apart"] and p.name == left[0]["pads_apart"][0]), None)
+                    if pad is not None:
+                        f["where"] = {**f.get("where", {}), "x": round(pad.x, 2), "y": round(pad.y, 2)}
+        findings = found + findings
         r.checked.append("kicad_drc")
     elif drc is not None:
         r.skipped.append({"rule": "kicad_drc", "why": drc["error"]})
@@ -941,7 +976,7 @@ def review_file(path: str, **kw) -> dict:
         raise ReviewError(f"no board at {f}")
     board = parse(f.read_text(errors="replace"), f.name)
     load_project(board, f.with_suffix(".kicad_pro"))
-    load_schematic(board, f.parent)
+    load_schematic(board, f.parent, f.stem)
     drc = run_drc(f) if kw.pop("drc", True) else None
     return review_board(board, drc=drc, **kw)
 
@@ -959,7 +994,7 @@ def review_live(**kw) -> dict:
     if folder:
         pro = folder / Path(live_board.name).with_suffix(".kicad_pro").name
         load_project(board, pro if pro.exists() else next(iter(folder.glob("*.kicad_pro")), None))
-        load_schematic(board, folder)
+        load_schematic(board, folder, Path(live_board.name).stem)
     drc = None
     if kw.pop("drc", True) and apps.find_kicad_cli():
         tmp = Path(tempfile.mkdtemp(prefix="cadmate-review-"))

@@ -347,3 +347,28 @@ def test_unrouted_pair_is_not_called_a_mismatch():
 def test_cap_with_its_ground_side_unrouted():
     b = _decap_board(25.2, lambda vdd, gnd, x: [seg((x - 0.8, 18.1), (x - 0.8, 17.4), "+3V3"), seg((x - 0.8, 17.4), vdd, "+3V3")])
     assert any("ground pad" in f["what"] for f in rules(pr.review_board(b, fab=None), "decoupling"))
+
+
+def test_switch_with_back_socket_pads_counts_as_a_back_part():
+    sw = footprint("cadmate:Choc", "SW1", "k00", 20, 20, [pad("1", 3.2, 6, "A", w=2.6, h=2.6, layer="B.Cu"),
+                                                          pad("2", -8.2, 3.8, "B", w=2.6, h=2.6, layer="B.Cu")])
+    r = footprint("R:R", "R1", "1k", 40, 20, [pad("1", -0.5, 0, "A", layer="B.Cu"), pad("2", 0.5, 0, "B", layer="B.Cu")],
+                  layer="B.Cu")
+    res = pr.review_board(board(sw, r))
+    assert not [f for f in res["findings"] if f["what"].startswith("SMD parts on both sides")]
+
+
+def test_only_the_boards_own_schematic_is_read(tmp_path):
+    (tmp_path / "left.kicad_sch").write_text('(kicad_sch (sheet (property "Sheetfile" "sub.kicad_sch")))')
+    (tmp_path / "sub.kicad_sch").write_text("(kicad_sch)")
+    (tmp_path / "left-routed.kicad_sch").write_text("(kicad_sch)")
+    assert {f.name for f in pb.schematic_files(tmp_path, "left")} == {"left.kicad_sch", "sub.kicad_sch"}
+    assert len(pb.schematic_files(tmp_path, "nothing")) == 3
+
+
+def test_schematic_parity_from_drc_is_reported():
+    rep = {"violations": [], "unconnected_items": [],
+           "schematic_parity": [{"type": "net_conflict", "severity": "warning", "description": "Net mismatch",
+                                 "items": [{"description": "Pad 2 of D1", "pos": {"x": 1, "y": 2}}]}] * 3}
+    [f] = pr._drc_findings(rep)
+    assert f["rule"] == "parity" and f["severity"] == "warning" and "3 × net_conflict" in f["what"]

@@ -398,3 +398,65 @@ def test_neck_rules_only_for_necks_into_pads_and_replaced_on_rerun():
     assert once.startswith(mine.rstrip()) and once.count("cadmate neck") == 1
     assert fab.merge_rules(once, block) == once
     assert "cadmate" not in fab.merge_rules(once, "") and '(rule "keep"' in fab.merge_rules(once, "")
+
+
+def hole(ref, x, y, d=2.2):
+    return footprint("MountingHole:M2", ref, "M2", x, y,
+                     [f'(pad "" np_thru_hole circle (at 0 0) (size {d} {d}) (drill {d}) (layers "*.Cu" "*.Mask"))'])
+
+
+def test_dsn_gets_edge_and_hole_clearance_keepouts():
+    b = board(cap("C1", 25.2, 17.0), hole("H1", 40, 20))
+    polys = fr.clearance_keepouts(b, 0.3, 0.25)
+    assert len(polys) == 5  # four sides of the outline and the hole
+    hx = [p for p in polys if len(p) == 8][0]
+    assert all(abs(((x - 40) ** 2 + (y - 20) ** 2) ** 0.5) >= 1.35 - 1e-6 for x, y in hx)
+    out = fr.dsn_keepouts(DSN, b, 0.3, 0.25)
+    assert out.count("(keepout") == 10  # each polygon on both copper layers
+    assert fr.dsn_keepouts(DSN, b) == DSN  # nothing asked, nothing added
+
+
+def test_clearance_check_flags_copper_at_the_edge_and_holes():
+    from cadmate import fab
+
+    b = board(hole("H1", 40, 20))
+    b.rules = {"min_copper_edge_clearance": 0.25, "min_hole_clearance": 0.25}
+    lim = fab.limits("jlcpcb")
+    at_edge = pb.Track((5, 0.15), (15, 0.15), 0.2, "F.Cu", "A")      # 0.05 mm from the edge
+    near_edge = pb.Track((5, 0.42), (15, 0.42), 0.2, "F.Cu", "A")    # 0.32 mm: clear of both
+    by_hole = pb.Track((30, 21.3), (50, 21.3), 0.2, "F.Cu", "B")     # 1.3 - 0.1 - 1.1 = 0.1 mm from the hole
+    via = pb.Via(59.8, 20, 0.6, 0.3, ["F.Cu", "B.Cu"], "C")         # past the edge
+    out = fr.clearance_check(b, [at_edge, near_edge, by_hole], [via], lim)
+    nets = sorted(e["net"] for e in out["errors"])
+    assert nets == ["A", "B", "C"] and not out["warnings"]
+    assert out["errors"][0]["gap_mm"] < 0
+
+
+def test_clearance_check_measures_a_slot_from_its_axis():
+    b = board(footprint("LED:LED", "LED1", "LED", 40, 20,
+                        ['(pad "" np_thru_hole oval (at 0 0) (size 1.8 2.4) (drill oval 1.8 2.4) (layers "*.Cu" "*.Mask"))']))
+    b.rules = {"min_hole_clearance": 0.25}
+    beside = pb.Track((41.4, 15), (41.4, 25), 0.2, "F.Cu", "A")   # along the long side: 1.4 - 0.1 - 0.9 = 0.4 mm
+    past_end = pb.Track((35, 21.6), (45, 21.6), 0.2, "F.Cu", "B")  # past the end: 1.6 - 0.1 - 1.2 = 0.3 mm
+    into_end = pb.Track((35, 21.4), (45, 21.4), 0.2, "F.Cu", "C")  # 1.4 - 0.1 - 1.2 = 0.1 mm
+    out = fr.clearance_check(b, [beside, past_end, into_end], [], None)
+    assert [e["net"] for e in out["errors"]] == ["C"] and abs(out["errors"][0]["gap_mm"] - 0.1) < 1e-3
+
+
+def test_stub_vias_and_their_dead_end_tracks_are_pruned():
+    b = board(footprint("R:R", "R1", "1k", 10, 10, [pad("1", 0, 0, "A"), pad("2", 1, 0, "B")]),
+              footprint("R:R", "R2", "1k", 30, 10, [pad("1", 0, 0, "A", layer="B.Cu"), pad("2", 1, 0, "C", layer="B.Cu")],
+                        layer="B.Cu"))
+    a = pb.Track((10, 10), (20, 10), 0.2, "F.Cu", "A")
+    b2 = pb.Track((20, 10), (30, 10), 0.2, "B.Cu", "A")
+    keep = pb.Via(20, 10, 0.6, 0.3, ["F.Cu", "B.Cu"], "A")
+    stub = pb.Track((10, 10), (10, 20), 0.2, "F.Cu", "A")            # goes to a via with nothing on B.Cu
+    lone = pb.Via(10, 20, 0.6, 0.3, ["F.Cu", "B.Cu"], "A")
+    assert fr.dangling_vias(b, [a, b2, stub], [keep, lone]) == [lone]
+    tracks, vias, removed = fr.prune_stubs(b, [a, b2, stub], [keep, lone])
+    assert vias == [keep] and tracks == [a, b2] and removed == {"vias": 1, "tracks": 1}
+
+
+def test_no_ground_net_means_no_pour_item():
+    b = board(footprint("R:R", "R1", "1k", 20, 20, [pad("1", -0.5, 0, "A"), pad("2", 0.5, 0, "B")]))
+    assert "return_path" not in pc.classify(b)["counts"]

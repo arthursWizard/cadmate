@@ -6,7 +6,7 @@ cadmate is an [MCP](https://modelcontextprotocol.io) server. You talk to Claude 
 
 ## Status
 
-Early. Eight workflows work end to end:
+Early. Nine workflows work end to end:
 
 - **Make the missing 3D model**: point Claude at a footprint and the part's datasheet, and get a checked STEP model linked into that footprint.
 - **Make a footprint from a datasheet**: Claude reads the package drawing, cadmate computes IPC-7351B pads (or places the datasheet's recommended land pattern) and writes a checked `.kicad_mod`. For JEDEC packages the pads and courtyard match KiCad's own library footprints exactly.
@@ -15,6 +15,7 @@ Early. Eight workflows work end to end:
 - **Work on a footprint or symbol together in KiCad**: you keep it open in KiCad's footprint or symbol editor, save and comment or edit by hand, and Claude edits on top of what you saved. The symbol editor reloads Claude's change by itself; the footprint editor needs a refresh. See "Live editing in KiCad" below.
 - **Work on a board together in KiCad's PCB editor**: Claude reads the board straight from your open window, saved or not, sees what you moved since its last look, and edits on top; each edit is one undo step in KiCad. See "Live editing in the PCB editor" below.
 - **Route a board, critical connections first**: cadmate finds the connections that need care before anything is routed: decap to pin, crystals, USB and other differential pairs, switching regulator hot loops, ESD protection, feedback and ADC nets, reset and strap nets, RF feeds, high-current paths and ground returns. Each comes with its rule and the source the rule comes from, and you confirm or change the list. cadmate routes those, locks only what it routed, lets Freerouting do the rest, then the review checks the result. See "Routing a board" below.
+- **Review a schematic for readability**: text running over text or symbols, symbols on top of each other, items off the sheet or under the title block, four-way junctions, ground symbols pointing up, and a sheet that joins its resistors and caps by net labels instead of wires. The `kicad-schematics` skill carries the drawing rules (wires inside a functional block, labels where a net leaves it, signals left to right, power up and ground down). KiCad's ERC runs alongside when kicad-cli is found.
 - **Review a routed board**: after routing by hand or with Freerouting, cadmate points out what a reviewer would. A decap whose track wanders to its pin or loops back through a distant ground. A crystal trace that is long, uses vias or has another signal alongside. Fast signals crossing gaps in the ground pour. Tracks narrower than their net class or than IPC-2221 asks for the current. JLCPCB's spacing and via limits. Each finding comes with its location, the reasoning and a source. See "Reviewing a layout" below.
 - **Make a symbol from a datasheet**: Claude reads the pin table, cadmate lays out the symbol per KiCad's library conventions (grid, sides by pin type, stacked power pins, hidden NC pins, fields) and writes it into a `.kicad_sym` library, checked against the pin table and the footprint's pads.
 
@@ -55,6 +56,7 @@ Early. Eight workflows work end to end:
 | `classify_critical_nets` | The connections on a board that need care, by class, each with its rule, source, connections and what to do with it, as a table to confirm or override | nothing |
 | `route_critical_nets` | Routes and locks the confirmed critical connections on the open board (one undo step) or into a copy of a `.kicad_pcb`; lists what it couldn't route and why | nothing |
 | `autoroute_rest` | Freerouting on the rest, around the locked tracks, with IPC-2221 widths for nets with a current; brings the result back, widens tracks below the net class, refills zones | Freerouting's jar, java, KiCad's bundled Python |
+| `review_schematic` | Readability review of a `.kicad_sch`: overlapping text and symbols, off-sheet items, four-way junctions, power symbol direction, label vs wire use; plus KiCad's ERC | nothing; kicad-cli for the ERC part |
 | `review_pcb_layout` | Layout review of the open board or a `.kicad_pcb`: decoupling, crystal, switching nodes, return paths, width and current, vias, JLCPCB rules, and KiCad's DRC | nothing; kicad-cli for the DRC part |
 | `kicad_pcb_snapshot` | A picture of the open board, unsaved edits included | KiCad API on, and an SVG converter |
 

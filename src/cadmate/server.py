@@ -14,7 +14,7 @@ from pathlib import Path
 from mcp.server.mcpserver import Image, MCPServer
 
 from . import (apps, check, footprint, freerouting, generate, ipc, kicad_live, kicad_pcb_live, live, model, packages, part, pcb_flow, pcb_review,
-               pcb_route, review, symbol, symbol_check, symbol_generate)
+               pcb_route, review, schematic_review, symbol, symbol_check, symbol_generate)
 from .footprint import read as _read_footprint  # generate_symbol's footprint argument shadows the module
 
 server = MCPServer("cadmate")
@@ -47,6 +47,8 @@ def environment() -> dict:
             "kicad_live": True,
             "kicad_live_snapshot": kicad.available,
             "kicad_pcb_live": _pcb_running(),
+            "review_schematic": True,
+            "review_schematic_erc": kicad.available,
             "review_pcb_layout": True,
             "review_pcb_layout_drc": kicad.available,
             "classify_critical_nets": True,
@@ -718,6 +720,22 @@ def kicad_pcb_snapshot(layers: str = "F.Cu,B.Cu,F.SilkS,B.SilkS,F.Fab,Edge.Cuts"
         return Image(path=kicad_pcb_live.snapshot(layers, width))
     except (kicad_pcb_live.PcbUnavailable, kicad_live.LiveError, OSError, subprocess.SubprocessError) as e:
         raise RuntimeError(str(e)) from e
+
+
+@server.tool()
+def review_schematic(path: str, limits: dict[str, float] | None = None, erc: bool = True) -> dict:
+    """Review a schematic sheet (.kicad_sch) for readability, plus KiCad's ERC when kicad-cli is found.
+
+    Checks: text colliding with other text or running over symbols; symbols drawn on top of each other; items
+    outside the drawing area or under the title block; four-way junctions; ground symbols pointing up and
+    supplies pointing down; and how many two-terminal parts (R, C, L, D, F, Y) connect only through net labels
+    instead of wires (limits={"passive_label_share": 0.5}). stats gives the label and wire counts. Each finding
+    has where, why and the source of the rule; text widths are estimates, so check flagged spots by eye.
+    """
+    try:
+        return schematic_review.review_file(path, limits=limits, erc=erc)
+    except schematic_review.ReviewError as e:
+        return {"ok": False, "error": str(e)}
 
 
 @server.tool()

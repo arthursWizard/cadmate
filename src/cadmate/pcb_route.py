@@ -913,7 +913,7 @@ def _net_ref(text: str) -> dict[str, str]:
 
 
 def _q(s: str) -> str:
-    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
 
 
 def sexpr_items(text: str, tracks: list[Track], vias: list[Via], locked: bool = True) -> str:

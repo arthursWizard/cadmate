@@ -500,3 +500,17 @@ def test_rules_file_keeps_its_version_line_when_cadmate_has_nothing_to_add():
     from cadmate import fab
 
     assert fab.merge_rules("", "") == "(version 1)\n"
+
+
+def test_router_keeps_out_of_keepout_areas_and_holds_hole_clearance():
+    ko = ('\t(zone (net 0) (net_name "") (layers "F.Cu" "B.Cu") (name "hole") (keepout (tracks not_allowed) (vias not_allowed) '
+          '(pads allowed) (copperpour not_allowed) (footprints allowed)) (polygon (pts (xy 10 10) (xy 12 10) (xy 12 12) (xy 10 12))))\n')
+    npth = footprint("MountingHole:MountingHole_2.2mm", "H1", "", 40, 20, ['(pad "" np_thru_hole circle (at 0 0) (size 2.2 2.2) (drill 2.2) (layers "*.Cu" "*.Mask"))'])
+    b = board(ko, npth)
+    assert b.keepouts and {l for l, _ in b.keepouts} == {"F.Cu", "B.Cu"}
+    obs = rt.Obstacles(b)
+    assert obs.clear("F.Cu", (11, 11), "A", 0.1) == (False, "a keepout area")
+    assert obs.clear("F.Cu", (12.2, 11), "A", 0.1)[0]  # beside it is fine: a keepout has no clearance of its own
+    # 0.25 mm hole clearance (KiCad's default), not the 0.2 mm copper clearance
+    assert not obs.clear("F.Cu", (40 + 1.1 + 0.1 + 0.22, 20), "A", 0.1)[0]
+    assert obs.clear("F.Cu", (40 + 1.1 + 0.1 + 0.27, 20), "A", 0.1)[0]

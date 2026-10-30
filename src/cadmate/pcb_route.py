@@ -41,7 +41,7 @@ class Shape:
 
     def gap(self, p: Point) -> float:
         """Distance from p to this shape's copper edge."""
-        if self.kind == "mask":
+        if self.kind in ("mask", "keepout"):
             if point_in_polygon(p, self.poly):
                 return -1.0
             return min(point_seg(p, a, b)[0] for a, b in zip(self.poly, self.poly[1:] + self.poly[:1]))
@@ -53,7 +53,7 @@ class Shape:
         return d - self.half
 
     def box(self) -> tuple[float, float, float, float]:
-        if self.kind == "mask":
+        if self.kind in ("mask", "keepout"):
             xs, ys = [q[0] for q in self.poly], [q[1] for q in self.poly]
             return min(xs), min(ys), max(xs), max(ys)
         if self.kind == "pad":
@@ -79,16 +79,20 @@ class Obstacles:
         self.min_clearance = rules.get("min_clearance") or 0.2
         self.edge_clearance = max(rules.get("min_copper_edge_clearance") or 0.0, 0.3)
         self.hole_to_hole = rules.get("min_hole_to_hole") or 0.25
+        hole_clr = max(self.min_clearance, rules.get("min_hole_clearance") or 0.25)
         for p in b.pads:
             for l in p.layers:
-                if l in self.buckets:
-                    self.add(l, Shape("pad", p.net, self.clr(p.net), pad=p))
+                if l in self.buckets:  # an unplated hole keeps the hole clearance, not the copper one
+                    self.add(l, Shape("pad", p.net, hole_clr if p.kind == "np_thru_hole" else self.clr(p.net), pad=p))
         for t in b.tracks:
             for s, e in t.pieces():
                 self.add(t.layer, Shape("track", t.net, self.clr(t.net), a=s, b=e, half=t.width / 2))
         for v in b.vias:
             for l in self._via_layers(v.layers):
                 self.add(l, Shape("via", v.net, self.clr(v.net), a=(v.x, v.y), half=v.size / 2))
+        for l, poly in b.keepouts:  # rule areas with tracks or vias not allowed: nothing routed goes in
+            if l in self.buckets:
+                self.add(l, Shape("keepout", None, 0.0, poly=poly))
         for l, poly in b.mask_openings:  # copper there would be bare, and bridge to whatever else the opening bares
             if l in self.buckets:
                 self.add(l, Shape("mask", None, self.min_clearance, poly=poly))
@@ -154,10 +158,10 @@ class Obstacles:
         for s in self.near(layer, p, reach):
             if s.net is not None and s.net in nets:
                 continue
-            need = half + max(own, s.clearance) + margin
+            need = half + (0.0 if s.kind == "keepout" else max(own, s.clearance)) + margin
             if s.gap(p) < need - 1e-6:
                 return False, (s.pad.name if s.kind == "pad" else "a solder mask opening" if s.kind == "mask"
-                               else f"{s.kind} on {s.net or 'no net'}")
+                               else "a keepout area" if s.kind == "keepout" else f"{s.kind} on {s.net or 'no net'}")
         if self.outline:
             x0, y0, x1, y1 = self.outline
             if not (x0 < p[0] < x1 and y0 < p[1] < y1):

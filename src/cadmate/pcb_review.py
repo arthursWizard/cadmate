@@ -699,10 +699,17 @@ class Review:
                              "jlcpcb_smt", (a.x + b.x) / 2, (a.y + b.y) / 2, refs=[a.ref, b.ref], gap_mm=gap, recommended_mm=need)
         if unknown:
             self.skipped.append({"rule": "assembly", "why": f"package type not known for {', '.join(sorted(unknown)[:15])}; no JLCPCB spacing applied"})
-        sides = {p.side for p in self.b.parts if p.smd and not p.dnp}
+        # the side an SMD part is soldered on is where its SMD pads are: a key switch footprint sits on the front but
+        # carries its hotswap socket's pads on the back
+        def smd_side(p):
+            lays = {l for q in p.pads if q.kind == "smd" for l in q.layers if l.endswith(".Cu")}
+            return "back" if lays == {self.b.copper_layers[-1]} else "front" if lays == {self.b.copper_layers[0]} else p.side
+
+        smd = [p for p in self.b.parts if p.smd and not p.dnp]
+        sides = {smd_side(p) for p in smd}
         if len(sides) == 2:
-            back = sorted(p.ref for p in self.b.parts if p.smd and p.side == "back")
-            front = sorted(p.ref for p in self.b.parts if p.smd and p.side == "front")
+            back = sorted(p.ref for p in smd if smd_side(p) == "back")
+            front = sorted(p.ref for p in smd if smd_side(p) == "front")
             self.add("assembly", "note", f"SMD parts on both sides ({len(front)} front, {len(back)} back)",
                      "Assembling both sides costs a second pass. Fine if intended.", "heuristic", refs=(back if len(back) <= len(front) else front)[:20])
         if self.b.edges:
@@ -872,7 +879,9 @@ def _drc_findings(rep: dict) -> list[dict]:
             items.append({"what": "; ".join(i.get("description", "") for i in its)[:200],
                           "at": [its[0].get("pos", {}).get("x"), its[0].get("pos", {}).get("y")] if its else None})
         first = items[0]["at"] if items and items[0]["at"] else [None, None]
-        nets = sorted({m for u in un for i in u.get("items", []) for m in re.findall(r"\[([^\]]+)\]", i.get("description", ""))})
+        # both ends of an unconnected item are on one net; KiCad sometimes labels the second end differently, so the
+        # first end names it
+        nets = sorted({m for u in un for i in u.get("items", [])[:1] for m in re.findall(r"\[([^\]]+)\]", i.get("description", ""))[:1]})
         out.append(_f("unconnected", "problem", f"{len(un)} connection(s) not routed, on {len(nets)} net(s)",
                       "The ratsnest still shows these: the board doesn't work until they are routed. KiCad counts each missing "
                       "link, so one net split in three counts twice; autorouters usually count nets.", "kicad_drc", first[0], first[1],

@@ -193,7 +193,8 @@ def finish_routing(path: str, out_path: str | None = None, outer_only: bool = Tr
     for it in plan["items"]:  # a crystal's drive often goes through a series resistor: the net behind it too
         if it["class"] != "crystal":
             continue
-        own = {p.net for p in b.pads if p.ref == it["id"].split(":")[-1] and p.net in quiet} | set(it["nets"])
+        own = {p.net for p in b.pads if p.ref == it["id"].split(":")[-1]} | set(it["nets"])
+        own &= quiet  # not ground: every pull-down would pull its net in
         skip |= own & quiet
         for part in b.parts:
             pads = [p for p in b.pads if p.ref == part.ref]

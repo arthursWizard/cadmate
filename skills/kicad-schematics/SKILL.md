@@ -19,6 +19,8 @@ Uses the cadmate MCP server (`review_schematic`). A schematic is read far more o
 8. **Say what's not obvious.** A short note for choices a reviewer would question: why a value differs from the reference design, a part that is fitted only in one build, a pin-out that must match a mating board.
 9. **Close every pin.** Unused pins get a no-connect flag; every power net that no part drives gets a PWR_FLAG, so ERC is clean.
 
+When writing a .kicad_sch by script, escape line breaks in strings as `\n`: KiCad won't open a file with a raw line break inside quotes. The review flags it.
+
 Judgement wins over the rules: if a wire makes a block harder to read, use a label and say why in a note.
 
 ## Workflow

@@ -31,6 +31,8 @@ SOURCES = {
     "readability": "Project rule (cadmate schematic style): prefer wires inside a functional block, labels only where a "
                    "net leaves the block; text must not overlap; everything on the sheet.",
     "kicad_erc": "KiCad's own electrical rules check (kicad-cli sch erc), with the project's rules.",
+    "kicad_format": "KiCad's file format writes a line break inside a string as \\n; its reader stops at a raw line "
+                    "break inside quotes with an un-terminated string error, so the file won't open.",
     "heuristic": "cadmate heuristic: no standard sets this number. Debatable; adjust it to the design.",
 }
 
@@ -102,6 +104,7 @@ class Sheet:
     wires: list[tuple[tuple[float, float], tuple[float, float]]]
     labels: list[tuple[str, float, float]]
     junctions: list[tuple[float, float]]
+    raw_breaks: list[int] = field(default_factory=list)  # file lines where a string holds a raw line break
 
 
 def _floats(n, head):
@@ -193,7 +196,8 @@ def read(path: str | Path) -> Sheet:
     f = Path(path).expanduser()
     if not f.exists():
         raise ReviewError(f"no schematic at {f}")
-    root = sexpr.parse(f.read_text(errors="replace"))
+    raw = f.read_text(errors="replace")
+    root = sexpr.parse(raw)
     if root.head != "kicad_sch":
         raise ReviewError(f"{f.name} is not a KiCad schematic")
     pnode = root.child("paper")
@@ -271,7 +275,27 @@ def read(path: str | Path) -> Sheet:
         xy = [tuple(p.floats()[:2]) for p in (pl.children("xy") if pl is not None else [])]
         wires += [(xy[i], xy[i + 1]) for i in range(len(xy) - 1)]
     junctions = [tuple(_floats(j, "at")[:2]) for j in root.children("junction")]
-    return Sheet(f.name, paper, parts, texts, wires, labels, junctions)
+    return Sheet(f.name, paper, parts, texts, wires, labels, junctions, _raw_breaks(raw))
+
+
+def _raw_breaks(text: str) -> list[int]:
+    """Line numbers where a quoted string runs onto the next line."""
+    out, inside, esc, line = [], False, False, 1
+    for c in text:
+        if c == "\n":
+            if inside:
+                out.append(line)
+            line += 1
+        if inside:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                inside = False
+        elif c == '"':
+            inside = True
+    return out
 
 
 # --- checks -------------------------------------------------------------------------------------------
@@ -300,6 +324,15 @@ class Review:
         self.findings: list[dict] = []
         self.checked: list[str] = []
         self.stats: dict = {}
+
+    def file_format(self):
+        self.checked.append("file_format")
+        if self.s.raw_breaks:
+            lines = self.s.raw_breaks
+            self.findings.append(_f("raw_line_break", "problem",
+                                    f"{len(lines)} raw line break(s) inside strings, first at file line {lines[0]}",
+                                    "KiCad won't open the file; write the break as \\n.", "kicad_format",
+                                    lines=lines[:10]))
 
     def text_overlaps(self):
         self.checked.append("text_overlap")
@@ -499,6 +532,7 @@ _ORDER = {"problem": 0, "warning": 1, "note": 2}
 def review_sheet(sheet: Sheet, limits: dict | None = None, erc: dict | None = None) -> dict:
     lim = {**LIMITS, **(limits or {})}
     r = Review(sheet, lim)
+    r.file_format()
     r.text_overlaps()
     r.body_overlaps()
     r.on_sheet()

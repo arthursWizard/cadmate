@@ -103,3 +103,18 @@ def test_label_only_passives_flagged(tmp_path):
     f = [f for f in rep["findings"] if f["rule"] == "label_use"][0]
     assert f["severity"] == "warning"
     assert rep["stats"]["two_terminal_by_label_only"] == 4
+
+
+def test_raw_line_break_in_string(tmp_path):
+    note = '(text "TWO\nLINES" (at 50 50 0) (effects (font (size 1.27 1.27))))'
+    rep = sheet(tmp_path, note)
+    f = [f for f in rep["findings"] if f["rule"] == "raw_line_break"][0]
+    assert f["severity"] == "problem" and len(f["values"]["lines"]) == 1
+    assert "raw_line_break" not in rules(sheet(tmp_path, note.replace("\n", "\\n")))
+
+
+def test_quote_escapes_line_breaks():
+    from cadmate import sexpr
+    q = sexpr.quote('a "b"\nc')
+    assert "\n" not in q
+    assert sexpr.parse(f"(t {q})").atoms()[0] == 'a "b"\nc'

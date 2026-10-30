@@ -612,10 +612,11 @@ def test_finish_keeps_a_neck_its_rules_file_allows():
 def test_finish_routing_flow_leaves_crystal_nets_alone(tmp_path, monkeypatch):
     from cadmate import pcb_flow
     xtal = footprint("Crystal:Crystal_SMD_3215-2Pin_3.2x1.5mm", "Y1", "32.768kHz", 20, 20,
-                     [pad(1, -1.25, 0, "XI", 1, 1.8), pad(2, 1.25, 0, "XO", 1, 1.8)], court=((-2.2, -1.2), (2.2, 1.2)))
+                     [pad(1, -1.25, 0, "XI", 1, 1.8), pad(2, 1.25, 0, "XO2", 1, 1.8)], court=((-2.2, -1.2), (2.2, 1.2)))
+    series = footprint("Resistor_SMD:R_0402", "R5", "1k", 24, 23, [pad(1, -0.5, 0, "XO", 0.5, 0.6), pad(2, 0.5, 0, "XO2", 0.5, 0.6)])
     src = tmp_path / "b.kicad_pcb"
-    src.write_text(HEAD + ic() + xtal + ")\n")
+    src.write_text(HEAD + ic() + xtal + series + ")\n")
     src.with_suffix(".kicad_pro").write_text("{}")
     monkeypatch.setattr(fr, "refill", lambda f: None)
     out = pcb_flow.finish_routing(str(src))
-    assert {"XI", "XO"} <= set(out["left_alone"]) and not any(o["net"] in ("XI", "XO") for o in out["still_open"])
+    assert {"XI", "XO", "XO2"} <= set(out["left_alone"]) and not any(o["net"].startswith("X") for o in out["still_open"])

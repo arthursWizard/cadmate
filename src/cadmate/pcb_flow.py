@@ -188,8 +188,17 @@ def finish_routing(path: str, out_path: str | None = None, outer_only: bool = Tr
     planes = pcb_route.plane_nets(b)
     roles = pcb_review.infer_roles(b)
     plan = pcb_critical.classify(b, only=list(CAREFUL))
-    skip = {n for it in plan["items"] for n in it["nets"]
-            if n not in planes and roles.get(n, {}).get("role") not in ("ground", "power")}
+    quiet = {n for n in b.nets if n not in planes and roles.get(n, {}).get("role") not in ("ground", "power")}
+    skip = {n for it in plan["items"] for n in it["nets"] if n in quiet}
+    for it in plan["items"]:  # a crystal's drive often goes through a series resistor: the net behind it too
+        if it["class"] != "crystal":
+            continue
+        own = {p.net for p in b.pads if p.ref == it["id"].split(":")[-1] and p.net in quiet} | set(it["nets"])
+        skip |= own & quiet
+        for part in b.parts:
+            pads = [p for p in b.pads if p.ref == part.ref]
+            if part.ref[:1] in "RC" and len(pads) == 2 and any(p.net in own for p in pads):
+                skip |= {p.net for p in pads if p.net in quiet}
     res = pcb_finish.finish(b, outer_only, necks=necks, skip=skip)
     src = Path(path).expanduser()
     dst = Path(out_path).expanduser() if out_path else src.with_name(src.stem + "-finished" + src.suffix)

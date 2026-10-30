@@ -9,7 +9,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from . import fab, freerouting, pcb_critical, pcb_route
+from . import fab, freerouting, pcb_critical, pcb_finish, pcb_route
 from .pcb_board import Board, load_project, load_schematic, parse
 
 
@@ -168,4 +168,32 @@ def autoroute(path: str | None = None, out_path: str | None = None, currents: di
     if capped:
         out["widths_capped"] = capped
     out["next"] = "review_pcb_layout on the result; fix what it finds (by hand, or route_critical_nets for an item), then review again"
+    return out
+
+
+def finish_routing(path: str, out_path: str | None = None, outer_only: bool = True) -> dict:
+    """After the autorouter: take out the tracks that break clearance or the minimum width, route what is still open, and
+    refill the zones. Saved boards only, written to out_path (default <name>-finished.kicad_pcb)."""
+    if not path:
+        raise FlowError("finish_routing works on a saved .kicad_pcb: save the board and pass its path")
+    b, _ = load(path)
+    before = freerouting.unrouted(b)
+    res = pcb_finish.finish(b, outer_only)
+    src = Path(path).expanduser()
+    dst = Path(out_path).expanduser() if out_path else src.with_name(src.stem + "-finished" + src.suffix)
+    if dst.resolve() == src.resolve():
+        raise FlowError("out_path is the input board; give a new file so the original is kept")
+    cut = pcb_finish.write(src, dst, res)
+    for ext in (".kicad_pro", ".kicad_dru"):  # the rules (and any neck rules) go with it
+        if src.with_suffix(ext).exists():
+            dst.with_suffix(ext).write_bytes(src.with_suffix(ext).read_bytes())
+    out = {"ok": True, "written": str(dst), "ripped": res["ripped"], "segments_removed": cut,
+           "added": {"tracks": len(res["tracks"]), "vias": len(res["vias"])},
+           "open_before": len(before), "still_open": res["open"]}
+    try:
+        freerouting.refill(dst)
+        out["zones"] = "refilled"
+    except Exception as e:  # noqa: BLE001 - the routing is written either way
+        out["zones"] = f"not refilled ({e.__class__.__name__}: {e}); refill in KiCad (B) before DRC"
+    out["next"] = "run KiCad's DRC on the result; route still_open by hand, then review_pcb_layout"
     return out

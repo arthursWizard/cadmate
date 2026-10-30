@@ -334,6 +334,8 @@ class Router:
         if max_vias == 0 and not common:
             max_vias = 1  # the pads are on different sides: one via is the minimum
         layers = (common if max_vias == 0 else self.obs.layers) or self.obs.layers
+        if conn.get("layers"):  # e.g. outer layers only, to keep tracks out of the planes
+            layers = [l for l in layers if l in conn["layers"]] or layers
         size, drill = self.via_size(net)
         g = self.g
         ox, oy = a.x, a.y  # grid origin on the start pad's centre

@@ -836,6 +836,18 @@ def autoroute_rest(path: str | None = None, out_path: str | None = None, current
                       fab_name=fab, margin=margin, neck_rules=neck_rules)
 
 
+@server.tool()
+def finish_routing(path: str, out_path: str | None = None, outer_only: bool = True) -> dict:
+    """Clean up after autoroute_rest, the way you would by hand: tracks that break clearance or are under the board's
+    minimum width (Freerouting squeezes some past fine-pitch pins) are taken out with the stubs they leave, then every net
+    still in pieces is joined with cadmate's grid router, nearest pads first, and the zones are refilled. Locked tracks
+    are never touched. With outer_only (default) new tracks stay on the outer layers so inner planes stay whole.
+    path is a saved .kicad_pcb; the result goes to out_path (default <name>-finished.kicad_pcb). still_open lists what it
+    couldn't join, with the reason, to route by hand. Run KiCad's DRC on the result.
+    """
+    return _flow_call(pcb_flow.finish_routing, path=path, out_path=out_path, outer_only=outer_only)
+
+
 def main() -> None:
     server.run()
 

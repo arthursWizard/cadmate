@@ -537,3 +537,32 @@ def test_net_on_two_connector_pins_leaves_from_the_pin_nearest_the_rest():
     ctx = pc.Ctx(b, {}, {}, {})
     chain = pc._chain(ctx, "DM")
     assert [f"{p.ref}.{p.number}" for p in chain] == ["J1.B7", "J1.A7", "U3.3"]
+
+
+def test_finish_rips_a_track_too_close_and_routes_around(tmp_path):
+    from cadmate import pcb_finish
+    from test_pcb_review import seg
+
+    other = footprint("Resistor_SMD:R_0603", "R9", "0", 34.6, 22.6, [pad(1, 0, 0, "OTHER", 0.8, 0.8), pad(2, 0, 2.0, "OTHER", 0.8, 0.8)])
+    clk = footprint("Resistor_SMD:R_0603", "R8", "0", 37.5, 21.9, [pad(1, 0, 0, "CLK", 0.8, 0.8), pad(2, 1.6, 0, "OTHER2", 0.8, 0.8)])
+    src = tmp_path / "b.kicad_pcb"
+    src.write_text(HEAD + ic() + other + clk + seg((32.7, 21.9), (37.5, 21.9), "CLK") + ")\n")
+    b = pb.parse(src.read_text(), src.name)
+    res = pcb_finish.finish(b)
+    assert [r["net"] for r in res["ripped"]] == ["CLK"] and not res["open"], res
+    _clear(b, res["tracks"], res["vias"])
+    dst = tmp_path / "b-finished.kicad_pcb"
+    assert pcb_finish.write(src, dst, res) == 1
+    again = pb.parse(dst.read_text(), dst.name)
+    assert len(pb.NetGraph(again, "CLK").islands()) == 1
+    assert not pcb_finish.faulty(again)
+
+
+def test_finish_keeps_locked_tracks_and_good_ones():
+    from cadmate import pcb_finish
+    from test_pcb_review import seg
+
+    clk = footprint("Resistor_SMD:R_0603", "R8", "0", 37.5, 21.9, [pad(1, 0, 0, "CLK", 0.8, 0.8)])
+    b = board(ic(), clk, seg((32.7, 21.9), (37.5, 21.9), "CLK"))
+    res = pcb_finish.finish(b)
+    assert not res["ripped"] and not res["removed"] and not res["tracks"]

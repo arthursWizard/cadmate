@@ -9,6 +9,7 @@ pages (October 2026).
 from __future__ import annotations
 
 import math
+import re
 
 MARGIN = 0.25  # the buffer over a fab's minimum: 25 %, so 0.10 mm becomes 0.125 mm
 
@@ -72,6 +73,15 @@ def neck_rules(warnings: list[dict], hard: float) -> str:
                 f"  (constraint track_width (min {hard:g}mm)))"]
     out.append(END)
     return "\n".join(out) + "\n"
+
+
+def read_neck_rules(text: str) -> dict[str, list[tuple[str, float]]]:
+    """The neck rules in a .kicad_dru (cadmate's, or written the same way): {net: [(part ref, min width mm)]}."""
+    out: dict[str, list[tuple[str, float]]] = {}
+    for m in re.finditer(r"A\.NetName == '((?:[^'\\]|\\.)*)' && A\.intersectsCourtyard\('([^']+)'\)\"\)\s*"
+                         r"\(constraint track_width \(min ([\d.]+)mm\)", text):
+        out.setdefault(m[1].replace("\\'", "'"), []).append((m[2], float(m[3])))
+    return out
 
 
 def merge_rules(existing: str, block: str) -> str:

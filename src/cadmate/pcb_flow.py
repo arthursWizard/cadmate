@@ -9,8 +9,11 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from . import fab, freerouting, pcb_critical, pcb_finish, pcb_route
+from . import fab, freerouting, pcb_critical, pcb_finish, pcb_review, pcb_route
 from .pcb_board import Board, load_project, load_schematic, parse
+
+
+CAREFUL = ("crystal", "diff_pair", "rf")  # nets finish_routing leaves to route_critical_nets or the user
 
 
 class FlowError(RuntimeError):
@@ -180,7 +183,14 @@ def finish_routing(path: str, out_path: str | None = None, outer_only: bool = Tr
         raise FlowError("no .kicad_pro next to the board, so no design rules: copy the project's .kicad_pro (and .kicad_dru) "
                         "beside it under the board's name, or the new tracks would follow KiCad's defaults, not the board's")
     b, _ = load(path)
-    res = pcb_finish.finish(b, outer_only)
+    dru = Path(path).expanduser().with_suffix(".kicad_dru")
+    necks = fab.read_neck_rules(dru.read_text()) if dru.exists() else {}
+    planes = pcb_route.plane_nets(b)
+    roles = pcb_review.infer_roles(b)
+    plan = pcb_critical.classify(b, only=list(CAREFUL))
+    skip = {n for it in plan["items"] for n in it["nets"]
+            if n not in planes and roles.get(n, {}).get("role") not in ("ground", "power")}
+    res = pcb_finish.finish(b, outer_only, necks=necks, skip=skip)
     src = Path(path).expanduser()
     dst = Path(out_path).expanduser() if out_path else src.with_name(src.stem + "-finished" + src.suffix)
     if dst.resolve() == src.resolve():
@@ -191,7 +201,8 @@ def finish_routing(path: str, out_path: str | None = None, outer_only: bool = Tr
             dst.with_suffix(ext).write_bytes(src.with_suffix(ext).read_bytes())
     out = {"ok": True, "written": str(dst), "ripped": res["ripped"], "segments_removed": cut,
            "added": {"tracks": len(res["tracks"]), "vias": len(res["vias"])},
-           "open_before": res["open_before"], "open_after": res["open_after"], "still_open": res["open"]}
+           "open_before": res["open_before"], "open_after": res["open_after"], "still_open": res["open"],
+           "left_alone": sorted(skip), "by_hand": res["by_hand"]}
     if res["open_after"] > res["open_before"]:
         out["worse"] = ("more connections open than before: the bad tracks it took out couldn't all be replaced. Keep the "
                         "input board and fix the ripped list by hand")

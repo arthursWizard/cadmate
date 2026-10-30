@@ -594,3 +594,28 @@ def test_finish_routing_needs_the_project_rules(tmp_path):
     src.write_text(HEAD + ic() + ")\n")
     with pytest.raises(pcb_flow.FlowError, match="kicad_pro"):
         pcb_flow.finish_routing(str(src))
+
+
+def test_finish_keeps_a_neck_its_rules_file_allows():
+    from cadmate import fab, pcb_finish
+    from test_pcb_review import seg
+
+    clk = footprint("Resistor_SMD:R_0603", "R8", "0", 37.5, 21.9, [pad(1, 0, 0, "CLK", 0.8, 0.8)])
+    b = board(ic(), clk, seg((32.7, 21.9), (33.5, 21.9), "CLK", w=0.1), seg((33.5, 21.9), (37.5, 21.9), "CLK"))
+    b.rules = {**(b.rules or {}), "min_track_width": 0.125}
+    assert [t.width for t, _ in pcb_finish.faulty(b)] == [0.1]
+    necks = fab.read_neck_rules(fab.neck_rules([{"net": "CLK", "ref": "U1"}], 0.09))
+    assert not pcb_finish.faulty(b, necks)
+    assert not pcb_finish.faulty(b, skip={"CLK"})
+
+
+def test_finish_routing_flow_leaves_crystal_nets_alone(tmp_path, monkeypatch):
+    from cadmate import pcb_flow
+    xtal = footprint("Crystal:Crystal_SMD_3215-2Pin_3.2x1.5mm", "Y1", "32.768kHz", 20, 20,
+                     [pad(1, -1.25, 0, "XI", 1, 1.8), pad(2, 1.25, 0, "XO", 1, 1.8)], court=((-2.2, -1.2), (2.2, 1.2)))
+    src = tmp_path / "b.kicad_pcb"
+    src.write_text(HEAD + ic() + xtal + ")\n")
+    src.with_suffix(".kicad_pro").write_text("{}")
+    monkeypatch.setattr(fr, "refill", lambda f: None)
+    out = pcb_flow.finish_routing(str(src))
+    assert {"XI", "XO"} <= set(out["left_alone"]) and not any(o["net"] in ("XI", "XO") for o in out["still_open"])

@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .pcb_board import Board, NetGraph, Pad, Track, Via, dist
+from .pcb_board import Board, NetGraph, Pad, Track, Via, dist, point_in_polygon
 from .pcb_route import GRID, Point, Router, sexpr_items
 
 TRIES = 6  # end pairs tried per piece before it's reported
@@ -36,15 +36,24 @@ def _clash(r: Router, t: Track) -> str | None:
     return None
 
 
-def faulty(b: Board) -> list[tuple[Track, str]]:
-    """Unlocked tracks narrower than the board minimum or closer to other-net copper than the clearance allows."""
+def _in_courtyard(b: Board, t: Track, ref: str) -> bool:
+    part = b.part(ref)
+    poly = part.courtyard if part else []
+    if len(poly) < 3:
+        return False
+    return any(point_in_polygon(p, poly) for a, c in t.pieces() for p in (a, c, ((a[0] + c[0]) / 2, (a[1] + c[1]) / 2)))
+
+
+def faulty(b: Board, necks: dict[str, list[tuple[str, float]]] | None = None, skip: set[str] = frozenset()) -> list[tuple[Track, str]]:
+    """Unlocked tracks narrower than the board minimum or closer to other-net copper than the clearance allows. necks are
+    the .kicad_dru's neck rules ({net: [(ref, min width)]}): a track that narrow inside that part's courtyard is allowed."""
     r = Router(b)
     floor = (b.rules or {}).get("min_track_width") or 0.0
     out = []
     for t in b.tracks:
-        if t.locked:
+        if t.locked or t.net in skip:
             continue
-        if t.width < floor - 1e-4:
+        if t.width < floor - 1e-4 and not any(t.width >= w - 1e-4 and _in_courtyard(b, t, ref) for ref, w in (necks or {}).get(t.net, [])):
             out.append((t, f"{t.width:g} mm wide, under the {floor:g} mm minimum"))
             continue
         what = _clash(r, t)
@@ -92,16 +101,18 @@ def _end(r: Router, net: str, item, k: int) -> dict:
     return {"pad": name, "x": x, "y": y}
 
 
-def finish(b: Board, outer_only: bool = True, grid: float = GRID) -> dict:
+def finish(b: Board, outer_only: bool = True, grid: float = GRID, necks: dict[str, list[tuple[str, float]]] | None = None,
+           skip: set[str] = frozenset()) -> dict:
     """Rip up the faulty tracks and join every net still in pieces, on the board in place. A piece is joined to the
     nearest copper of the rest of its net, pad or track end, so a ripped neck is replaced by a short hop rather than a
     whole new route. A route is kept only if it clears all other-net copper exactly. Dead-end stubs left over are removed.
     Returns the tracks taken out, the tracks and vias added, and what is still open with the reason. With outer_only
-    the new tracks keep to the outer layers, so the inner planes stay whole."""
+    the new tracks keep to the outer layers, so the inner planes stay whole. Nets in skip (crystal, pairs, RF: routed
+    with care, not by a grid router) are left as they are, and listed under by_hand if still open."""
     from .freerouting import prune_stubs
 
     open_before = sum(len(_parts(b, n)) - 1 for n in b.nets if n)
-    bad = faulty(b)
+    bad = faulty(b, necks, skip)
     gone = {id(t) for t, _ in bad}
     b.tracks = [t for t in b.tracks if id(t) not in gone]
     outer = [l for l in b.copper_layers if l in ("F.Cu", "B.Cu")]
@@ -111,8 +122,13 @@ def finish(b: Board, outer_only: bool = True, grid: float = GRID) -> dict:
     vias: list[Via] = []
     still = []
     k = 0
+    by_hand = []
     for net in sorted(n for n in b.nets if n):
         if sum(1 for p in b.pads if p.net == net) < 2:
+            continue
+        if net in skip:
+            if len(_parts(b, net)) > 1:
+                by_hand.append(net)
             continue
         while True:
             parts = _parts(b, net)
@@ -167,7 +183,7 @@ def finish(b: Board, outer_only: bool = True, grid: float = GRID) -> dict:
     open_after = sum(len(_parts(b, n)) - 1 for n in b.nets if n)
     return {"ripped": [{"net": t.net, "layer": t.layer, "at": [round(t.start[0], 2), round(t.start[1], 2)], "why": w} for t, w in bad],
             "removed": [t for t, _ in bad] + [t for t in stubs if not any(t is x for x in tracks)],
-            "tracks": tracks, "vias": vias, "open": still, "open_before": open_before, "open_after": open_after}
+            "tracks": tracks, "vias": vias, "open": still, "by_hand": by_hand, "open_before": open_before, "open_after": open_after}
 
 
 def _key(layer: str, s: tuple, e: tuple) -> tuple:

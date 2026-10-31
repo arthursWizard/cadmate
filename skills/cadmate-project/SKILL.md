@@ -75,8 +75,8 @@ after the user sent its drawings. Both were in the conversation, neither was whe
 Before showing the user a case, run `check_enclosure` on the project. It needs case/assembly.step with every part
 placed and named (case parts, boards with their components, cables) and case/<part>.step for each printed part. It
 reports parts that collide, openings in each shell, joints between case parts with a gap or a step, and part heights.
-In the keyboard run the user found by eye the halves standing above the centre top, a gap at the thumb diagonal and an
-open slot in the back wall; each of those is now an error from this check.
+These are the defects a user otherwise finds by eye or after printing: one part standing above the one beside it, a
+gap along a seam, a slot left open in a wall, a board pressed into a wall.
 
 - The first run lists every opening. Put the ones that are meant to be there in case/enclosure.json (name, and a box,
   the part beside it, or the face), with the heights from the brief. Anything left is a hole to close.

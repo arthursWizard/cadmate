@@ -967,7 +967,7 @@ def check_enclosure(path: str, spec: dict | str | None = None) -> dict:
     meant to be there, joint limits, heights and allowed overlaps: see enclosure.py for the format. Without a spec every
     opening is reported, so the first run is how you list them: write the intended ones into case/enclosure.json, keep
     the rest as errors to fix. The report is saved as case/enclosure-check.json; project_check flags it when it's missing,
-    stale or failing. Takes a few minutes on a full keyboard case."""
+    stale or failing. Takes a minute or two on a case with a few boards; longer with min_clearance."""
     try:
         return enclosure.check(path, spec)
     except (enclosure.EnclosureError, RuntimeError, OSError, ValueError) as e:

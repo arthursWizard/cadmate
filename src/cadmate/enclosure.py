@@ -8,17 +8,22 @@ Inputs, in a cadmate project: case/assembly.step (every part placed, each a name
 printed part (their names say which assembly children are the case), and optionally case/enclosure.json:
 
     {
-      "enclosures": {"centre": ["centre-lid", "centre-bottom"]},        # default: grouped by name, "<x>-lid" + "<x>-bottom"
+      "enclosures": {"main": ["main-top", "main-base"], "sensor": ["sensor-cap"]},  # the closed shells; default below
       "openings": [                                                      # the openings meant to be there
-        {"name": "key cutouts", "enclosure": "half-left", "face": "top", "count": 21},
-        {"name": "USB-C", "enclosure": "centre", "near": "board-core", "face": "side"},
-        {"name": "touchpad", "box": [-25, -40, 10, 25, 30, 13]}
+        {"name": "buttons", "enclosure": "main", "face": "top", "near": "buttons", "count": 4},
+        {"name": "USB-C", "enclosure": "main", "near": "board", "face": "side"},
+        {"name": "display window", "box": [-25, -40, 10, 25, 30, 13]}
       ],
-      "joints": {"half-left-lid/centre-lid": {"max_step": 0.2}, "centre-lid/centre-bottom": {"skip": true}},
-      "heights": {"centre-lid": 12.2, "half-left-lid": 11.1},           # top of the part above z = 0
-      "allow_overlap": [["switches-left", "half-left-lid"]],
+      "joints": {"main-top/sensor-cap": {"max_step": 1.0}, "main-top/main-base": {"skip": true}},
+      "heights": {"main-top": 24.0},                                     # top of the part above z = 0
+      "allow_overlap": [["light-pipe", "main-top"]],
       "max_gap": 0.3, "max_step": 0.2, "min_clearance": 0.3, "resolution": 0.5, "max_opening": 20
     }
+
+Shells, by default: parts whose names agree up to the last dash form one (main-top + main-base). If no two names
+agree that way, all the case parts form one shell. Say "enclosures" whenever that guess is wrong. Faces are classed
+with +z up (top, bottom, side), as the assembly sits on the desk. A designed step or gap at a joint (a rim, a shadow
+line) is a per-project limit under "joints", never a change to the defaults.
 
 An opening matches a declared one when everything the declaration gives holds: its centre inside "box" (1 mm margin),
 "near" among the parts beside it, the same "face" (top, bottom, side), the same "enclosure".
@@ -63,12 +68,14 @@ def case_part_names(case_dir: Path) -> list[str]:
 
 
 def group_enclosures(case_parts: list[str]) -> dict[str, list[str]]:
-    """Parts that share a name up to the last dash (half-left-lid, half-left-bottom) make one shell; a part alone is
-    its own."""
+    """Parts whose names agree up to the last dash (main-top, main-base) make one shell, and a part alone is its own;
+    when no two names agree that way (top, base), all the parts make one shell."""
     groups: dict[str, list[str]] = {}
     for n in case_parts:
         groups.setdefault(n.rsplit("-", 1)[0] if "-" in n else n, []).append(n)
-    return {k: v for k, v in groups.items()}
+    if all(len(v) == 1 for v in groups.values()):
+        return {"case": list(case_parts)}
+    return groups
 
 
 def load_spec(case_dir: Path, spec: dict | str | None) -> tuple[dict, str | None]:

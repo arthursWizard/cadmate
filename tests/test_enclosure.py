@@ -34,8 +34,9 @@ def run(r, spec=None):
 
 
 def test_parts_group_into_shells_by_name():
-    assert enclosure.group_enclosures(["half-left-lid", "half-left-bottom", "centre-lid", "centre-bottom", "foot"]) == {
-        "half-left": ["half-left-lid", "half-left-bottom"], "centre": ["centre-lid", "centre-bottom"], "foot": ["foot"]}
+    assert enclosure.group_enclosures(["main-top", "main-base", "probe-top", "probe-base", "knob"]) == {
+        "main": ["main-top", "main-base"], "probe": ["probe-top", "probe-base"], "knob": ["knob"]}
+    assert enclosure.group_enclosures(["top", "base", "front-panel"]) == {"case": ["top", "base", "front-panel"]}
 
 
 def test_undeclared_opening_is_an_error_and_a_declared_one_is_not():

@@ -649,7 +649,7 @@ class Review:
         if slow:
             nets = [n for n in by_net if self.role(n) not in ("fast", "crystal")]
             self.add("return_path", "note", f"{len(nets)} other net(s) cross {slow} gap(s) in {plane}",
-                     "Only fast edges care (clocks, USB, SPI, PWM). Slow nets such as key matrix rows or LED enables don't. "
+                     "Only fast edges care (clocks, USB, SPI, PWM). Slow nets such as button inputs or LED enables don't. "
                      "cadmate can't tell a net's speed from its name here, so check these: " + ", ".join(nets[:12]) + ("…" if len(nets) > 12 else ""),
                      "return_path", nets=nets[:30])
 
@@ -699,8 +699,8 @@ class Review:
                              "jlcpcb_smt", (a.x + b.x) / 2, (a.y + b.y) / 2, refs=[a.ref, b.ref], gap_mm=gap, recommended_mm=need)
         if unknown:
             self.skipped.append({"rule": "assembly", "why": f"package type not known for {', '.join(sorted(unknown)[:15])}; no JLCPCB spacing applied"})
-        # the side an SMD part is soldered on is where its SMD pads are: a key switch footprint sits on the front but
-        # carries its hotswap socket's pads on the back
+        # the side an SMD part is soldered on is where its SMD pads are: a footprint placed on the front can carry its
+        # SMD pads on the back (a socket or contact soldered under the board)
         def smd_side(p):
             lays = {l for q in p.pads if q.kind == "smd" for l in q.layers if l.endswith(".Cu")}
             return "back" if lays == {self.b.copper_layers[-1]} else "front" if lays == {self.b.copper_layers[0]} else p.side

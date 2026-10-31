@@ -13,6 +13,7 @@ import io
 import re
 import shutil
 import subprocess
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -122,7 +123,7 @@ def export(board: Path, out_dir: Path | None = None, refill: bool = True) -> dic
     if refill:
         from .freerouting import refill as _refill
 
-        copy = out / board.name
+        copy = Path(tempfile.mkdtemp(prefix="cadmate-fab-")) / board.name  # not in the fab folder: it isn't for the fab
         shutil.copyfile(board, copy)
         for ext in (".kicad_pro", ".kicad_dru"):
             if board.with_suffix(ext).exists():

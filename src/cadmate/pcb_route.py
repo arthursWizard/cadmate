@@ -836,7 +836,7 @@ def _escapes(obs: Obstacles, p: Pad, half: float, grid: float = 0.1) -> bool:
 
 def boxed_in(b: Board, tracks: list[Track], vias: list[Via]) -> list[dict]:
     """Pads with nothing on them yet that the new copper has walled in: they could get a track out before, and can't now.
-    The USB-C CC1 pin in the keyboard run was one, found only when it was the last connection open."""
+    Without this, such a pad is found only at the end, as a connection nothing can route."""
     if not tracks and not vias:
         return []
     before = Obstacles(b)

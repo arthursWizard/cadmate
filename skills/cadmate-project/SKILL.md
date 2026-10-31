@@ -6,9 +6,9 @@ description: Where design files go and how history is kept in a KiCad/FreeCAD pr
 # One active project, a fixed layout, one history folder
 
 The user collaborates on a design by looking at it, in KiCad, FreeCAD and Finder, between your steps. That only works if
-there is one current version to look at. Side-by-side versions (`left-v2/`, `core-routed.kicad_pcb`,
-`core-hand3.kicad_pcb`, `case/variant-flat/`) make the user work out what's new, and every later step has to pick the right
-copy. In the keyboard test run this produced about 280 superseded files and two clean-ups, and the user still had to ask.
+there is one current version to look at. Side-by-side versions (`main-v2/`, `main-routed.kicad_pcb`,
+`main-hand3.kicad_pcb`, `case/variant-b/`) make the user work out what's new, and every later step has to pick the right
+copy. Over a long design this piles up hundreds of superseded files, and the user can no longer tell what's current.
 
 So:
 
@@ -43,7 +43,7 @@ sprawl. Apply them to everything you write and everything you ask another sessio
     brief.md               every requirement the user stated, as a checklist
   history/
     HISTORY.md             index: one row per snapshot, oldest first
-    20261031-1213_before-mid-joint/   same relative paths as the project
+    20261031-1213_before-rework/   same relative paths as the project
   .cadmate/work/           scratch: comparisons, temp outputs. Delete when the step is done
 ```
 
@@ -51,14 +51,14 @@ sprawl. Apply them to everything you write and everything you ask another sessio
 each with a fix. Run it before you tell the user a step is done.
 
 Names: lowercase, dashes, no version or state words (`v2`, `final`, `new`, `routed`, `fixed`). A board's name is what
-it is (`core`, `left`, `port-centre`), not when it was made.
+it is (`main`, `sensor`, `power`), not when it was made.
 
 ## The brief
 
 `docs/brief.md` holds every requirement the user has stated, in their words, with who said it and when: shapes,
-sizes, parts already chosen, angles, looks, things they don't want. In the keyboard run the centre was asked for as an
-upside-down pentagon on day one and built as a wedge on day three; the pogo connector was called "not chosen" a day
-after the user sent its drawings. Both were in the conversation, neither was where the case stage looked.
+sizes, parts already chosen, angles, looks, things they don't want. Over a design that runs for days, a shape asked for
+on day one or a part the user already picked is easy to lose in the conversation; if it isn't written where every later
+stage looks, a stage builds something else or asks again.
 
 - Add to it the moment the user states a requirement or makes a choice (decision cards included), not at the end.
 - Re-read it at the start of each stage (schematic, PCB, fab, case) and before showing the user a result.
@@ -70,26 +70,26 @@ after the user sent its drawings. Both were in the conversation, neither was whe
 
 ## When to snapshot
 
-Snapshot the part you're about to change (`paths: ["kicad/core"]`, `["case"]`), or the whole project, when:
+Snapshot the part you're about to change (`paths: ["kicad/main"]`, `["case"]`), or the whole project, when:
 
 - the user has seen or approved the current state ("seems good", "PR good", a picked option), and the next change
   replaces it;
 - the change is big or hard to undo by hand (re-placement, a new connector, reshaping the case);
-- the user asks to keep it, or something is ordered (`label: "ordered-jlc"`, whole project, fab included).
+- the user asks to keep it, or something is ordered (`label: "ordered"`, whole project, fab included).
 
 Not before every small step. The routing tools (`route_critical_nets`, `autoroute_rest`, `finish_routing`) snapshot the
 board themselves before changing it in place, and the footprint, symbol and part writers put a replaced file into
 history/ instead of a `.bak`.
 
-The label says what the state is or what comes next: `approved-flat-case`, `before-mid-joint`, `ordered-jlc`.
-The note (one sentence) goes into HISTORY.md: "User approved the 18.4 mm flat case; next, joint at mid-height".
+The label says what the state is or what comes next: `approved-layout`, `before-rework`, `ordered`.
+The note (one sentence) goes into HISTORY.md: "User approved the placement; next, routing".
 
 ## Alternatives
 
 When the user needs to choose between options, build them in `.cadmate/work/<option>/` (renders, a STEP, a board
 copy), show them, apply the chosen one to the active project, and delete the work folder. Don't leave options in
 the project, and don't make the user pick between folders. If an unpicked option might come back, snapshot it with a
-label like `option-centre-high`.
+label like `option-b`.
 
 ## Why it fits KiCad and FreeCAD, and where it doesn't
 
@@ -100,10 +100,10 @@ label like `option-centre-high`.
 - **Never rename a KiCad project.** The schematic stores each symbol's reference under the project name; a copied or
   renamed project can come up with R?, U? references until it is re-annotated (KiCad's own Save As handles this; a
   file rename doesn't). Working in place means you never need to: the board is called
-  `left` from the start. `project_check` flags a schematic whose annotations belong to another project name.
+  `main` from the start. `project_check` flags a schematic whose annotations belong to another project name.
 - **One board per folder.** KiCad pairs `.kicad_pcb`, `.kicad_sch` and `.kicad_pro` by name. A second board in the
-  folder (`left-routed.kicad_pcb`) has no schematic to update from and no own rules unless its own `.kicad_pro` is
-  copied beside it, which is how `-routed.kicad_pro` files appeared.
+  folder (`main-routed.kicad_pcb`) has no schematic to update from and no own rules unless its own `.kicad_pro` is
+  copied beside it, which is how stray `-routed.kicad_pro` files appear.
 - **Don't snapshot while KiCad has the file open and unsaved**: the snapshot is what's on disk. Ask the user to save,
   or use `kicad_pcb_save`, first. After `project_restore` the user has to reload the file in KiCad.
 - **FreeCAD**: STEP files are self-contained. An `.FCStd` that links other documents (App::Link, assembly parts) stores

@@ -30,6 +30,6 @@ Re-review after every round of changes. Findings that persist across rounds are 
 ## Reporting DRC
 
 Report DRC as four numbers every time: errors, warnings, unconnected and schematic parity, plus the warnings by type
-(`review_pcb_layout` returns them under `drc`). "0/0/0" with the warnings left out hides work: in the keyboard run the
-core's 78 warnings (71 silkscreen, 7 dangling stubs) only came up at the final clean-up. Say which warnings you'd leave
+(`review_pcb_layout` returns them under `drc`). "0/0/0" with the warnings left out hides work: warnings such as silkscreen
+overlaps and dangling track stubs then only come up at the final clean-up. Say which warnings you'd leave
 and why.

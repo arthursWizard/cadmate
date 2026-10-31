@@ -21,9 +21,9 @@ INSTRUCTIONS = """\
 cadmate keeps each design as ONE active project with a fixed layout and a single history folder. Follow this in every
 session that creates or changes design files, whoever asked for the change:
 
-- Apply every change to the active project in place. Never create side-by-side versions: no left-v2/,
-  core-routed.kicad_pcb, core-hand3.kicad_pcb, case/variant-flat/, *.bak, or copies "to keep the old one".
-- To keep the old state, call project_snapshot first (label like "before-mid-joint"). It copies the files into
+- Apply every change to the active project in place. Never create side-by-side versions: no main-v2/,
+  main-routed.kicad_pcb, main-hand3.kicad_pcb, case/variant-b/, *.bak, or copies "to keep the old one".
+- To keep the old state, call project_snapshot first (label like "before-rework"). It copies the files into
   history/<YYYYMMDD-HHMM>_<label>/ at the same relative paths and logs it in history/HISTORY.md; project_restore puts
   one back. Snapshot when the user has seen or approved the current state, or before a big or risky change. The routing
   tools snapshot the board themselves when they change it in place.
@@ -920,7 +920,7 @@ def project_snapshot(path: str, label: str, paths: list[str] | None = None, note
     paths and adds a line to history/HISTORY.md. Then make the change in the active project itself, never in a copy.
 
     path is the project or anything in it. label: lowercase words with dashes saying what state this is or what comes
-    next ("approved-flat-case", "before-mid-joint"). paths limits it (e.g. ["kicad/core"] or ["case"]); leave it out for
+    next ("approved-layout", "before-rework"). paths limits it (e.g. ["kicad/main"] or ["case"]); leave it out for
     the whole project. A KiCad board folder brings along the project libraries it references through ${KIPRJMOD}, so
     the copy opens with its footprints and 3D models. note says why, in a sentence: it goes into HISTORY.md."""
     return _project(project.snapshot, path, label, paths, note)
@@ -934,7 +934,7 @@ def project_history(path: str) -> dict:
 
 @server.tool()
 def project_restore(path: str, name: str, paths: list[str] | None = None) -> dict:
-    """Bring a snapshot back into the active project (all of it, or just paths such as ["kicad/core"]). The current
+    """Bring a snapshot back into the active project (all of it, or just paths such as ["kicad/main"]). The current
     state is snapshotted first, so a restore can itself be undone. Re-export fab/ for any board restored."""
     return _project(project.restore, path, name, paths)
 

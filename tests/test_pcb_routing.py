@@ -624,7 +624,7 @@ def test_finish_routing_flow_leaves_crystal_nets_alone(tmp_path, monkeypatch):
     assert {"XI", "XO", "XO2"} <= set(out["left_alone"]) and "SENSE" not in out["left_alone"] and not any(o["net"].startswith("X") for o in out["still_open"])
 
 
-# --- keyboard run fixes: planes, detours, boxed-in pads, open counts -------------------------------------
+# --- routing fixes: planes, detours, boxed-in pads, open counts -------------------------------------
 
 
 def _two(ref, x, y, net, layer="F.Cu"):

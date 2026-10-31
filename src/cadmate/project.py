@@ -55,7 +55,7 @@ CLAUDE_MD = """# {name}: a cadmate project
 Follow cadmate's project rules (skills/cadmate-project in the cadmate repo). In short:
 
 - This folder is the one active project. Apply every change here, in place. Never make side-by-side copies such as
-  left-v2/, core-routed.kicad_pcb, case/variant-x/ or *.bak.
+  main-v2/, main-routed.kicad_pcb, case/variant-x/ or *.bak.
 - Before a change worth going back to (the user saw or approved the current state, or the change is big or risky),
   run cadmate's `project_snapshot` with a short label. It copies the current state into history/<YYYYMMDD-HHMM>_<label>/.
 - Files go where the layout says: kicad/<board>/<board>.*, kicad/lib/, case/, fab/<board>/, tools/, docs/.
@@ -74,11 +74,11 @@ and you have checked it (render, DRC, measurement). Re-read this before each sta
 
 ## Requirements
 
-- [ ] (example) Centre case: upside-down unequal pentagon, hands angled inwards (user, 2026-10-29)
+- [ ] (example) <what the user asked for: shape, size, part, look> (<who>, <date>)
 
 ## Decided
 
-- (example) Magnetic pogo: the 12-pin AliExpress part from the user's drawings (user, 2026-10-30)
+- (example) <a choice the user made, and what it was picked over> (<who>, <date>)
 """
 
 README_MD = """# {name}
@@ -159,7 +159,7 @@ def _index_header(name: str) -> str:
 
 def _check_label(label: str, what: str = "label") -> str:
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", label or ""):
-        raise ProjectError(f"{what} {label!r}: lowercase letters, digits and dashes, up to 40 characters, e.g. 'before-mid-joint'")
+        raise ProjectError(f"{what} {label!r}: lowercase letters, digits and dashes, up to 40 characters, e.g. 'before-rework'")
     return label
 
 
@@ -218,7 +218,7 @@ def snapshot(path: str | Path, label: str, paths: list[str] | None = None, note:
              now: datetime | None = None) -> dict:
     """Copy the current state into history/<YYYYMMDD-HHMM>_<label>/ before changing it.
 
-    paths (relative to the project, or absolute inside it) limits what is copied, e.g. ["kicad/core"]; leave it out for
+    paths (relative to the project, or absolute inside it) limits what is copied, e.g. ["kicad/main"]; leave it out for
     the whole project (history/ and .cadmate/ excepted). A KiCad board folder brings the project libraries it references
     through ${KIPRJMOD}, so the snapshot opens with its footprints and 3D models.
     """
@@ -282,7 +282,7 @@ def history(path: str | Path) -> dict:
 
 def restore(path: str | Path, name: str, paths: list[str] | None = None, now: datetime | None = None) -> dict:
     """Put a snapshot's files back into the active project. The current state is snapshotted first, so this is undoable.
-    paths limits it to part of the snapshot (project-relative, e.g. ["kicad/core"])."""
+    paths limits it to part of the snapshot (project-relative, e.g. ["kicad/main"])."""
     root = _root(path)
     src = root / HISTORY / name
     if not src.is_dir():
@@ -366,7 +366,7 @@ def check(path: str | Path) -> dict:
     for d in sorted((root / HISTORY).glob("*")) if (root / HISTORY).exists() else []:
         if d.is_dir() and not SNAP_NAME.match(d.name):
             found.append(_finding("warning", f"{HISTORY}/{d.name}", "snapshot folder not named <YYYYMMDD-HHMM>_<label>",
-                                  "rename it so history sorts by time, e.g. 20261031-1213_before-mid-joint"))
+                                  "rename it so history sorts by time, e.g. 20261031-1213_before-rework"))
     brief = read_brief(root)
     if brief is None:
         found.append(_finding("warning", BRIEF, "no brief", "write the user's requirements into docs/brief.md (project_init "

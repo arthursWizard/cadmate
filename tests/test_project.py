@@ -204,3 +204,13 @@ def test_replaced_library_files_go_to_history_not_bak(tmp_path):
     loose.write_text("x")
     assert project.keep([loose], "footprint").endswith("x.kicad_mod.bak") and (tmp_path / "x.kicad_mod.bak").exists()
     assert project.keep([tmp_path / "none"], "footprint") is None
+
+
+def test_brief_open_items_show_in_the_check(tmp_path):
+    root = make(tmp_path)
+    assert project.check(root)["brief"] == {"open": [], "met": [], "say": project.check(root)["brief"]["say"]}
+    (root / "docs/brief.md").write_text("# b\n\n- [ ] Centre case: upside-down pentagon (user, 29 Oct)\n- [x] Choc V1 hotswap\n")
+    b = project.check(root)["brief"]
+    assert b["open"] == ["Centre case: upside-down pentagon (user, 29 Oct)"] and b["met"] == ["Choc V1 hotswap"]
+    (root / "docs/brief.md").unlink()
+    assert any(f["path"] == "docs/brief.md" for f in project.check(root)["findings"])

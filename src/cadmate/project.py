@@ -61,7 +61,24 @@ Follow cadmate's project rules (skills/cadmate-project in the cadmate repo). In 
 - Files go where the layout says: kicad/<board>/<board>.*, kicad/lib/, case/, fab/<board>/, tools/, docs/.
   Scratch goes in .cadmate/work/ and is deleted when done.
 - Never rename a KiCad project; never move tools/ out: the scripts are the design's source.
+- docs/brief.md holds every requirement the user stated. Add to it when they state one; re-read it before each stage
+  and before showing a result; tick an item only once checked. `project_check` lists what is still open.
 - Run `project_check` before telling the user a step is done.
+"""
+
+BRIEF = "docs/brief.md"
+BRIEF_MD = """# {name}: brief
+
+Every requirement the user has stated, in their words, with who said it and when. Tick one only when the design meets it
+and you have checked it (render, DRC, measurement). Re-read this before each stage and before showing the user a result.
+
+## Requirements
+
+- [ ] (example) Centre case: upside-down unequal pentagon, hands angled inwards (user, 2026-10-29)
+
+## Decided
+
+- (example) Magnetic pogo: the 12-pin AliExpress part from the user's drawings (user, 2026-10-30)
 """
 
 README_MD = """# {name}
@@ -124,6 +141,7 @@ def init(root: str | Path, name: str | None = None, boards: list[str] | None = N
     mk(MARKER, json.dumps({"name": name, "layout": LAYOUT_VERSION, "created": datetime.now().isoformat(timespec="seconds")}, indent=2) + "\n")
     mk("README.md", README_MD.format(name=name))
     mk("CLAUDE.md", CLAUDE_MD.format(name=name))
+    mk(BRIEF, BRIEF_MD.format(name=name))
     for d in ("kicad", f"kicad/{KICAD_LIB}", "case", "fab", "tools", "docs", HISTORY, WORK):
         mk(d)
     mk(f"{HISTORY}/{INDEX}", _index_header(name))
@@ -349,6 +367,10 @@ def check(path: str | Path) -> dict:
         if d.is_dir() and not SNAP_NAME.match(d.name):
             found.append(_finding("warning", f"{HISTORY}/{d.name}", "snapshot folder not named <YYYYMMDD-HHMM>_<label>",
                                   "rename it so history sorts by time, e.g. 20261031-1213_before-mid-joint"))
+    brief = read_brief(root)
+    if brief is None:
+        found.append(_finding("warning", BRIEF, "no brief", "write the user's requirements into docs/brief.md (project_init "
+                                                               "makes a template) so later stages can check against them"))
     order = {"error": 0, "warning": 1, "info": 2}
     found.sort(key=lambda f: (order[f["severity"]], f["path"]))
     seen: set[str] = set()  # one finding per path: the most severe, then the most specific (KiCad's)
@@ -356,8 +378,22 @@ def check(path: str | Path) -> dict:
              if not (f["path"] in seen or seen.add(f["path"]))]
     found.sort(key=lambda f: (order[f["severity"]], f["path"]))
     counts = {s: sum(1 for f in found if f["severity"] == s) for s in order}
-    return {"ok": counts["error"] == 0 and counts["warning"] == 0, "root": str(root), "name": marker.get("name", root.name),
-            "counts": counts, "findings": found}
+    out = {"ok": counts["error"] == 0 and counts["warning"] == 0, "root": str(root), "name": marker.get("name", root.name),
+           "counts": counts, "findings": found}
+    if brief is not None:
+        out["brief"] = brief | {"say": "before calling a stage done, check the result against every open item and tell the "
+                                       "user which are met, which aren't yet and why"}
+    return out
+
+
+def read_brief(root: str | Path) -> dict | None:
+    """docs/brief.md's checklist: requirements still open and those met. None without a brief."""
+    f = Path(root) / BRIEF
+    if not f.exists():
+        return None
+    items = re.findall(r"^\s*[-*] \[([ xX])\] (.+)$", f.read_text(errors="replace"), re.M)
+    items = [(m, t.strip()) for m, t in items if not t.lower().startswith("(example)")]
+    return {"open": [t for m, t in items if m == " "], "met": [t for m, t in items if m != " "]}
 
 
 def _check_kicad(root: Path) -> list[dict]:

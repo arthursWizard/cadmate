@@ -32,6 +32,9 @@ session that creates or changes design files, whoever asked for the change:
   tools/ (generator scripts: the design's source, never archived or deleted), docs/, history/, .cadmate/work/ (scratch).
 - To compare options, build them in .cadmate/work/, show the user, apply the pick to the active project, delete the rest.
 - Never rename a KiCad project: its schematic annotations are tied to the name. Use ${KIPRJMOD}-relative library paths.
+- Keep docs/brief.md: every requirement the user states, as a checklist. Re-read it before each stage and before
+  showing a result; project_check lists the open items, and a stage isn't done until you've said which are met.
+- Report DRC as errors, warnings, unconnected and parity, with the warnings by type, never errors alone.
 - project_init on a new design folder; project_check before telling the user a step is done.
 The cadmate-project skill has the reasons and the edge cases."""
 
@@ -769,7 +772,7 @@ def review_pcb_layout(path: str | None = None, currents: dict[str, float] | None
     ground under it); signals near switching nodes; tracks narrower than their net class; current per IPC-2221 for the
     nets in currents ({net: amps}), and the capacity of power nets without one; vias per net; fast signals crossing
     gaps in the ground pour; JLCPCB's SMD spacing, via and track minimums (fab="jlcpcb", or None to skip); and
-    KiCad's own DRC (unrouted nets, clearances) when kicad-cli is found. Net roles are inferred from names, pin types,
+    KiCad's own DRC (unrouted nets, clearances) when kicad-cli is found; drc gives errors, warnings, unconnected and parity with the types: report all four. Net roles are inferred from names, pin types,
     power symbols and parts; net_roles says what was inferred and why. Correct them with roles ({net: "ground" |
     "power" | "switching" | "crystal" | "fast" | "sensitive" | "signal"}). limits overrides cadmate's own thresholds
     (listed in the reply under limits; they are heuristics, not standards). Each finding has a location, the reasoning

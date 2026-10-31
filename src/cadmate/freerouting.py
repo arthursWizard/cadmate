@@ -14,7 +14,6 @@ pins pad to pad on the outer layers and most fail.
 
 from __future__ import annotations
 
-import glob
 import os
 import platform
 import re
@@ -23,7 +22,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from . import sexpr
+from . import apps, sexpr
 from .pcb_board import Board, NetGraph, Track, Via, dist, parse, point_seg
 
 JAR_ENV = "CADMATE_FREEROUTING_JAR"
@@ -32,14 +31,22 @@ KICAD_PYTHON_ENV = "CADMATE_KICAD_PYTHON"
 
 _JARS = {
     "Darwin": ["~/Documents/KiCad/*/3rdparty/plugins/*freerouting*/jar/*.jar", "~/Library/Application Support/kicad/*/3rdparty/plugins/*freerouting*/jar/*.jar"],
-    "Linux": ["~/.local/share/kicad/*/3rdparty/plugins/*freerouting*/jar/*.jar", "~/Documents/KiCad/*/3rdparty/plugins/*freerouting*/jar/*.jar"],
+    "Linux": ["~/.local/share/kicad/*/3rdparty/plugins/*freerouting*/jar/*.jar", "~/Documents/KiCad/*/3rdparty/plugins/*freerouting*/jar/*.jar",
+              "~/.var/app/org.kicad.KiCad/data/kicad/*/3rdparty/plugins/*freerouting*/jar/*.jar"],
     "Windows": ["~/Documents/KiCad/*/3rdparty/plugins/*freerouting*/jar/*.jar"],
 }
-_JAVAS = {"Darwin": ["/opt/homebrew/opt/openjdk/bin/java", "/usr/local/opt/openjdk/bin/java"], "Linux": [], "Windows": []}
+_JAVAS = {
+    "Darwin": ["/opt/homebrew/opt/openjdk/bin/java", "/usr/local/opt/openjdk/bin/java",
+               "/Library/Java/JavaVirtualMachines/*/Contents/Home/bin/java"],
+    "Linux": ["/usr/lib/jvm/*/bin/java"],
+    "Windows": [r"${ProgramFiles}\Eclipse Adoptium\*\bin\java.exe", r"${ProgramFiles}\Java\*\bin\java.exe",
+                r"${ProgramFiles}\Microsoft\jdk-*\bin\java.exe"],
+}
 _KICAD_PYTHONS = {
-    "Darwin": ["/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/*/bin/python3"],
+    "Darwin": ["/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/*/bin/python3",
+               "/Applications/KiCad.app/Contents/Frameworks/Python.framework/Versions/*/bin/python3"],
     "Linux": ["/usr/bin/python3"],
-    "Windows": [r"C:\Program Files\KiCad\*\bin\python.exe"],
+    "Windows": [r"${ProgramFiles}\KiCad\*\bin\python.exe", r"${LOCALAPPDATA}\Programs\KiCad\*\bin\python.exe"],
 }
 
 
@@ -55,31 +62,32 @@ def _version_key(path: str) -> tuple:
 def find_jar() -> str | None:
     if os.environ.get(JAR_ENV):
         return os.environ[JAR_ENV] if Path(os.environ[JAR_ENV]).exists() else None
-    hits = [h for pat in _JARS.get(platform.system(), []) for h in glob.glob(os.path.expanduser(pat))]
+    hits = apps.newest(_JARS.get(platform.system(), []))
     return max(hits, key=_version_key) if hits else None
 
 
 def find_java() -> str | None:
     if os.environ.get(JAVA_ENV):
         return os.environ[JAVA_ENV]
-    if os.environ.get("JAVA_HOME") and Path(os.environ["JAVA_HOME"], "bin", "java").exists():
-        return str(Path(os.environ["JAVA_HOME"], "bin", "java"))
-    for c in _JAVAS.get(platform.system(), []):
-        if Path(c).exists():
-            return c
-    return shutil.which("java")
+    if os.environ.get("JAVA_HOME"):
+        for exe in ("java", "java.exe"):
+            if Path(os.environ["JAVA_HOME"], "bin", exe).exists():
+                return str(Path(os.environ["JAVA_HOME"], "bin", exe))
+    # installed JDKs before the PATH: on macOS /usr/bin/java is a stub that fails when no JDK is registered with the
+    # system, which a Homebrew openjdk isn't; elsewhere the newest JDK suits Freerouting best
+    hits = apps.newest(_JAVAS.get(platform.system(), []))
+    return hits[0] if hits else shutil.which("java")
 
 
 def find_kicad_python() -> str | None:
     if os.environ.get(KICAD_PYTHON_ENV):
         return os.environ[KICAD_PYTHON_ENV]
-    for pat in _KICAD_PYTHONS.get(platform.system(), []):
-        for hit in sorted(glob.glob(pat), reverse=True):
-            try:
-                if subprocess.run([hit, "-c", "import pcbnew"], capture_output=True, timeout=60).returncode == 0:
-                    return hit
-            except (OSError, subprocess.SubprocessError):
-                continue
+    for hit in apps.newest(_KICAD_PYTHONS.get(platform.system(), [])):
+        try:
+            if subprocess.run([hit, "-c", "import pcbnew"], capture_output=True, timeout=60).returncode == 0:
+                return hit
+        except (OSError, subprocess.SubprocessError):
+            continue
     return None
 
 

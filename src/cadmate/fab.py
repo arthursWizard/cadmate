@@ -11,6 +11,8 @@ from __future__ import annotations
 import math
 import re
 
+from . import versions
+
 MARGIN = 0.25  # the buffer over a fab's minimum: 25 %, so 0.10 mm becomes 0.125 mm
 
 SOURCES = {
@@ -91,5 +93,5 @@ def merge_rules(existing: str, block: str) -> str:
         a, b = text.index(BEGIN), text.index(END) + len(END)
         text = (text[:a] + text[b:].lstrip("\n")).rstrip() + "\n"
     if "(version" not in text:  # an empty rules file isn't one: KiCad wants the version line
-        text = "(version 1)\n" + text
+        text = f"(version {versions.DRU_FORMAT})\n" + text
     return text.rstrip() + "\n" + ("\n" + block if block else "")

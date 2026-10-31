@@ -13,10 +13,10 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import sexpr
+from . import sexpr, versions
 
 GRID = 2.54  # 100 mil, KiCad's pin grid
-FORMAT_VERSION = "20251024"  # KiCad 10, the oldest version cadmate supports
+FORMAT_VERSION = versions.SYMBOL_FORMAT  # see versions.py
 
 PIN_TYPES = (
     "input", "output", "bidirectional", "tri_state", "passive", "free", "unspecified",

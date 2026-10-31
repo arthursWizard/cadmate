@@ -18,7 +18,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from . import apps
+from . import apps, versions
 from .pcb_board import (Board, NetGraph, Pad, Part, Track, convex_hull, dist, load_project, load_schematic, parse, point_in_polygon, point_seg,
                         polygon_area, polygon_gap, seg_seg)
 
@@ -860,15 +860,15 @@ def run_drc(board_file: Path) -> dict | None:
         return None
     out = Path(tempfile.mkdtemp(prefix="cadmate-drc-")) / "drc.json"
     try:
-        parity = ["--schematic-parity"] if board_file.with_suffix(".kicad_sch").exists() else []
+        parity = versions.kicad_cli_args("pcb_drc_parity") if board_file.with_suffix(".kicad_sch").exists() else []
         # zones as they'd be after a refill: a saved board may hold unfilled pours, which DRC would count as unrouted
-        proc = subprocess.run([cli, "pcb", "drc", "--format", "json", "--severity-all", "--units", "mm", "--refill-zones", *parity,
-                               "--output", str(out), str(board_file)], capture_output=True, text=True, timeout=300)
+        proc = subprocess.run([cli, *versions.kicad_cli_args("pcb_drc"), *parity, "--output", str(out), str(board_file)],
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
     except (OSError, subprocess.SubprocessError) as e:
         return {"error": f"kicad-cli drc failed: {e}"}
     if not out.exists():
         return {"error": f"kicad-cli drc wrote no report (exit {proc.returncode}): {(proc.stderr or proc.stdout)[-800:]}"}
-    return json.loads(out.read_text())
+    return json.loads(out.read_text(encoding="utf-8"))
 
 
 def drc_summary(rep: dict) -> dict:
@@ -995,7 +995,7 @@ def review_file(path: str, **kw) -> dict:
     f = Path(path).expanduser()
     if not f.exists():
         raise ReviewError(f"no board at {f}")
-    board = parse(f.read_text(errors="replace"), f.name)
+    board = parse(f.read_text(encoding="utf-8", errors="replace"), f.name)
     load_project(board, f.with_suffix(".kicad_pro"))
     load_schematic(board, f.parent, f.stem)
     drc = run_drc(f) if kw.pop("drc", True) else None

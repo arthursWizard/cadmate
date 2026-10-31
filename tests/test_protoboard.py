@@ -131,7 +131,7 @@ def test_example_routes_and_renders(tmp_path):
     r = pb.route(json.loads(EXAMPLE.read_text()))
     assert r["ok"], r["open"]
     out = pr.render(r["design"], tmp_path / "blinker")
-    svg = Path(out["svg"]).read_text()
+    svg = Path(out["svg"]).read_text(encoding="utf-8")
     assert "TOP · component side" in svg and "BOTTOM · solder side" in svg
     md = Path(out["build_list"]).read_text()
     assert "**U1** NE555" in md and "## 3. Bottom wiring" in md

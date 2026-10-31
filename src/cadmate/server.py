@@ -159,7 +159,7 @@ def link_model_to_footprint(
     new_text = footprint.link_model(text, model, replace=replace_existing)
     footprint.parse(new_text)  # never write a file we cannot read back
     backup = project.keep([path], "model-link")
-    path.write_text(new_text, encoding="utf-8")
+    path.write_text(new_text, encoding="utf-8", newline="\n")
     return {"written": str(path), "backup": str(backup), "models": [m.__dict__ for m in footprint.parse(new_text).models]}
 
 
@@ -209,7 +209,7 @@ def generate_footprint(
         return result
     lib.mkdir(parents=True, exist_ok=True)
     kept = project.keep([path], "footprint")
-    path.write_text(text, encoding="utf-8")
+    path.write_text(text, encoding="utf-8", newline="\n")
     result["written"] = str(path)
     if kept:
         result["previous"] = kept
@@ -364,7 +364,7 @@ def generate_symbol(
     symbol.parse_library(new_text)  # never write a library we cannot read back
     lib.parent.mkdir(parents=True, exist_ok=True)
     kept = project.keep([lib], "symbol") if existing is not None else None
-    lib.write_text(new_text, encoding="utf-8")
+    lib.write_text(new_text, encoding="utf-8", newline="\n")
     result["written"] = str(lib)
     if kept:
         result["previous"] = kept

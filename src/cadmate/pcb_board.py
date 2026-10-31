@@ -503,7 +503,7 @@ def load_project(board: Board, project_file: Path | None) -> None:
     if project_file is None or not project_file.exists():
         return
     try:
-        pro = json.loads(project_file.read_text())
+        pro = json.loads(project_file.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return
     board.sources.append(str(project_file))
@@ -547,7 +547,7 @@ def schematic_files(folder: Path, stem: str | None = None) -> list[Path]:
             continue
         seen.append(f)
         try:
-            text = f.read_text(errors="replace")
+            text = f.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
         todo += [f.parent / m for m in re.findall(r'\(property\s+"Sheetfile"\s+"([^"]+)"', text)]
@@ -558,7 +558,7 @@ def load_schematic(board: Board, folder: Path, stem: str | None = None) -> None:
     """Net names of the schematic's power symbols (power:GND, power:+3V3 ...), from the board's schematic sheets."""
     for sch in schematic_files(folder, stem):
         try:
-            root = sexpr.parse(sch.read_text(errors="replace"))
+            root = sexpr.parse(sch.read_text(encoding="utf-8", errors="replace"))
         except (OSError, sexpr.SexprError):
             continue
         board.sources.append(str(sch))

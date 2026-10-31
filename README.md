@@ -19,6 +19,8 @@ Early. Ten workflows work end to end:
 - **Review a routed board**: after routing by hand or with Freerouting, cadmate points out what a reviewer would. A decap whose track wanders to its pin or loops back through a distant ground. A crystal trace that is long, uses vias or has another signal alongside. Fast signals crossing gaps in the ground pour. Tracks narrower than their net class or than IPC-2221 asks for the current. JLCPCB's spacing and via limits. Each finding comes with its location, the reasoning and a source. See "Reviewing a layout" below.
 - **Make a symbol from a datasheet**: Claude reads the pin table, cadmate lays out the symbol per KiCad's library conventions (grid, sides by pin type, stacked power pins, hidden NC pins, fields) and writes it into a `.kicad_sym` library, checked against the pin table and the footprint's pads.
 
+- **Keep one active project with its history**: every design lives in one folder with a fixed layout (`kicad/<board>/`, `kicad/lib/`, `case/`, `fab/<board>/`, `tools/`, `docs/`). Changes go into it in place; when a state is worth keeping, `project_snapshot` copies it into `history/<YYYYMMDD-HHMM>_<label>/` first, and `project_restore` brings it back. The routing tools and the footprint, symbol and part writers follow this by themselves inside a project, and `project_check` points out anything out of place. See "Projects and history" below.
+
 - **Lay out a circuit on perfboard**: through-hole parts on the 2.54 mm hole grid, each taking the holes its leads go through and covering the holes under its body. cadmate checks the placement, routes the nets with bottom-side solder bridges and bare wire and, where the bottom can't get through, insulated jumpers on top, and draws the board to copy by hand: the component side, the solder side mirrored as it looks turned over, and a build list. See "Perfboard layouts" below.
 
 | Tool | What it does | Needs |
@@ -65,6 +67,11 @@ Early. Ten workflows work end to end:
 | `place_protoboard` | Places the parts automatically, steered by hints (fixed, near a hole, a board region, an edge), routes several placements and keeps the best | nothing |
 | `route_protoboard` | Routes a perfboard design on the hole grid (bottom, top on unplated double-sided boards, jumpers), keeping wires already drawn; lists what stays open | nothing |
 | `render_protoboard` | Top and mirrored bottom views as PNG and SVG, plus a step-by-step build list | an SVG converter (rsvg-convert or cairosvg; macOS has one) |
+| `project_init` | Makes a design folder a cadmate project with the fixed layout; adds what's missing, moves nothing | nothing |
+| `project_snapshot` | Copies the current state (or part of it) into `history/<YYYYMMDD-HHMM>_<label>/` before a change, with the libraries KiCad needs to open it | nothing |
+| `project_history` | The snapshots, oldest first, with what each holds and why it was taken | nothing |
+| `project_restore` | Puts a snapshot back into the active project, snapshotting the current state first | nothing |
+| `project_check` | Everything out of place: stray versions and backups, wrong depth, misnamed boards, broken or absolute library paths, renamed-project annotations, stale fab files | nothing |
 | `kicad_pcb_snapshot` | A picture of the open board, unsaved edits included | KiCad API on, and an SVG converter |
 
 ## Version policy
@@ -211,6 +218,30 @@ The router works on holes. A pad belongs to one net, and wires run pad to pad al
 
 Stripboard (copper strips you cut) isn't supported yet.
 
+## Projects and history
+
+A design is one folder, the active project. Everything changes in place; history is a folder of snapshots, not
+`-v2` copies beside the files.
+
+```
+<project>/
+  cadmate-project.json  README.md  CLAUDE.md
+  kicad/<board>/<board>.kicad_pro|.kicad_sch|.kicad_pcb|.kicad_dru, fp-lib-table, sym-lib-table
+  kicad/lib/            project footprints, symbols and 3D models (${KIPRJMOD}/../lib/...)
+  case/                 FreeCAD sources, <part>.step, assembly.step, renders/, pcb-models/
+  fab/<board>/          generated fab files
+  tools/                generator scripts: the design's source
+  docs/                 datasheets, drawings, notes
+  history/HISTORY.md    and 20261031-1213_before-mid-joint/ ... (same paths as the project)
+  .cadmate/work/        scratch
+```
+
+Inside a project, `route_critical_nets`, `autoroute_rest` and `finish_routing` change the board itself after
+snapshotting it (`in_place=False` sends the result to `.cadmate/work/` instead), `export_fab` writes to `fab/<board>/`
+and replaces the old Gerbers, and the footprint, symbol and part writers keep replaced files in `history/` rather than
+as `.bak`. Outside a project they behave as before. The server's instructions carry the rules to every session that
+connects, and the `cadmate-project` skill has the reasons and the edge cases (library paths, renaming, open files).
+
 ## Skills
 
 `skills/` holds the domain knowledge Claude loads for each workflow. Link the skill folders into `~/.claude/skills/` (or your project's `.claude/skills/`) to use them:
@@ -222,6 +253,7 @@ for s in /path/to/cadmate/skills/*/; do ln -s "$s" ~/.claude/skills/; done
 
 To read datasheets, Claude needs a way to read PDFs and to look at drawings as images; `pip install pypdf cryptography pypdfium2 pillow` (or poppler's `pdftotext` and `pdftoppm`) covers both. `cryptography` is for the AES-encrypted PDFs some manufacturers publish (GCT's, for one), `pillow` for saving pypdfium2's page renders.
 
+- `cadmate-project`: where files go, when to snapshot, how to try alternatives and clean up a sprawled project. Read it first.
 - `kicad-3d-models`: how to build, check and link a 3D model for a KiCad footprint.
 - `kicad-footprints`: how to read a datasheet into a footprint, and review an existing one.
 - `kicad-symbols`: how to read a datasheet's pin table into a symbol, and review an existing one.

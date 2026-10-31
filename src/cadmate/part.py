@@ -23,6 +23,7 @@ import tempfile
 from pathlib import Path
 
 from . import apps, check, footprint, generate, model, review, sexpr, symbol, symbol_check, symbol_generate
+from . import project as _project
 from .footprint import BBox, Model
 
 LIB_TABLE_VERSION = 7
@@ -153,11 +154,11 @@ def generate_part(
     try:
         new_lib = symbol.put_in_library(existing_sym, sym_text, sym_name, replace=overwrite)
     except FileExistsError:
-        errors.append(f"symbol: {sym_lib.name} already has {sym_name}; pass overwrite=True to replace it (a .bak copy is kept)")
+        errors.append(f"symbol: {sym_lib.name} already has {sym_name}; pass overwrite=True to replace it (the old one is kept: in history/ inside a cadmate project, else as .bak)")
         new_lib = None
     for f in (fp_file, step_file):
         if f is not None and f.exists() and not overwrite:
-            errors.append(f"{f} exists; pass overwrite=True to replace it (a .bak copy is kept)")
+            errors.append(f"{f} exists; pass overwrite=True to replace it (the old one is kept: in history/ inside a cadmate project, else as .bak)")
 
     result = {
         "ok": not errors,
@@ -174,29 +175,26 @@ def generate_part(
             built_tmp.cleanup()
         return result
 
-    # Everything checked: write. Symbol library and footprint keep a .bak when replaced.
+    # Everything checked: write. What gets replaced is kept first (history/ in a cadmate project, else .bak).
     project.mkdir(parents=True, exist_ok=True)
     written = []
-    if existing_sym is not None:
-        shutil.copy2(sym_lib, sym_lib.with_suffix(sym_lib.suffix + ".bak"))
+    kept = _project.keep([sym_lib if existing_sym is not None else None, fp_file, step_file], f"part-{sym_name}")
     symbol.parse_library(new_lib)
     sym_lib.write_text(new_lib, encoding="utf-8")
     written.append(str(sym_lib))
     lib_dir.mkdir(parents=True, exist_ok=True)
-    if fp_file.exists():
-        shutil.copy2(fp_file, fp_file.with_suffix(fp_file.suffix + ".bak"))
     fp_file.write_text(fp_text, encoding="utf-8")
     written.append(str(fp_file))
     if step_file is not None:
         shapes_dir.mkdir(parents=True, exist_ok=True)
-        if step_file.exists():
-            shutil.copy2(step_file, step_file.with_suffix(step_file.suffix + ".bak"))
         shutil.copy2(model_file, step_file)
         written.append(str(step_file))
     if built_tmp:
         built_tmp.cleanup()
     written += add_to_lib_tables(project, library)
     result["written"] = written
+    if kept:
+        result["previous"] = kept
     return result
 
 

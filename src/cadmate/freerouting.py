@@ -561,7 +561,7 @@ def autoroute_file(board_file: Path, out_file: Path, widths: dict[str, float] | 
     widths = widths or {}
     work = Path(tempfile.mkdtemp(prefix="cadmate-fr-"))
     dsn, ses = work / (board_file.stem + ".dsn"), work / (board_file.stem + ".ses")
-    board = parse(board_file.read_text(), board_file.name)
+    board = parse(board_file.read_text(encoding="utf-8"), board_file.name)
     from .pcb_board import load_project
 
     load_project(board, board_file.with_suffix(".kicad_pro"))
@@ -572,9 +572,9 @@ def autoroute_file(board_file: Path, out_file: Path, widths: dict[str, float] | 
         pcb_route.write_file(board_file, src, fan["tracks"], fan["vias"])
     export_dsn(src, dsn)
     edge, hole = _clearances(board, fab_limits)
-    dsn.write_text(dsn_keepouts(dsn_widths(dsn.read_text(), widths), board, edge, hole))
+    dsn.write_text(dsn_keepouts(dsn_widths(dsn.read_text(encoding="utf-8"), widths), board, edge, hole), encoding="utf-8", newline="\n")
     fr = run_freerouting(dsn, ses, passes, timeout)
-    tracks, vias = parse_ses(ses.read_text(), board)
+    tracks, vias = parse_ses(ses.read_text(encoding="utf-8"), board)
     tracks, vias = new_items(board, tracks, vias)
     tracks, vias, pruned = prune_stubs(board, tracks, vias)
     widened = widen(board, tracks, widths, vias)
@@ -584,7 +584,7 @@ def autoroute_file(board_file: Path, out_file: Path, widths: dict[str, float] | 
         refill(out_file)
     except RouteError as e:
         filled = str(e)
-    after = parse(out_file.read_text(), out_file.name)
+    after = parse(out_file.read_text(encoding="utf-8"), out_file.name)
     load_project(after, out_file.with_suffix(".kicad_pro"))
     left = unrouted(after)
     out = {"ok": True, "complete": not left, "board": str(out_file), "freerouting": fr,
@@ -628,16 +628,16 @@ def autoroute_live(widths: dict[str, float] | None = None, passes: int = 30, tim
     copy = work / Path(live.name).name
     live.save_as(str(copy), overwrite=True, include_project=True)
     dsn, ses = copy.with_suffix(".dsn"), copy.with_suffix(".ses")
-    board = parse(copy.read_text(), copy.name)
+    board = parse(copy.read_text(encoding="utf-8"), copy.name)
     load_project(board, copy.with_suffix(".kicad_pro"))
     fan = pcb_route.plane_fanout(board)
     if fan["tracks"] or fan["vias"]:
         pcb_route.write_file(copy, copy, fan["tracks"], fan["vias"])
     export_dsn(copy, dsn)
     edge, hole = _clearances(board, fab_limits)
-    dsn.write_text(dsn_keepouts(dsn_widths(dsn.read_text(), widths), board, edge, hole))
+    dsn.write_text(dsn_keepouts(dsn_widths(dsn.read_text(encoding="utf-8"), widths), board, edge, hole), encoding="utf-8", newline="\n")
     fr = run_freerouting(dsn, ses, passes, timeout)
-    tracks, vias = parse_ses(ses.read_text(), board)
+    tracks, vias = parse_ses(ses.read_text(encoding="utf-8"), board)
     tracks, vias = new_items(board, tracks, vias)
     tracks, vias, pruned = prune_stubs(board, tracks, vias)
     widened = widen(board, tracks, widths, vias)

@@ -198,7 +198,7 @@
     },
     {
       "net": "THR",
-      "side": "top",
+      "side": "jumper",
       "path": [
         "J12",
         "F12"

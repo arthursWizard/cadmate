@@ -14,7 +14,7 @@ from pathlib import Path
 from mcp.server.mcpserver import Image, MCPServer
 
 from . import (apps, check, fab_export, footprint, freerouting, generate, ipc, kicad_live, kicad_pcb_live, live, model, packages, part, pcb_flow, pcb_review,
-               pcb_route, protoboard, protoboard_render, review, schematic_review, symbol, symbol_check, symbol_generate)
+               pcb_route, protoboard, protoboard_place, protoboard_render, review, schematic_review, symbol, symbol_check, symbol_generate)
 from .footprint import read as _read_footprint  # generate_symbol's footprint argument shadows the module
 
 server = MCPServer("cadmate")
@@ -892,11 +892,31 @@ def check_protoboard(design: dict | str) -> dict:
 @server.tool()
 def route_protoboard(design: dict | str, out_path: str | None = None, allow_jumpers: bool = True) -> dict:
     """Route a perfboard design on its hole grid: bottom-side solder bridges and bare wire pad to pad along rows and
-    columns, and insulated top-side jumper wires (straight, each end in its own free hole) where the bottom can't get
-    through. Wires already in the design are kept as they are. Placement isn't changed: if nets stay open, move parts
+    columns, top-side tracks the same way on unplated double-sided boards (board "pads": "double-unplated"; via_wires
+    lists the holes that need a wire through), and insulated jumper wires (straight, each end in its own free hole)
+    where neither side can get through. Wires already in the design are kept as they are. Placement isn't changed: if nets stay open, move parts
     (or draw those wires by hand in "wires") and route again. The routed design (with "wires") is returned and, when
     out_path is given, written there as JSON. Look at render_protoboard's picture before handing it to the user."""
     r = _proto(protoboard.route, design, allow_jumpers=allow_jumpers)
+    if out_path and r.get("design"):
+        r["written"] = str(protoboard.save(r["design"], out_path))
+    return r
+
+
+@server.tool()
+def place_protoboard(design: dict | str, out_path: str | None = None, tries: int = 3, route: bool = True) -> dict:
+    """Place the parts of a perfboard design automatically, then route. Parts can steer it: "fixed": true with "at"
+    keeps a part exactly where it is; "at" alone is a starting point it stays near; "near": "C5" keeps it close to a
+    hole; "region": left / right / top / bottom / top-left / ... / center / edge (pins on the outer ring, for
+    connectors) keeps it in that part of the board; "keep_rotation": true stops it turning. The placer keeps nets
+    short and leaves room between pins of different nets. It places `tries` times with different seeds, routes each
+    and keeps the one that routes best (fewest open nets, then jumpers and via wires); placement.tries shows them all.
+    Hand-drawn wires are dropped unless every part is fixed. The result goes to out_path as JSON when given. Show
+    the user the picture (render_protoboard) and ask what to move: they can answer with hints and you place again."""
+    try:
+        r = protoboard_place.place_and_route(design, tries=tries, route=route)
+    except (protoboard.DesignError, OSError, ValueError) as e:
+        return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
     if out_path and r.get("design"):
         r["written"] = str(protoboard.save(r["design"], out_path))
     return r

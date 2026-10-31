@@ -205,19 +205,77 @@ def _open_lines(v: _View, d: pb.Design, open_: list) -> list[str]:
 def _jumper_names(d: pb.Design) -> dict[int, str]:
     out, k = {}, 0
     for i, w in enumerate(d.wires):
-        if w.side == "top":
+        if w.side == "jumper":
             k += 1
             out[i] = f"W{k}"
     return out
 
 
-def _top(v: _View, d: pb.Design, colors, open_) -> list[str]:
-    out = _frame(v, "TOP · component side", "parts and insulated jumper wires, seen from above")
-    pin_holes = d.pin_owner()
+def _pads(v: _View, d: pb.Design, r_pad: float) -> list[str]:
+    out = []
     for c in range(d.cols):
         for r in range(d.rows):
             x, y = v.pt((c, r))
-            out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{P * 0.15:.1f}" fill="{HOLE_FILL}" stroke="{HOLE_EDGE}" stroke-width="1"/>')
+            out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{P * r_pad:.1f}" fill="{COPPER}" stroke="{COPPER_EDGE}" stroke-width="1"/>')
+            out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{P * 0.11:.1f}" fill="{HOLE_FILL}"/>')
+    return out
+
+
+def _tracks(v: _View, d: pb.Design, colors, side: str, ghost: bool = False) -> list[str]:
+    """Solder tracks on one side; ghost: the other side's, thin and dashed, to orient by."""
+    out = []
+    for w in d.wires:
+        if w.side != side:
+            continue
+        col = colors.get(w.net, "#888")
+        pts = " ".join(f"{v.x(h[0]):.1f},{v.y(h[1]):.1f}" for h in w.path)
+        if ghost:
+            out.append(f'<polyline points="{pts}" fill="none" stroke="{col}" stroke-width="2" stroke-dasharray="1 5" '
+                       f'stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>')
+            continue
+        out.append(f'<polyline points="{pts}" fill="none" stroke="{col}" stroke-width="{P * 0.34:.1f}" stroke-linecap="round" stroke-linejoin="round"/>')
+        for h in pb.wire_holes(w):
+            x, y = v.pt(h)
+            out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{P * 0.24:.1f}" fill="{col}"/>')
+    return out
+
+
+def _via_names(d: pb.Design) -> list[tuple[str, str, tuple[int, int]]]:
+    if d.pads != "double-unplated":
+        return []
+    return [(f"V{i + 1}", n, h) for i, (n, h) in enumerate(pb.vias(d))]
+
+
+def _vias(v: _View, d: pb.Design, colors) -> list[str]:
+    out = []
+    for name, net, h in _via_names(d):
+        x, y = v.pt(h)
+        s = P * 0.36
+        col = colors.get(net, "#888")
+        out.append(f'<rect x="{x - s:.1f}" y="{y - s:.1f}" width="{2 * s:.1f}" height="{2 * s:.1f}" fill="none" stroke="{col}" '
+                   f'stroke-width="2.4" transform="rotate(45 {x:.1f} {y:.1f})"/>')
+        out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{P * 0.1:.1f}" fill="#fff" stroke="#222" stroke-width="1"/>')
+        out.append(_halo(x - P * 0.42, y + P * 0.42, name, 9, col))
+    return out
+
+
+_PADS_TEXT = {"single": "pads on the bottom only", "double": "pads both sides, plated through (a hole's two pads are joined)",
+              "double-unplated": "pads both sides, not plated (diamond V1…: via wire, soldered both sides)"}
+
+
+def _top(v: _View, d: pb.Design, colors, open_) -> list[str]:
+    sub = "parts, top tracks and insulated jumper wires, seen from above" if d.double else "parts and insulated jumper wires, seen from above"
+    out = _frame(v, "TOP · component side", sub)
+    pin_holes = d.pin_owner()
+    if d.double:
+        out += _pads(v, d, 0.3)
+    else:
+        for c in range(d.cols):
+            for r in range(d.rows):
+                x, y = v.pt((c, r))
+                out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{P * 0.15:.1f}" fill="{HOLE_FILL}" stroke="{HOLE_EDGE}" stroke-width="1"/>')
+    out += _tracks(v, d, colors, "top")
+    out += _tracks(v, d, colors, "bottom", ghost=True) if d.pads == "double-unplated" else []
     net_of = d.net_of_pin()
     labels = []
     for p in sorted(d.parts.values(), key=lambda q: q.ref):
@@ -250,7 +308,7 @@ def _top(v: _View, d: pb.Design, colors, open_) -> list[str]:
     # jumpers
     names = _jumper_names(d)
     for i, w in enumerate(d.wires):
-        if w.side != "top":
+        if w.side != "jumper":
             continue
         col = colors.get(w.net, "#888")
         (x1, y1), (x2, y2) = v.pt(w.path[0]), v.pt(w.path[-1])
@@ -261,6 +319,7 @@ def _top(v: _View, d: pb.Design, colors, open_) -> list[str]:
         mx, my = (x1 + x2) / 2, (y1 + y2) / 2
         out.append(f'<rect x="{mx - 13:.1f}" y="{my - 8:.1f}" width="26" height="16" rx="4" fill="#fff" stroke="{col}" stroke-width="1.5"/>')
         out.append(_t(mx, my, names[i], 10, INK, weight="bold"))
+    out += _vias(v, d, colors)
     # pins on top of bodies
     for h, (ref, pin) in pin_holes.items():
         x, y = v.pt(h)
@@ -277,30 +336,19 @@ def _top(v: _View, d: pb.Design, colors, open_) -> list[str]:
 
 def _bottom(v: _View, d: pb.Design, colors, open_) -> list[str]:
     out = _frame(v, "BOTTOM · solder side (board turned over, left-right mirrored)",
-                 "solder bridges and bare wire pad to pad; dashed: jumper on the other side")
-    for c in range(d.cols):
-        for r in range(d.rows):
-            x, y = v.pt((c, r))
-            out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{P * 0.34:.1f}" fill="{COPPER}" stroke="{COPPER_EDGE}" stroke-width="1"/>')
-            out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{P * 0.11:.1f}" fill="{HOLE_FILL}"/>')
+                 "solder bridges and bare wire pad to pad; dashed: wiring on the other side")
+    out += _pads(v, d, 0.34)
     # ghost parts
     for p in d.parts.values():
         for s in p.d.body:
             out.append(_shape_svg(v, p, s, "none", "#6f6f6f", 1.2, ' stroke-dasharray="4 3" opacity="0.8"'))
-    # bottom wires
-    for w in d.wires:
-        if w.side != "bottom":
-            continue
-        col = colors.get(w.net, "#888")
-        pts = " ".join(f"{v.x(h[0]):.1f},{v.y(h[1]):.1f}" for h in w.path)
-        out.append(f'<polyline points="{pts}" fill="none" stroke="{col}" stroke-width="{P * 0.34:.1f}" stroke-linecap="round" stroke-linejoin="round"/>')
-        for h in pb.wire_holes(w):
-            x, y = v.pt(h)
-            out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{P * 0.24:.1f}" fill="{col}"/>')
+    out += _tracks(v, d, colors, "bottom")
+    out += _tracks(v, d, colors, "top", ghost=True)
+    out += _vias(v, d, colors)
     names = _jumper_names(d)
     jumper_labels = []
     for i, w in enumerate(d.wires):
-        if w.side != "top":
+        if w.side != "jumper":
             continue
         col = colors.get(w.net, "#888")
         (x1, y1), (x2, y2) = v.pt(w.path[0]), v.pt(w.path[-1])
@@ -337,9 +385,13 @@ def _legend(d: pb.Design, colors, open_, x, y, width) -> tuple[list[str], float]
         out.append(_t(cx + 32, cy, f"{n} ({counts[n]} pins)", 11.5, INK, "start"))
     rows = math.ceil(len(d.nets) / per_row) if d.nets else 0
     yy = y + 32 + rows * 22 + 8
-    jumpers = sum(1 for w in d.wires if w.side == "top")
+    jumpers = sum(1 for w in d.wires if w.side == "jumper")
     runs = sum(1 for w in d.wires if w.side == "bottom")
-    summary = f"{len(d.parts)} parts · {runs} bottom runs · {jumpers} jumper wires (W1…) · board {d.cols} × {d.rows} holes, 2.54 mm pitch"
+    top = sum(1 for w in d.wires if w.side == "top")
+    nv = len(_via_names(d))
+    bits = [f"{len(d.parts)} parts", f"{runs} bottom runs"] + ([f"{top} top runs"] if d.double else []) + \
+        [f"{jumpers} jumper wires (W1…)"] + ([f"{nv} via wires (V1…)"] if d.pads == "double-unplated" else [])
+    summary = " · ".join(bits) + f" · board {d.cols} × {d.rows} holes, 2.54 mm pitch, {_PADS_TEXT[d.pads]}"
     out.append(_t(x, yy, summary, 11.5, "#444", "start"))
     yy += 20
     out.append(_t(x, yy, "Square pin = pin 1.  Row letters and column numbers match on both sides: the bottom is mirrored, not renumbered.", 11.5, "#444", "start"))
@@ -389,7 +441,7 @@ def build_list(design, open_: list | None = None) -> str:
     if open_ is None:
         open_ = pb.connectivity(d)["open"]
     L = [f"# {d.title or 'Protoboard layout'}", "",
-         f"Perfboard, {d.cols} columns x {d.rows} rows, 2.54 mm pitch. Holes are row letter + column number, "
+         f"Perfboard, {d.cols} columns x {d.rows} rows, 2.54 mm pitch, {_PADS_TEXT[d.pads]}. Holes are row letter + column number, "
          "A1 at the top left seen from the component side. On the solder side A1 is at the top right.", "", "## 1. Parts (top)", ""]
 
     def key(p):
@@ -402,24 +454,37 @@ def build_list(design, open_: list | None = None) -> str:
         for n in p.d.notes:
             L.append(f"  - {n}")
     names = _jumper_names(d)
-    jumpers = [(names[i], w) for i, w in enumerate(d.wires) if w.side == "top"]
+    step = 1
+    jumpers = [(names[i], w) for i, w in enumerate(d.wires) if w.side == "jumper"]
+    vias = _via_names(d)
+    if vias:
+        step += 1
+        L += ["", f"## {step}. Via wires (unplated board)", "",
+              "Push a short bare wire through the hole and solder it on both sides, so the top and bottom pads join.", ""]
+        for n, net, h in vias:
+            L.append(f"- **{n}** {net}: {pb.hole_name(h)}")
     if jumpers:
-        L += ["", "## 2. Jumper wires (top, insulated)", ""]
+        step += 1
+        L += ["", f"## {step}. Jumper wires (top, insulated)", ""]
         for n, w in jumpers:
             L.append(f"- **{n}** {w.net}: {pb.hole_name(w.path[0])} to {pb.hole_name(w.path[-1])} ({len(pb.wire_top_cover(w)) - 1} holes)")
-    L += ["", "## 3. Bottom wiring (solder side)", "",
-          "A run of one hole is a solder bridge between neighbouring pads; longer runs are bare tinned wire soldered at every pad.", ""]
-    by_net: dict[str, list] = {}
-    for w in d.wires:
-        if w.side == "bottom":
-            by_net.setdefault(w.net, []).append(w)
-    for net in sorted(by_net):
-        parts = []
-        for w in by_net[net]:
-            segs = " → ".join(pb.hole_name(h) for h in w.path)
-            n = len(pb.wire_holes(w)) - 1
-            parts.append(f"{segs} ({'bridge' if n == 1 else f'wire over {n + 1} pads'})")
-        L.append(f"- **{net}**: " + "; ".join(parts))
+    note = "A run of one hole is a solder bridge between neighbouring pads; longer runs are bare tinned wire soldered at every pad."
+    for side, title in (("top", "Top wiring (component side)"), ("bottom", "Bottom wiring (solder side)")):
+        by_net: dict[str, list] = {}
+        for w in d.wires:
+            if w.side == side:
+                by_net.setdefault(w.net, []).append(w)
+        if not by_net and side == "top":
+            continue
+        step += 1
+        L += ["", f"## {step}. {title}", "", note, ""]
+        for net in sorted(by_net):
+            parts = []
+            for w in by_net[net]:
+                segs = " → ".join(pb.hole_name(h) for h in w.path)
+                n = len(pb.wire_holes(w)) - 1
+                parts.append(f"{segs} ({'bridge' if n == 1 else f'wire over {n + 1} pads'})")
+            L.append(f"- **{net}**: " + "; ".join(parts))
     if open_:
         L += ["", "## Still open", ""]
         for o in open_:

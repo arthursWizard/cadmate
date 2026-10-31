@@ -218,6 +218,7 @@ class Board:
     rules: dict = field(default_factory=dict)  # the project's design rules, KiCad's keys
     edges: list[tuple[Point, Point]] = field(default_factory=list)
     mask_openings: list[tuple[str, list[Point]]] = field(default_factory=list)  # (copper layer it exposes, hull), from graphics
+    keepouts: list[tuple[str, list[Point]]] = field(default_factory=list)  # (copper layer, outline): rule areas, no tracks or vias
     power_symbol_nets: set[str] = field(default_factory=set)  # from the schematic's power symbols
     sources: list[str] = field(default_factory=list)  # files read besides the board
 
@@ -374,7 +375,7 @@ def parse(text: str, name: str = "board") -> Board:
             if a and a[0] in cu_t and t is not None and t.floats():
                 cu_t[a[0]] = t.floats()[0]
 
-    parts, tracks, vias, fills, edges, masks = [], [], [], [], [], []
+    parts, tracks, vias, fills, edges, masks, keepouts = [], [], [], [], [], [], []
     zone_nets: dict[str, list[str]] = {}
     for node in root.items:
         if not isinstance(node, sexpr.Node):
@@ -398,6 +399,15 @@ def parse(text: str, name: str = "board") -> Board:
                                 (drill.floats() or [0])[0] if drill is not None else 0.0, lay or [copper[0], copper[-1]],
                                 _net(node, names)))
         elif h == "zone":
+            ko = node.child("keepout")
+            if ko is not None:
+                rules_ = {c.head: (c.atoms() or [""])[0] for c in ko.items if isinstance(c, sexpr.Node)}
+                poly = node.child("polygon")
+                pts_node = poly.child("pts") if poly is not None else None
+                pts = [p for p in (_xy(x) for x in pts_node.children("xy")) if p] if pts_node is not None else []
+                if len(pts) >= 3 and "not_allowed" in (rules_.get("tracks"), rules_.get("vias")):
+                    keepouts += [(l, pts) for l in _layers(node, copper) if l in copper]
+                continue
             net = _net(node, names)
             if net:
                 zone_nets.setdefault(net, [])
@@ -414,7 +424,8 @@ def parse(text: str, name: str = "board") -> Board:
         elif h and h.startswith("gr_"):
             _mask_opening(node, _layers(node, copper), copper, _shape_points(node), masks)
     nets = sorted({v for v in names.values() if v} | {t.net for t in tracks if t.net} | {p.net for pt in parts for p in pt.pads if p.net})
-    return Board(name, parts, tracks, vias, fills, zone_nets, copper, cu_t, thickness, nets, edges=edges, mask_openings=masks)
+    return Board(name, parts, tracks, vias, fills, zone_nets, copper, cu_t, thickness, nets, edges=edges, mask_openings=masks,
+                 keepouts=keepouts)
 
 
 def _mask_opening(node: sexpr.Node, lays: list[str], copper: list[str], pts: list[Point], masks: list) -> None:

@@ -9,8 +9,11 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from . import fab, freerouting, pcb_critical, pcb_route
+from . import fab, freerouting, pcb_critical, pcb_finish, pcb_review, pcb_route
 from .pcb_board import Board, load_project, load_schematic, parse
+
+
+CAREFUL = ("crystal", "diff_pair", "rf")  # nets finish_routing leaves to route_critical_nets or the user
 
 
 class FlowError(RuntimeError):
@@ -168,4 +171,55 @@ def autoroute(path: str | None = None, out_path: str | None = None, currents: di
     if capped:
         out["widths_capped"] = capped
     out["next"] = "review_pcb_layout on the result; fix what it finds (by hand, or route_critical_nets for an item), then review again"
+    return out
+
+
+def finish_routing(path: str, out_path: str | None = None, outer_only: bool = True) -> dict:
+    """After the autorouter: take out the tracks that break clearance or the minimum width, route what is still open, and
+    refill the zones. Saved boards only, written to out_path (default <name>-finished.kicad_pcb)."""
+    if not path:
+        raise FlowError("finish_routing works on a saved .kicad_pcb: save the board and pass its path")
+    if not Path(path).expanduser().with_suffix(".kicad_pro").exists():
+        raise FlowError("no .kicad_pro next to the board, so no design rules: copy the project's .kicad_pro (and .kicad_dru) "
+                        "beside it under the board's name, or the new tracks would follow KiCad's defaults, not the board's")
+    b, _ = load(path)
+    dru = Path(path).expanduser().with_suffix(".kicad_dru")
+    necks = fab.read_neck_rules(dru.read_text()) if dru.exists() else {}
+    planes = pcb_route.plane_nets(b)
+    roles = pcb_review.infer_roles(b)
+    plan = pcb_critical.classify(b, only=list(CAREFUL))
+    quiet = {n for n in b.nets if n not in planes and roles.get(n, {}).get("role") not in ("ground", "power")}
+    skip = {n for it in plan["items"] for n in it["nets"] if n in quiet}
+    for it in plan["items"]:  # a crystal's drive often goes through a series resistor: the net behind it too
+        if it["class"] != "crystal":
+            continue
+        own = {p.net for p in b.pads if p.ref == it["id"].split(":")[-1]} | set(it["nets"])
+        own &= quiet  # not ground: every pull-down would pull its net in
+        skip |= own & quiet
+        for part in b.parts:
+            pads = [p for p in b.pads if p.ref == part.ref]
+            if part.ref[:1] in "RC" and len(pads) == 2 and any(p.net in own for p in pads):
+                skip |= {p.net for p in pads if p.net in quiet}
+    res = pcb_finish.finish(b, outer_only, necks=necks, skip=skip)
+    src = Path(path).expanduser()
+    dst = Path(out_path).expanduser() if out_path else src.with_name(src.stem + "-finished" + src.suffix)
+    if dst.resolve() == src.resolve():
+        raise FlowError("out_path is the input board; give a new file so the original is kept")
+    cut = pcb_finish.write(src, dst, res)
+    for ext in (".kicad_pro", ".kicad_dru"):  # the rules (and any neck rules) go with it
+        if src.with_suffix(ext).exists():
+            dst.with_suffix(ext).write_bytes(src.with_suffix(ext).read_bytes())
+    out = {"ok": True, "written": str(dst), "ripped": res["ripped"], "segments_removed": cut,
+           "added": {"tracks": len(res["tracks"]), "vias": len(res["vias"])},
+           "open_before": res["open_before"], "open_after": res["open_after"], "still_open": res["open"],
+           "left_alone": sorted(skip), "by_hand": res["by_hand"]}
+    if res["open_after"] > res["open_before"]:
+        out["worse"] = ("more connections open than before: the bad tracks it took out couldn't all be replaced. Keep the "
+                        "input board and fix the ripped list by hand")
+    try:
+        freerouting.refill(dst)
+        out["zones"] = "refilled"
+    except Exception as e:  # noqa: BLE001 - the routing is written either way
+        out["zones"] = f"not refilled ({e.__class__.__name__}: {e}); refill in KiCad (B) before DRC"
+    out["next"] = "run KiCad's DRC on the result; route still_open by hand, then review_pcb_layout"
     return out

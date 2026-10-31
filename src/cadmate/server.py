@@ -13,7 +13,7 @@ from pathlib import Path
 
 from mcp.server.mcpserver import Image, MCPServer
 
-from . import (apps, check, footprint, freerouting, generate, ipc, kicad_live, kicad_pcb_live, live, model, packages, part, pcb_flow, pcb_review,
+from . import (apps, check, fab_export, footprint, freerouting, generate, ipc, kicad_live, kicad_pcb_live, live, model, packages, part, pcb_flow, pcb_review,
                pcb_route, review, schematic_review, symbol, symbol_check, symbol_generate)
 from .footprint import read as _read_footprint  # generate_symbol's footprint argument shadows the module
 
@@ -846,6 +846,19 @@ def finish_routing(path: str, out_path: str | None = None, outer_only: bool = Tr
     couldn't join, with the reason, to route by hand. Run KiCad's DRC on the result.
     """
     return _flow_call(pcb_flow.finish_routing, path=path, out_path=out_path, outer_only=outer_only)
+
+
+@server.tool()
+def export_fab(path: str, out_dir: str | None = None) -> dict:
+    """Manufacturing files for JLCPCB from a finished .kicad_pcb: Gerbers and drill files (zipped, ready to upload), the
+    BOM (Comment, Designator, Footprint, LCSC Part #, from the footprints' LCSC field) and the CPL (Designator, Mid X,
+    Mid Y, Layer, Rotation). DNP and excluded parts are left out; no_lcsc_number lists parts the BOM has no part number
+    for. Run DRC first. Goes to out_dir (default <board folder>/fab/<board name>).
+    """
+    try:
+        return fab_export.export(Path(path), Path(out_dir) if out_dir else None)
+    except (fab_export.ExportError, OSError, ValueError) as e:
+        return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
 
 
 def main() -> None:

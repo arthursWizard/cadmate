@@ -853,7 +853,7 @@ def export_fab(path: str, out_dir: str | None = None) -> dict:
     """Manufacturing files for JLCPCB from a finished .kicad_pcb: Gerbers and drill files (zipped, ready to upload), the
     BOM (Comment, Designator, Footprint, LCSC Part #, from the footprints' LCSC field) and the CPL (Designator, Mid X,
     Mid Y, Layer, Rotation). DNP and excluded parts are left out; no_lcsc_number lists parts the BOM has no part number
-    for. Run DRC first. Goes to out_dir (default <board folder>/fab/<board name>).
+    for (empty, TBD, or with a question mark). Zones are refilled on a copy first. Run DRC first. Goes to out_dir (default <board folder>/fab/<board name>).
     """
     try:
         return fab_export.export(Path(path), Path(out_dir) if out_dir else None)

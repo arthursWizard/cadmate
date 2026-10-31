@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import csv
 import io
+import re
+import shutil
 import subprocess
 import zipfile
 from pathlib import Path
@@ -103,14 +105,33 @@ def copper_layers(text: str) -> list[str]:
     return [l for l in ["F.Cu", *INNER, "B.Cu"] if l in names]
 
 
-def export(board: Path, out_dir: Path | None = None) -> dict:
-    """Gerbers + drill (zipped), BOM and CPL for JLCPCB, into out_dir (default <board folder>/fab/<board name>)."""
+def placeholder(lcsc: str) -> bool:
+    """A part number that isn't one yet: empty, TBD, or still carrying a question mark."""
+    return not re.fullmatch(r"C\d+", lcsc.strip())
+
+
+def export(board: Path, out_dir: Path | None = None, refill: bool = True) -> dict:
+    """Gerbers + drill (zipped), BOM and CPL for JLCPCB, into out_dir (default <board folder>/fab/<board name>). With
+    refill, the zones are refilled on a copy first: saved fills go stale after any edit, and the Gerbers are the fills."""
     board = board.expanduser()
     if not board.exists():
         raise ExportError(f"no board at {board}")
     out = (out_dir.expanduser() if out_dir else board.parent / "fab" / board.stem)
     gerb = out / "gerbers"
     gerb.mkdir(parents=True, exist_ok=True)
+    if refill:
+        from .freerouting import refill as _refill
+
+        copy = out / board.name
+        shutil.copyfile(board, copy)
+        for ext in (".kicad_pro", ".kicad_dru"):
+            if board.with_suffix(ext).exists():
+                shutil.copyfile(board.with_suffix(ext), copy.with_suffix(ext))
+        try:
+            _refill(copy)
+        except Exception as e:  # noqa: BLE001
+            raise ExportError(f"couldn't refill the zones ({e}); refill in KiCad (B), save, and export with refill=False") from None
+        board = copy
     text = board.read_text(errors="replace")
     layers = [l for l in GERBER_LAYERS if l != "F.Cu" and l != "B.Cu"] + copper_layers(text)
     _cli("pcb", "export", "gerbers", "--output", str(gerb) + "/", "--layers", ",".join(layers), "--subtract-soldermask", str(board))
@@ -125,11 +146,12 @@ def export(board: Path, out_dir: Path | None = None) -> dict:
     parts = footprints(text)
     (out / f"{board.stem}-bom-jlc.csv").write_text(jlc_bom(parts))
     (out / f"{board.stem}-cpl-jlc.csv").write_text(jlc_cpl(pos.read_text(), parts))
-    no_lcsc = sorted((p["ref"] for p in parts if p["bom"] and not p["lcsc"] and p["ref"] and not p["ref"].startswith("#")), key=_refkey)
+    no_lcsc = sorted((p["ref"] for p in parts if p["bom"] and placeholder(p["lcsc"]) and p["ref"] and not p["ref"].startswith("#")), key=_refkey)
     sides = {p["side"] for p in parts if p["bom"] and p["pos"]}
     return {"ok": True, "folder": str(out), "gerbers_zip": str(zpath), "files": sorted(f.name for f in gerb.iterdir()),
             "copper_layers": copper_layers(text), "bom": str(out / f"{board.stem}-bom-jlc.csv"),
             "cpl": str(out / f"{board.stem}-cpl-jlc.csv"), "assembled_sides": sorted(sides), "no_lcsc_number": no_lcsc,
+            "zones": "refilled on the exported copy" if refill else "as saved",
             "check": "upload the zip and look at JLC's Gerber viewer; in the assembly step check each part's rotation "
                      "against its pin 1 in JLC's preview, since library footprints and JLC's parts don't always agree"
                      + ("; parts on both sides means double-sided assembly, priced higher" if len(sides) > 1 else "")}

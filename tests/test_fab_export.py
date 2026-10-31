@@ -40,3 +40,7 @@ def test_cpl_in_jlc_columns_without_holes_or_dnp():
 
 def test_copper_layers_in_stack_order():
     assert fx.copper_layers(BOARD) == ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"]
+
+
+def test_placeholder_part_numbers_are_not_part_numbers():
+    assert [fx.placeholder(x) for x in ("C25744", "", "TBD", "C25900?", " C1525 ")] == [False, True, True, True, False]

@@ -5,7 +5,7 @@ description: Route a KiCad board with the user, critical connections first. Use 
 
 # Routing a board: critical connections first, then Freerouting, then review
 
-Uses cadmate's `classify_critical_nets`, `route_critical_nets`, `autoroute_rest` and `review_pcb_layout`. Each works on the board open in KiCad's PCB editor (leave `path` out) or on a `.kicad_pcb` (results go to a new file, the original is kept).
+Uses cadmate's `classify_critical_nets`, `route_critical_nets`, `autoroute_rest` and `review_pcb_layout`. Each works on the board open in KiCad's PCB editor (leave `path` out) or on a `.kicad_pcb`. Inside a cadmate project a saved board is changed in place after the tool snapshots it into `history/` (`snapshot` in the result; `project_restore` undoes the step), so there's one board to look at, never `-critical`, `-routed` or `-finished` copies. Outside a project the result goes to a new file beside it. See the `cadmate-project` skill.
 
 Push back on "autoroute everything". Freerouting doesn't know which connections matter, and fixing its decap and pair routing afterwards takes longer than routing those first.
 

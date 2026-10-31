@@ -1,15 +1,18 @@
 """The routing flow behind cadmate's tools: classify the critical connections, route and lock them, autoroute the rest.
 
 Each step works on the board open in KiCad's PCB editor (unsaved edits included, results as one undo step) or on a
-.kicad_pcb file, written to a new file so the original is kept. Review the result with review_pcb_layout.
+.kicad_pcb file. Inside a cadmate project (project.py) a file is changed in place, after a snapshot of the board into
+history/; outside one, or with in_place=False, the result goes to a new file and the original is kept.
+Review the result with review_pcb_layout.
 """
 
 from __future__ import annotations
 
+import re
 import tempfile
 from pathlib import Path
 
-from . import fab, freerouting, pcb_critical, pcb_finish, pcb_review, pcb_route
+from . import fab, freerouting, pcb_critical, pcb_finish, pcb_review, pcb_route, project
 from .pcb_board import Board, load_project, load_schematic, parse
 
 
@@ -45,17 +48,41 @@ def load(path: str | None) -> tuple[Board, object | None]:
     return b, live
 
 
-def _rules_file(path: str | None, out_path: str | None, live) -> Path | None:
-    """Where the board's custom rules live: next to the routed copy, or in the open board's project."""
-    if path:
-        src = Path(path).expanduser()
-        dst = Path(out_path).expanduser() if out_path else src.with_name(src.stem + "-routed" + src.suffix)
+def _rules_file(dst: Path | None, live) -> Path | None:
+    """Where the board's custom rules live: next to the written board, or in the open board's project."""
+    if dst is not None:
         return dst.with_suffix(".kicad_dru")
-    project = getattr(getattr(live.document, "project", None), "path", "") or ""
-    folder = Path(project) if project else None
+    project_ = getattr(getattr(live.document, "project", None), "path", "") or ""
+    folder = Path(project_) if project_ else None
     if folder and folder.is_file():
         folder = folder.parent
     return folder / Path(live.name).with_suffix(".kicad_dru").name if folder else None
+
+
+def target(path: str, out_path: str | None, step: str, in_place: bool | None) -> tuple[Path, dict | None]:
+    """Where a step writes a saved board, and the snapshot taken first when that is the board itself.
+
+    out_path given: there (the input itself only with in_place). Otherwise, in a cadmate project the board is changed in
+    place (in_place defaults to True there) after a snapshot of its files into history/, or with in_place=False the
+    result goes to the project's scratch folder, never beside the board. Outside a project: <name>-<step>.kicad_pcb."""
+    src = Path(path).expanduser()
+    root = project.find_root(src)
+    if in_place is None:
+        in_place = root is not None and out_path is None
+    dst = Path(out_path).expanduser() if out_path else src if in_place else (
+        project.work_path(src, step) or src.with_name(f"{src.stem}-{step}{src.suffix}"))
+    if dst.resolve() != src.resolve():
+        return dst, None
+    if not in_place:
+        raise FlowError("out_path is the input board; pass in_place=True to change it (inside a cadmate project the "
+                        "board is snapshotted first), or give a new file")
+    if root is None:
+        raise FlowError("in_place needs the board inside a cadmate project, so its current state can be snapshotted to "
+                        "history/ first (project_init); outside one, give out_path")
+    label = re.sub(r"[^a-z0-9]+", "-", f"before-{step}-{src.stem}".lower())[:40].strip("-")
+    snap = project.snapshot(src, label,
+                            [str(f) for f in project.board_files(src)], note=f"automatic, before {step} on {src.name}")
+    return dst, {"name": snap["name"], "restore": f"project_restore with name {snap['name']!r} undoes this step"}
 
 
 def classify(path: str | None = None, roles: dict | None = None, currents: dict | None = None, overrides: dict | None = None,
@@ -70,7 +97,8 @@ def classify(path: str | None = None, roles: dict | None = None, currents: dict 
 
 
 def route_critical(path: str | None = None, out_path: str | None = None, roles: dict | None = None, currents: dict | None = None,
-                   overrides: dict | None = None, limits: dict | None = None, items: list[str] | None = None, dry_run: bool = False) -> dict:
+                   overrides: dict | None = None, limits: dict | None = None, items: list[str] | None = None, dry_run: bool = False,
+                   in_place: bool | None = None) -> dict:
     """Route the plan's 'route' items (or just items), lock them, and put them on the live board or into out_path."""
     b, live = load(path)
     plan = pcb_critical.classify(b, roles, currents, limits, overrides)
@@ -102,11 +130,11 @@ def route_critical(path: str | None = None, out_path: str | None = None, roles: 
         out["written"] = "the open board, as one undo step ('cadmate: route … critical connections'); not saved yet"
     else:
         src = Path(path).expanduser()
-        dst = Path(out_path).expanduser() if out_path else src.with_name(src.stem + "-critical" + src.suffix)
-        if dst.resolve() == src.resolve():
-            raise FlowError("out_path is the input board; give a new file so the original is kept")
+        dst, snap = target(path, out_path, "critical", in_place)
         pcb_route.write_file(src, dst, tracks, vias)
         out["written"] = str(dst)
+        if snap:
+            out["snapshot"] = snap
     out["next"] = ("tell the user what's in by_hand and over_rule (routed but longer than the rule, or a pair out of skew: "
                    "KiCad's skew tuner, or better placement), then autoroute_rest and review_pcb_layout")
     return out
@@ -114,7 +142,7 @@ def route_critical(path: str | None = None, out_path: str | None = None, roles: 
 
 def autoroute(path: str | None = None, out_path: str | None = None, currents: dict | None = None, roles: dict | None = None,
               passes: int = 30, timeout: int = 1200, fab_name: str | None = "jlcpcb", margin: float = fab.MARGIN,
-              neck_rules: bool = True) -> dict:
+              neck_rules: bool = True, in_place: bool | None = None) -> dict:
     """Freerouting on everything not routed yet, with the widths the high-current items ask for. Its narrow tracks are
     checked against the fab's minimums (fab_name, None to skip) plus the margin. With neck_rules, the necks into pads that
     the fab can make get a KiCad custom rule allowing them there, so DRC flags only what needs fixing."""
@@ -137,14 +165,15 @@ def autoroute(path: str | None = None, out_path: str | None = None, currents: di
             capped.append({"net": net, "ipc2221_mm": want, "given_mm": round(width, 3), "by": pad.name,
                            "what_to_do": "the autorouter can't neck down at one pad, so the main path needs widening by hand or a "
                                          "pour on this net; review_pcb_layout with the same currents checks it"})
+    dst = snap = None
     if live is not None:
         out = freerouting.autoroute_live(widths, passes, timeout, lim)
     else:
         src = Path(path).expanduser()
-        dst = Path(out_path).expanduser() if out_path else src.with_name(src.stem + "-routed" + src.suffix)
-        if dst.resolve() == src.resolve():
-            raise FlowError("out_path is the input board; give a new file so the original is kept")
+        dst, snap = target(path, out_path, "routed", in_place)
         out = freerouting.autoroute_file(src, dst, widths, passes, timeout, lim)
+        if snap:
+            out["snapshot"] = snap
     out["widths_from_currents"] = widths
     narrow = [w for w in out.get("widened", []) if "wanted_mm" in w]
     if narrow:
@@ -152,7 +181,7 @@ def autoroute(path: str | None = None, out_path: str | None = None, currents: di
     if lim:
         out["fab"] = {k: lim[k] for k in ("fab", "margin", "rules", "source")}
         if neck_rules:
-            dru = _rules_file(path, out_path, live)
+            dru = _rules_file(dst, live)
             warns = out.get("fab_check", {}).get("warnings", [])
             # the rule matches by courtyard: a part without one would leave its neck a DRC error
             bare = sorted({w["ref"] for w in warns if w.get("ref") and not getattr(b.part(w["ref"]), "courtyard", None)})
@@ -174,9 +203,10 @@ def autoroute(path: str | None = None, out_path: str | None = None, currents: di
     return out
 
 
-def finish_routing(path: str, out_path: str | None = None, outer_only: bool = True) -> dict:
+def finish_routing(path: str, out_path: str | None = None, outer_only: bool = True, in_place: bool | None = None) -> dict:
     """After the autorouter: take out the tracks that break clearance or the minimum width, route what is still open, and
-    refill the zones. Saved boards only, written to out_path (default <name>-finished.kicad_pcb)."""
+    refill the zones. Saved boards only; where the result goes is target()'s rule (outside a project,
+    <name>-finished.kicad_pcb)."""
     if not path:
         raise FlowError("finish_routing works on a saved .kicad_pcb: save the board and pass its path")
     if not Path(path).expanduser().with_suffix(".kicad_pro").exists():
@@ -202,20 +232,21 @@ def finish_routing(path: str, out_path: str | None = None, outer_only: bool = Tr
                 skip |= {p.net for p in pads if p.net in quiet}
     res = pcb_finish.finish(b, outer_only, necks=necks, skip=skip)
     src = Path(path).expanduser()
-    dst = Path(out_path).expanduser() if out_path else src.with_name(src.stem + "-finished" + src.suffix)
-    if dst.resolve() == src.resolve():
-        raise FlowError("out_path is the input board; give a new file so the original is kept")
+    dst, snap = target(path, out_path, "finished", in_place)
     cut = pcb_finish.write(src, dst, res)
     for ext in (".kicad_pro", ".kicad_dru"):  # the rules (and any neck rules) go with it
-        if src.with_suffix(ext).exists():
+        if src.with_suffix(ext).exists() and dst.with_suffix(ext) != src.with_suffix(ext):
             dst.with_suffix(ext).write_bytes(src.with_suffix(ext).read_bytes())
     out = {"ok": True, "written": str(dst), "ripped": res["ripped"], "segments_removed": cut,
            "added": {"tracks": len(res["tracks"]), "vias": len(res["vias"])},
            "open_before": res["open_before"], "open_after": res["open_after"], "still_open": res["open"],
            "left_alone": sorted(skip), "by_hand": res["by_hand"]}
+    if snap:
+        out["snapshot"] = snap
     if res["open_after"] > res["open_before"]:
-        out["worse"] = ("more connections open than before: the bad tracks it took out couldn't all be replaced. Keep the "
-                        "input board and fix the ripped list by hand")
+        out["worse"] = ("more connections open than before: the bad tracks it took out couldn't all be replaced. "
+                        + (f"project_restore {snap['name']!r} puts the board back; " if snap else "Keep the input board and ")
+                        + "fix the ripped list by hand")
     try:
         freerouting.refill(dst)
         out["zones"] = "refilled"

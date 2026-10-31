@@ -595,7 +595,7 @@ def _return_path(ctx: Ctx) -> None:
     fast = sorted({n for it in ctx.items if it["class"] in ("diff_pair", "crystal", "rf") for n in it["nets"] if ctx.role(n) not in ("ground", "power")}
                   | {n for n, v in ctx.roles.items() if v["role"] == "fast"})
     layers = ctx.b.copper_layers
-    if not grounds:  # a board with no ground net at all (a key matrix carrier, an LED strip): nothing to pour
+    if not grounds:  # a board with no ground net at all (a passive breakout, an LED strip): nothing to pour
         return
     if not any(pours.values()):
         ctx.item("return_path", "no_pour", "No ground pour on the board", refs=[], nets=grounds, action="place", confidence="high",

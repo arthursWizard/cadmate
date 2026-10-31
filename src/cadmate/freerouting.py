@@ -531,8 +531,16 @@ def unrouted(board: Board) -> list[dict]:
             continue
         isl = NetGraph(board, net).islands()
         if len(isl) > 1:
-            out.append({"net": net, "islands": len(isl), "pads_apart": sorted({p.name for g in sorted(isl, key=len)[:-1] for p in g})[:6]})
+            out.append({"net": net, "islands": len(isl), "connections": len(isl) - 1,
+                        "pads_apart": sorted({p.name for g in sorted(isl, key=len)[:-1] for p in g})[:6]})
     return sorted(out, key=lambda e: -e["islands"])
+
+
+def open_counts(left: list[dict]) -> dict:
+    """What's still open, counted both ways: nets (as autorouters count) and connections (as KiCad's DRC counts its
+    unconnected items: one per missing link, so a net in three pieces is two)."""
+    return {"nets": len(left), "connections": sum(u["islands"] - 1 for u in left),
+            "note": "KiCad's DRC 'unconnected' should match connections; if it doesn't, refill the zones before comparing"}
 
 
 # --- the round trip --------------------------------------------------------------------------------------
@@ -575,6 +583,7 @@ def autoroute_file(board_file: Path, out_file: Path, widths: dict[str, float] | 
            "added": {"tracks": len(tracks), "vias": len(vias)}, "stubs_removed": pruned,
            "keepouts": {"edge_mm": edge, "hole_mm": hole}, "widened": widened, "zones_refilled": filled, "plane_fanout": _fan_report(fan), "unrouted": left,
            "work": str(work)}
+    out["open"] = open_counts(left)
     if left:
         out["next"] = (f"{len(left)} net(s) not fully routed: run again with more passes (now {passes}), "
                        "or route them by hand")
@@ -645,6 +654,7 @@ def autoroute_live(widths: dict[str, float] | None = None, passes: int = 30, tim
            "added": {"tracks": len(tracks), "vias": len(vias)}, "stubs_removed": pruned,
            "keepouts": {"edge_mm": edge, "hole_mm": hole}, "widened": widened, "zones": refill_note, "plane_fanout": _fan_report(fan), "unrouted": left,
            "undo": "two steps in KiCad's undo list: 'cadmate: Freerouting …' and 'cadmate: refill zones'", "work": str(work)}
+    out["open"] = open_counts(left)
     if left:
         out["next"] = (f"{len(left)} net(s) not fully routed: run again with more passes (now {passes}), "
                        "or route them by hand")

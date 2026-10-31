@@ -99,7 +99,7 @@ def test_check_passes_a_clean_project(tmp_path):
     assert out["ok"], out["findings"]
 
 
-def test_check_finds_the_sprawl_from_the_keyboard_run(tmp_path):
+def test_check_finds_side_by_side_versions_and_backups(tmp_path):
     root = make(tmp_path, ("core", "left"))
     core = root / "kicad/core"
     (core / "core-hand3.kicad_pcb").write_text("x")

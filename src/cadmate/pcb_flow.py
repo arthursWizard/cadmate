@@ -29,7 +29,7 @@ def load(path: str | None) -> tuple[Board, object | None]:
         f = Path(path).expanduser()
         if not f.exists():
             raise FlowError(f"no board at {f}")
-        b = parse(f.read_text(errors="replace"), f.name)
+        b = parse(f.read_text(encoding="utf-8", errors="replace"), f.name)
         load_project(b, f.with_suffix(".kicad_pro"))
         load_schematic(b, f.parent, f.stem)
         return b, None
@@ -192,8 +192,8 @@ def autoroute(path: str | None = None, out_path: str | None = None, currents: di
             block = fab.neck_rules([w for w in warns if w.get("ref") not in bare], lim["rules"]["track"]["hard"])
             if dru is not None and (block or dru.exists()):
                 src = Path(path).expanduser().with_suffix(".kicad_dru") if path else dru
-                before = src.read_text() if src.exists() else ""
-                dru.write_text(fab.merge_rules(before, block))
+                before = src.read_text(encoding="utf-8") if src.exists() else ""
+                dru.write_text(fab.merge_rules(before, block), encoding="utf-8", newline="\n")
                 out["neck_rules"] = {"file": str(dru), "rules": block.count("(rule "),
                                      "what": "KiCad custom rules allowing these nets down to the fab's minimum inside the "
                                              "courtyard of the part they neck into; tracks squeezed elsewhere stay DRC errors",
@@ -218,7 +218,7 @@ def finish_routing(path: str, out_path: str | None = None, outer_only: bool = Tr
                         "beside it under the board's name, or the new tracks would follow KiCad's defaults, not the board's")
     b, _ = load(path)
     dru = Path(path).expanduser().with_suffix(".kicad_dru")
-    necks = fab.read_neck_rules(dru.read_text()) if dru.exists() else {}
+    necks = fab.read_neck_rules(dru.read_text(encoding="utf-8")) if dru.exists() else {}
     planes = pcb_route.plane_nets(b)
     roles = pcb_review.infer_roles(b)
     plan = pcb_critical.classify(b, only=list(CAREFUL))

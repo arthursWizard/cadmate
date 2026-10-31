@@ -88,7 +88,7 @@ def load_spec(case_dir: Path, spec: dict | str | None) -> tuple[dict, str | None
             raise EnclosureError(f"no spec at {f}")
         return {}, None
     try:
-        return json.loads(f.read_text()), str(f)
+        return json.loads(f.read_text(encoding="utf-8")), str(f)
     except ValueError as e:
         raise EnclosureError(f"{f} isn't valid JSON: {e}") from None
 
@@ -113,7 +113,7 @@ def measure(assembly: Path, resolved: dict, timeout: int = 1800) -> dict:
 
     with tempfile.TemporaryDirectory() as tmp:
         f = Path(tmp) / "spec.json"
-        f.write_text(json.dumps(resolved))
+        f.write_text(json.dumps(resolved), encoding="utf-8")
         return apps.run_freecad_script(SCRIPT, env={"CADMATE_ASSEMBLY": str(assembly), "CADMATE_SPEC": str(f)}, timeout=timeout)
 
 
@@ -275,7 +275,7 @@ def check(path: str | Path, spec: dict | str | None = None, save: bool = True) -
                           "openings that are meant to be there (and heights from the brief), then run this again")
     if save:
         f = case_dir / REPORT
-        f.write_text(json.dumps(result | {"raw": raw}, indent=1) + "\n")
+        f.write_text(json.dumps(result | {"raw": raw}, indent=1) + "\n", encoding="utf-8")
         result["report"] = str(f)
     return result
 
@@ -299,7 +299,7 @@ def project_findings(root: Path) -> list[dict]:
         return [project._finding("warning", rel, f"older than {', '.join(sorted(newer)[:3])}",
                                  "run check_enclosure again")]
     try:
-        r = json.loads(rep.read_text())
+        r = json.loads(rep.read_text(encoding="utf-8"))
     except ValueError:
         return [project._finding("warning", rel, "not valid JSON", "run check_enclosure again")]
     n = r.get("counts", {}).get("error", 0)

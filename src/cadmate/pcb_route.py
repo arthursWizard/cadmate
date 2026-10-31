@@ -1083,13 +1083,13 @@ def sexpr_items(text: str, tracks: list[Track], vias: list[Via], locked: bool = 
 
 
 def write_file(src: Path, dst: Path, tracks: list[Track], vias: list[Via], locked: bool = True) -> None:
-    text = src.read_text()
+    text = src.read_text(encoding="utf-8")
     end = text.rstrip().rfind(")")
     dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_text(text[:end] + sexpr_items(text, tracks, vias, locked) + text[end:])
+    dst.write_text(text[:end] + sexpr_items(text, tracks, vias, locked) + text[end:], encoding="utf-8", newline="\n")
     pro = src.with_suffix(".kicad_pro")
     if pro.exists() and dst.with_suffix(".kicad_pro") != pro:
-        dst.with_suffix(".kicad_pro").write_text(pro.read_text())
+        dst.with_suffix(".kicad_pro").write_text(pro.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
 
 
 def apply_live(board, tracks: list[Track], vias: list[Via], locked: bool = True) -> int:

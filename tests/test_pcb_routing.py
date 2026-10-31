@@ -1,7 +1,7 @@
 import pytest
 
 from cadmate import freerouting as fr, pcb_board as pb, pcb_critical as pc, pcb_route as rt
-from test_pcb_review import HEAD, board, cap, footprint, ic, pad, zone
+from test_pcb_review import HEAD, board, cap, footprint, ic, pad, seg, zone
 
 
 def items(plan, cls):
@@ -622,3 +622,56 @@ def test_finish_routing_flow_leaves_crystal_nets_alone(tmp_path, monkeypatch):
     monkeypatch.setattr(fr, "refill", lambda f: None)
     out = pcb_flow.finish_routing(str(src))
     assert {"XI", "XO", "XO2"} <= set(out["left_alone"]) and "SENSE" not in out["left_alone"] and not any(o["net"].startswith("X") for o in out["still_open"])
+
+
+# --- keyboard run fixes: planes, detours, boxed-in pads, open counts -------------------------------------
+
+
+def _two(ref, x, y, net, layer="F.Cu"):
+    return footprint("Resistor_SMD:R_0402", ref, "1k", x, y, [pad(1, 0, 0, net, 0.6, 0.6, layer=layer), pad(2, 1.5, 0, "x" + ref, 0.6, 0.6, layer=layer)],
+                     layer=layer)
+
+
+def test_signal_tracks_stay_off_another_nets_plane():
+    wall = seg((20, 0.5), (20, 39.5), "WALL", w=1.0)  # F.Cu blocked: the track has to change layer
+    planes = [zone("GND", "In1.Cu", [[(0, 0), (60, 0), (60, 40), (0, 40)]]), zone("+3V3", "In2.Cu", [[(0, 0), (60, 0), (60, 40), (0, 40)]])]
+    b = four_layer(_two("R1", 10, 20, "SIG"), _two("R2", 30, 20, "SIG"), wall, *planes)
+    r = rt.Router(b)
+    assert r.signal_layers(["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"], "SIG") == ["F.Cu", "B.Cu"]
+    assert r.signal_layers(["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"], "GND") == ["F.Cu", "In1.Cu", "B.Cu"]
+    res = r.route({"net": "SIG", "width": 0.2, "a": {"pad": "R1.1"}, "b": {"pad": "R2.1"}}, "t")
+    assert res.ok and {t.layer for t in res.tracks} <= {"F.Cu", "B.Cu"} and "B.Cu" in {t.layer for t in res.tracks}
+
+
+def _plan(conn, cls="esd"):
+    return {"items": [{"id": f"{cls}:x", "class": cls, "action": "route", "rule": {}, "nets": [conn["net"]], "refs": [],
+                       "connections": [conn]}]}
+
+
+def test_a_long_detour_is_left_unrouted_not_locked():
+    walls = seg((30, 14), (30, 26), "WALL", w=1.0) + seg((30, 14), (30, 26), "WALL", w=1.0, layer="B.Cu")
+    b = board(_two("R1", 26.5, 20, "N"), _two("R2", 31, 20, "N"), walls)
+    out = rt.route_plan(b, _plan({"net": "N", "width": 0.2, "a": {"pad": "R1.1"}, "b": {"pad": "R2.1"}}))
+    [c] = out["connections"]
+    assert not c["ok"] and "detour" in c["why"] and not out["tracks"]
+    # with nothing in the way the same hop routes
+    b = board(_two("R1", 26.5, 20, "N"), _two("R2", 31, 20, "N"))
+    assert rt.route_plan(b, _plan({"net": "N", "width": 0.2, "a": {"pad": "R1.1"}, "b": {"pad": "R2.1"}}))["routed"] == 1
+
+
+def test_a_pad_walled_in_by_new_copper_is_reported():
+    from cadmate.pcb_board import Track
+
+    b = board(_two("R1", 30, 20, "CC1"), _two("R2", 50, 20, "CC1"))
+    ring = [((28.8, 18.8), (31.2, 18.8)), ((31.2, 18.8), (31.2, 21.2)), ((31.2, 21.2), (28.8, 21.2)), ((28.8, 21.2), (28.8, 18.8))]
+    tracks = [Track(a, c, 0.2, "F.Cu", "/D-", locked=True) for a, c in ring]
+    [hit] = rt.boxed_in(b, tracks, [])
+    assert hit["pad"] == "R1.1" and hit["net"] == "CC1" and hit["by_nets"] == ["/D-"]
+    assert rt.boxed_in(b, tracks[:2], []) == []  # an open side is still a way out
+
+
+def test_open_counted_as_nets_and_as_kicad_connections():
+    b = board(_two("R1", 10, 10, "A"), _two("R2", 20, 10, "A"), _two("R3", 30, 10, "A"), _two("R4", 10, 30, "B"), _two("R5", 20, 30, "B"))
+    left = fr.unrouted(b)
+    assert {u["net"]: u["connections"] for u in left} == {"A": 2, "B": 1}
+    assert {k: v for k, v in fr.open_counts(left).items() if k != "note"} == {"nets": 2, "connections": 3}

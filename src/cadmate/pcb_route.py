@@ -26,6 +26,9 @@ Point = tuple[float, float]
 GRID = 0.05  # mm
 MAX_EXPANSIONS = 200_000
 ESCAPE = 0.6  # mm from an end pad where the grid margin is dropped
+DETOUR_RATIO = 3.0  # a critical track this many times the straight distance, and DETOUR_EXTRA mm longer, is a detour
+DETOUR_EXTRA = 8.0
+BOX_REACH = 1.5  # mm beyond a pad's edge a track must be able to reach for the pad to have a way out
 DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)]
 
 
@@ -220,6 +223,16 @@ class Router:
         self.pads = {}
         for p in b.pads:
             self.pads.setdefault(f"{p.ref}.{p.number}", []).append(p)
+        self.planes: dict[str, set[str]] = {}  # inner layer -> nets with a plane on it
+        for n, ls in plane_nets(b).items():
+            for l in ls:
+                self.planes.setdefault(l, set()).add(n)
+
+    def signal_layers(self, layers: list[str], net: str) -> list[str]:
+        """The layers a track of this net may use: not an inner layer that holds another net's plane, since a track there
+        cuts the plane (a USB line across the ground plane loses its return path). All of them if nothing else is left."""
+        ok = [l for l in layers if not (self.planes.get(l, set()) - {net})]
+        return ok or layers
 
     def pad(self, end: dict) -> Pad | None:
         hits = self.pads.get(end["pad"], [])
@@ -338,6 +351,7 @@ class Router:
         layers = (common if max_vias == 0 else self.obs.layers) or self.obs.layers
         if conn.get("layers"):  # e.g. outer layers only, to keep tracks out of the planes
             layers = [l for l in layers if l in conn["layers"]] or layers
+        layers = self.signal_layers(layers, net)
         size, drill = self.via_size(net)
         g = self.g
         ox, oy = a.x, a.y  # grid origin on the start pad's centre
@@ -444,7 +458,7 @@ class Router:
                     for lj in range(len(layers)):
                         if lj == li:
                             continue
-                        t = (lj, i, j, nv + 1)
+                        t = (lj, i, j, nv + 1 if max_vias is not None else 0)  # uncapped: the count needn't be state, or the search never runs out
                         c = cost + via_cost
                         if c < best.get(t, math.inf) - 1e-9:
                             best[t] = c
@@ -794,6 +808,68 @@ def plane_fanout(b: Board, grid: float = GRID) -> dict:
     return out
 
 
+def _escapes(obs: Obstacles, p: Pad, half: float, grid: float = 0.1) -> bool:
+    """Whether a track half wide can leave pad p on one of its outer layers and get BOX_REACH beyond its edge, or reach a
+    spot a via fits. A grid flood fill from the pad, out to that distance."""
+    reach = max(p.w, p.h) / 2 + BOX_REACH
+    for layer in [l for l in p.layers if l in (obs.layers[0], obs.layers[-1])]:
+        seen = {(0, 0)}
+        todo = [(0, 0)]
+        while todo:
+            i, j = todo.pop()
+            for dx, dy in DIRS[:4]:
+                k = (i + dx, j + dy)
+                if k in seen:
+                    continue
+                seen.add(k)
+                q = (p.x + k[0] * grid, p.y + k[1] * grid)
+                if p.contains(q):
+                    todo.append(k)
+                    continue
+                if not obs.clear(layer, q, p.net, half)[0]:
+                    continue
+                if dist(q, (p.x, p.y)) >= reach:
+                    return True
+                todo.append(k)
+    return False
+
+
+def boxed_in(b: Board, tracks: list[Track], vias: list[Via]) -> list[dict]:
+    """Pads with nothing on them yet that the new copper has walled in: they could get a track out before, and can't now.
+    The USB-C CC1 pin in the keyboard run was one, found only when it was the last connection open."""
+    if not tracks and not vias:
+        return []
+    before = Obstacles(b)
+    after = Obstacles(b)
+    for t in tracks:
+        after.add_track(t)
+    for v in vias:
+        after.add_via(v)
+    new_nets = {t.net for t in tracks} | {v.net for v in vias}
+    planes = plane_nets(b)
+    count: dict[str, int] = {}
+    for q in b.pads:
+        count[q.net] = count.get(q.net, 0) + 1
+    out = []
+    for p in b.pads:
+        if not p.net or count.get(p.net, 0) < 2 or p.net in new_nets or p.net in planes or p.kind == "np_thru_hole":
+            continue
+        if p.kind == "thru_hole" or _pad_joined(b, p):
+            continue  # a through-hole pad can leave on any layer; one already joined needs no way out
+        near = any(point_seg((p.x, p.y), t.start, t.end)[0] < max(p.w, p.h) / 2 + BOX_REACH + t.width for t in tracks) or \
+            any(dist((p.x, p.y), (v.x, v.y)) < max(p.w, p.h) / 2 + BOX_REACH + v.size for v in vias)
+        if not near:
+            continue
+        half = max((b.rules or {}).get("min_track_width") or 0.1, 0.1) / 2
+        if _escapes(before, p, half) and not _escapes(after, p, half):
+            by = sorted({t.net for t in tracks if point_seg((p.x, p.y), t.start, t.end)[0] < max(p.w, p.h) / 2 + BOX_REACH + t.width}
+                        | {v.net for v in vias if dist((p.x, p.y), (v.x, v.y)) < max(p.w, p.h) / 2 + BOX_REACH + v.size})
+            out.append({"pad": f"{p.ref}.{p.number}", "net": p.net, "by_nets": by, "at": [round(p.x, 2), round(p.y, 2)],
+                        "what_to_do": "route this pad first (route_critical_nets with its item, or by hand), then route the rest "
+                                      "again; or move a part to open a way out"})
+    return out
+
+
 def route_plan(b: Board, plan: dict, ids: list[str] | None = None, skip: list[str] | None = None, grid: float = GRID) -> dict:
     """Route every connection of the plan's items whose action is "route" (or the ids given), in the plan's order.
 
@@ -841,9 +917,12 @@ def route_plan(b: Board, plan: dict, ids: list[str] | None = None, skip: list[st
         e = by_item.setdefault(res.item, {"routed": 0, "failed": 0})
         e["routed" if res.ok else "failed"] += 1
     check = [res.to_dict() for res in results if res.ok and res.over] + [e for e in pairs if e.get("within") is False]
+    b.tracks, b.vias = tracks0, vias0
+    walled = boxed_in(b, tracks, vias)
+    b.tracks, b.vias = tracks0 + tracks, vias0 + vias
     return {"tracks": tracks, "vias": vias, "connections": [res.to_dict() for res in results], "items": by_item, "pairs": pairs,
             "routed": sum(1 for x in results if x.ok), "failed": sum(1 for x in results if not x.ok), "over_rule": check,
-            "routed_first": first}
+            "routed_first": first, "boxed_in": walled}
 
 
 def _route_once(b: Board, plan: dict, items: list[dict], grid: float) -> list[Result]:
@@ -873,6 +952,14 @@ def _route_once(b: Board, plan: dict, items: list[dict], grid: float) -> list[Re
             if res2.ok and (not res.ok or res2.length < res.length - 0.2):
                 res2.note = f"necked down to the net class width {narrow:g} mm to get through"
                 res = res2
+        if res.ok and not limit:
+            pa, pb_ = r.pad(c["a"]), r.pad(c["b"])
+            straight = dist((pa.x, pa.y), (pb_.x, pb_.y))
+            if res.length > max(DETOUR_RATIO * straight, straight + DETOUR_EXTRA):
+                # locked copper the long way round walls in everything it passes; better left to the autorouter or a
+                # placement change than routed and locked
+                return Result(c, it["id"], False, f"only a {res.length:.1f} mm detour for a {straight:.1f} mm hop; move a part "
+                                                  "so it can go direct, or leave it to the autorouter")
         if res.ok and limit and res.length > limit:
             res.over = True
             res.note = (res.note + "; " if res.note else "") + f"{res.length:.1f} mm, longer than the rule's {limit:g} mm: check it, or fix the placement"

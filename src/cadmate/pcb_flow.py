@@ -114,6 +114,7 @@ def route_critical(path: str | None = None, out_path: str | None = None, roles: 
            "by_hand": [c for c in res["connections"] if not c["ok"]],
            "over_rule": res["over_rule"],
            "routed_first": res["routed_first"],
+           "boxed_in": res["boxed_in"],
            "not_routed_here": [{"id": it["id"], "action": it["action"], "title": it["title"]} for it in plan["items"]
                                if it["action"] != "route" and not (items and it["id"] in items)],
            "locked": "every segment and via added here is locked, so Freerouting routes around it",
@@ -135,8 +136,11 @@ def route_critical(path: str | None = None, out_path: str | None = None, roles: 
         out["written"] = str(dst)
         if snap:
             out["snapshot"] = snap
-    out["next"] = ("tell the user what's in by_hand and over_rule (routed but longer than the rule, or a pair out of skew: "
-                   "KiCad's skew tuner, or better placement), then autoroute_rest and review_pcb_layout")
+    if res["boxed_in"]:
+        out["boxed_in_note"] = ("these pads had a way out before this routing and have none now: their nets will stay open. "
+                                "Route them first (or move a part), then route the critical items again")
+    out["next"] = ("tell the user what's in by_hand, boxed_in and over_rule (routed but longer than the rule, or a pair out of "
+                   "skew: KiCad's skew tuner, or better placement), then autoroute_rest and review_pcb_layout")
     return out
 
 

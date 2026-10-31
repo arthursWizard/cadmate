@@ -21,6 +21,8 @@ Early. Ten workflows work end to end:
 
 - **Keep one active project with its history**: every design lives in one folder with a fixed layout (`kicad/<board>/`, `kicad/lib/`, `case/`, `fab/<board>/`, `tools/`, `docs/`). Changes go into it in place; when a state is worth keeping, `project_snapshot` copies it into `history/<YYYYMMDD-HHMM>_<label>/` first, and `project_restore` brings it back. The routing tools and the footprint, symbol and part writers follow this by themselves inside a project, and `project_check` points out anything out of place. See "Projects and history" below.
 
+- **Check a printed case**: `check_enclosure` reads the case assembly in FreeCAD and reports what you'd otherwise find by eye or after printing: case parts colliding with boards, components or each other, a shell with an opening nobody asked for, and two case parts that don't meet flush (a gap along the seam, or one standing proud of the other). The openings meant to be there (key cutouts, USB, a window) and the heights from the brief go in `case/enclosure.json`.
+
 - **Lay out a circuit on perfboard**: through-hole parts on the 2.54 mm hole grid, each taking the holes its leads go through and covering the holes under its body. cadmate checks the placement, routes the nets with bottom-side solder bridges and bare wire and, where the bottom can't get through, insulated jumpers on top, and draws the board to copy by hand: the component side, the solder side mirrored as it looks turned over, and a build list. See "Perfboard layouts" below.
 
 | Tool | What it does | Needs |
@@ -71,7 +73,8 @@ Early. Ten workflows work end to end:
 | `project_snapshot` | Copies the current state (or part of it) into `history/<YYYYMMDD-HHMM>_<label>/` before a change, with the libraries KiCad needs to open it | nothing |
 | `project_history` | The snapshots, oldest first, with what each holds and why it was taken | nothing |
 | `project_restore` | Puts a snapshot back into the active project, snapshotting the current state first | nothing |
-| `project_check` | Everything out of place: stray versions and backups, wrong depth, misnamed boards, broken or absolute library paths, renamed-project annotations, stale fab files | nothing |
+| `project_check` | Everything out of place: stray versions and backups, wrong depth, misnamed boards, broken or absolute library paths, renamed-project annotations, stale fab files, a missing, stale or failing enclosure check | nothing |
+| `check_enclosure` | Checks a case assembly: parts that collide, openings in each shell that aren't declared, joints between case parts with a gap or a step, part heights against the brief | FreeCAD |
 | `kicad_pcb_snapshot` | A picture of the open board, unsaved edits included | KiCad API on, and an SVG converter |
 
 ## Version policy

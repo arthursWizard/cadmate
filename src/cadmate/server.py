@@ -13,7 +13,7 @@ from pathlib import Path
 
 from mcp.server.mcpserver import Image, MCPServer
 
-from . import (apps, check, fab_export, footprint, freerouting, generate, ipc, kicad_live, kicad_pcb_live, live, model, packages, part, pcb_flow, pcb_review,
+from . import (apps, check, enclosure, fab_export, footprint, freerouting, generate, ipc, kicad_live, kicad_pcb_live, live, model, packages, part, pcb_flow, pcb_review,
                pcb_route, project, protoboard, protoboard_place, protoboard_render, review, schematic_review, symbol, symbol_check, symbol_generate)
 from .footprint import read as _read_footprint  # generate_symbol's footprint argument shadows the module
 
@@ -36,6 +36,7 @@ session that creates or changes design files, whoever asked for the change:
   showing a result; project_check lists the open items, and a stage isn't done until you've said which are met.
 - Report DRC as errors, warnings, unconnected and parity, with the warnings by type, never errors alone.
 - project_init on a new design folder; project_check before telling the user a step is done.
+- check_enclosure before showing the user a case: collisions, openings nobody declared, joints with a gap or a step.
 The cadmate-project skill has the reasons and the edge cases."""
 
 server = MCPServer("cadmate", instructions=INSTRUCTIONS)
@@ -76,6 +77,7 @@ def environment() -> dict:
             "route_critical_nets": True,
             "autoroute_rest": freerouting.status(),
             "protoboard": True,
+            "check_enclosure": freecad.available,
         },
     }
 
@@ -945,9 +947,31 @@ def project_check(path: str) -> dict:
     (-v2, -routed, -hand3, variant-*, .bak), more than one board per kicad/<board>/ folder, a KiCad project not named
     after its folder, schematic annotations that belong to another project name (a renamed or copied project), library
     tables and 3D model links that are absolute, missing or outside the project, fab files older than their board or
-    for a board that's gone, badly named snapshots, and leftover scratch. Each finding has a fix. Run it before telling
-    the user a step is done."""
+    for a board that's gone, badly named snapshots, leftover scratch, and a case whose enclosure check is missing,
+    older than the case or failing. Each finding has a fix. Run it before telling the user a step is done."""
     return _project(project.check, path)
+
+
+# Enclosures: collisions, closed shells and flush joints on a case assembly (enclosure.py, freecad_scripts/check_enclosure.py).
+
+
+@server.tool()
+def check_enclosure(path: str, spec: dict | str | None = None) -> dict:
+    """Check a printed case in FreeCAD before showing it: parts that collide (case with boards, components, flex
+    cables, each other), openings in each shell that aren't declared (a slot left in a wall, a gap at a seam), and
+    joints between case parts that don't sit flush (a gap, or one part standing proud of the other), plus part heights
+    against the brief.
+
+    path: the project, its case/ folder, or an assembly STEP whose children are the placed parts, named; the case parts
+    are the ones with a case/<part>.step. spec (a dict or JSON path; default case/enclosure.json) declares the openings
+    meant to be there, joint limits, heights and allowed overlaps: see enclosure.py for the format. Without a spec every
+    opening is reported, so the first run is how you list them: write the intended ones into case/enclosure.json, keep
+    the rest as errors to fix. The report is saved as case/enclosure-check.json; project_check flags it when it's missing,
+    stale or failing. Takes a few minutes on a full keyboard case."""
+    try:
+        return enclosure.check(path, spec)
+    except (enclosure.EnclosureError, RuntimeError, OSError, ValueError) as e:
+        return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
 
 
 # Protoboards: through-hole parts on a perfboard's 2.54 mm hole grid (protoboard.py, protoboard_render.py).

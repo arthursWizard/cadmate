@@ -359,6 +359,8 @@ def check(path: str | Path) -> dict:
                                       f"flatten it: {LAYOUT[top]}"))
     found += _check_kicad(root)
     found += _check_fab(root)
+    from . import enclosure  # it imports this module
+    found += enclosure.project_findings(root)
     work = root / WORK
     if work.exists() and any(work.iterdir()):
         n = sum(1 for f in work.rglob("*") if f.is_file())

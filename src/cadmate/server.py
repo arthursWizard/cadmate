@@ -14,10 +14,31 @@ from pathlib import Path
 from mcp.server.mcpserver import Image, MCPServer
 
 from . import (apps, check, fab_export, footprint, freerouting, generate, ipc, kicad_live, kicad_pcb_live, live, model, packages, part, pcb_flow, pcb_review,
-               pcb_route, protoboard, protoboard_place, protoboard_render, review, schematic_review, symbol, symbol_check, symbol_generate)
+               pcb_route, project, protoboard, protoboard_place, protoboard_render, review, schematic_review, symbol, symbol_check, symbol_generate)
 from .footprint import read as _read_footprint  # generate_symbol's footprint argument shadows the module
 
-server = MCPServer("cadmate")
+INSTRUCTIONS = """\
+cadmate keeps each design as ONE active project with a fixed layout and a single history folder. Follow this in every
+session that creates or changes design files, whoever asked for the change:
+
+- Apply every change to the active project in place. Never create side-by-side versions: no left-v2/,
+  core-routed.kicad_pcb, core-hand3.kicad_pcb, case/variant-flat/, *.bak, or copies "to keep the old one".
+- To keep the old state, call project_snapshot first (label like "before-mid-joint"). It copies the files into
+  history/<YYYYMMDD-HHMM>_<label>/ at the same relative paths and logs it in history/HISTORY.md; project_restore puts
+  one back. Snapshot when the user has seen or approved the current state, or before a big or risky change. The routing
+  tools snapshot the board themselves when they change it in place.
+- Layout: kicad/<board>/<board>.kicad_pro|.kicad_sch|.kicad_pcb|.kicad_dru, kicad/lib/ (project footprints, symbols,
+  3D models), case/ (FreeCAD sources, <part>.step, assembly.step, renders/, pcb-models/), fab/<board>/ (generated),
+  tools/ (generator scripts: the design's source, never archived or deleted), docs/, history/, .cadmate/work/ (scratch).
+- To compare options, build them in .cadmate/work/, show the user, apply the pick to the active project, delete the rest.
+- Never rename a KiCad project: its schematic annotations are tied to the name. Use ${KIPRJMOD}-relative library paths.
+- Keep docs/brief.md: every requirement the user states, as a checklist. Re-read it before each stage and before
+  showing a result; project_check lists the open items, and a stage isn't done until you've said which are met.
+- Report DRC as errors, warnings, unconnected and parity, with the warnings by type, never errors alone.
+- project_init on a new design folder; project_check before telling the user a step is done.
+The cadmate-project skill has the reasons and the edge cases."""
+
+server = MCPServer("cadmate", instructions=INSTRUCTIONS)
 
 @server.tool()
 def environment() -> dict:
@@ -119,7 +140,7 @@ def link_model_to_footprint(
     scale: list[float] | None = None,
     replace_existing: bool = True,
 ) -> dict:
-    """Link a 3D model into a footprint file, keeping a .bak copy of the original.
+    """Link a 3D model into a footprint file, keeping the original (history/ in a cadmate project, else a .bak).
 
     model_path is written as given, so KiCad variables like
     ${KICAD10_3DMODEL_DIR} or ${KIPRJMOD} stay portable. Close the footprint
@@ -135,8 +156,7 @@ def link_model_to_footprint(
     )
     new_text = footprint.link_model(text, model, replace=replace_existing)
     footprint.parse(new_text)  # never write a file we cannot read back
-    backup = path.with_suffix(path.suffix + ".bak")
-    shutil.copy2(path, backup)
+    backup = project.keep([path], "model-link")
     path.write_text(new_text, encoding="utf-8")
     return {"written": str(path), "backup": str(backup), "models": [m.__dict__ for m in footprint.parse(new_text).models]}
 
@@ -168,7 +188,7 @@ def generate_footprint(
     "6.0+/-0.2". custom places pads exactly as the datasheet's recommended land
     pattern gives them. The result is checked before it is written; nothing is
     written when the check finds errors. An existing file is only replaced with
-    overwrite=True, and a .bak copy is kept. description and tags replace the
+    overwrite=True, and the old file is kept (history/ in a cadmate project, else .bak). description and tags replace the
     family's own (KiCad's library style: "USB 3.2 Type-C receptacle, hybrid
     SMD/THT, https://...", tags "USB C Type-C receptacle").
     """
@@ -183,13 +203,14 @@ def generate_footprint(
     path = lib / f"{result['name']}.kicad_mod"
     if path.exists() and not overwrite:
         result["ok"] = False
-        result["errors"] = [f"{path} exists; pass overwrite=True to replace it (a .bak copy is kept)"]
+        result["errors"] = [f"{path} exists; pass overwrite=True to replace it (the old one is kept: in history/ inside a cadmate project, else as .bak)"]
         return result
     lib.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        shutil.copy2(path, path.with_suffix(path.suffix + ".bak"))
+    kept = project.keep([path], "footprint")
     path.write_text(text, encoding="utf-8")
     result["written"] = str(path)
+    if kept:
+        result["previous"] = kept
     return result
 
 
@@ -313,7 +334,7 @@ def generate_symbol(
     default footprint as Library:Name; footprint_path, a local .kicad_mod, also checks that every pad
     has a pin and every pin a pad. The symbol is checked before it is written; nothing is written when
     the check finds errors. An existing symbol of the same name is only replaced with overwrite=True,
-    and the library keeps a .bak copy. Other symbols in the library are left byte for byte.
+    and the old library is kept (history/ in a cadmate project, else .bak). Other symbols in the library are left byte for byte.
     """
     lib = Path(library_path).expanduser()
     if lib.suffix != ".kicad_sym":
@@ -336,14 +357,15 @@ def generate_symbol(
         new_text = symbol.put_in_library(existing, text, name, replace=overwrite)
     except FileExistsError:
         result["ok"] = False
-        result["errors"] = [f"{lib.name} already has {name}; pass overwrite=True to replace it (a .bak copy is kept)"]
+        result["errors"] = [f"{lib.name} already has {name}; pass overwrite=True to replace it (the old one is kept: in history/ inside a cadmate project, else as .bak)"]
         return result
     symbol.parse_library(new_text)  # never write a library we cannot read back
     lib.parent.mkdir(parents=True, exist_ok=True)
-    if existing is not None:
-        shutil.copy2(lib, lib.with_suffix(lib.suffix + ".bak"))
+    kept = project.keep([lib], "symbol") if existing is not None else None
     lib.write_text(new_text, encoding="utf-8")
     result["written"] = str(lib)
+    if kept:
+        result["previous"] = kept
     return result
 
 
@@ -412,7 +434,7 @@ def generate_part(
     linked as ${KIPRJMOD}/<library>.3dshapes/<footprint>.step, and adds the libraries to the project's
     sym-lib-table and fp-lib-table. Every pin must have a pad and every pad a pin, and the model must sit on the
     pads; nothing is written when any check finds errors. Existing files are only replaced with overwrite=True,
-    keeping .bak copies. The model needs FreeCAD; without it, symbol and footprint are written without a model.
+    keeping the old files (history/ in a cadmate project, else .bak). The model needs FreeCAD; without it, symbol and footprint are written without a model.
     """
     return part.generate_part(project_dir, library, symbol, footprint, model, datasheet=datasheet, overwrite=overwrite)
 
@@ -750,7 +772,7 @@ def review_pcb_layout(path: str | None = None, currents: dict[str, float] | None
     ground under it); signals near switching nodes; tracks narrower than their net class; current per IPC-2221 for the
     nets in currents ({net: amps}), and the capacity of power nets without one; vias per net; fast signals crossing
     gaps in the ground pour; JLCPCB's SMD spacing, via and track minimums (fab="jlcpcb", or None to skip); and
-    KiCad's own DRC (unrouted nets, clearances) when kicad-cli is found. Net roles are inferred from names, pin types,
+    KiCad's own DRC (unrouted nets, clearances) when kicad-cli is found; drc gives errors, warnings, unconnected and parity with the types: report all four. Net roles are inferred from names, pin types,
     power symbols and parts; net_roles says what was inferred and why. Correct them with roles ({net: "ground" |
     "power" | "switching" | "crystal" | "fast" | "sensitive" | "signal"}). limits overrides cadmate's own thresholds
     (listed in the reply under limits; they are heuristics, not standards). Each finding has a location, the reasoning
@@ -799,31 +821,38 @@ def classify_critical_nets(path: str | None = None, roles: dict[str, str] | None
 @server.tool()
 def route_critical_nets(path: str | None = None, out_path: str | None = None, roles: dict[str, str] | None = None,
                         currents: dict[str, float] | None = None, overrides: dict[str, str] | None = None,
-                        limits: dict[str, float] | None = None, items: list[str] | None = None, dry_run: bool = False) -> dict:
+                        limits: dict[str, float] | None = None, items: list[str] | None = None, dry_run: bool = False,
+                        in_place: bool | None = None) -> dict:
     """Route the critical connections that classify_critical_nets marked "route" (or only the item ids in items), and lock them.
 
     Pass the same roles, currents and overrides the user confirmed. Short, direct tracks on one layer where the rule asks
     for it, ground pads into the pour with a via at the pad, pairs routed together; clearances from the net classes are
     kept, and anything that can't be routed within its rule is listed under by_hand with the reason instead. Every
     segment and via added is locked, so Freerouting routes around them; nothing else is locked. On the open board the
-    result is one undo step (not saved); for a file it goes to out_path (default <name>-critical.kicad_pcb).
+    result is one undo step (not saved).
     pairs reports each pair's lengths and mismatch against its rule. dry_run routes without writing anything.
+    Saved boards: inside a cadmate project the board itself is changed, after a snapshot of its files into history/
+    (snapshot in the result; project_restore undoes the step); in_place=False writes to .cadmate/work/ instead.
+    Outside a project it goes to out_path, default <name>-critical.kicad_pcb.
     """
     return _flow_call(pcb_flow.route_critical, path=path, out_path=out_path, roles=roles, currents=currents, overrides=overrides,
-                      limits=limits, items=items, dry_run=dry_run)
+                      limits=limits, items=items, dry_run=dry_run, in_place=in_place)
 
 
 @server.tool()
 def autoroute_rest(path: str | None = None, out_path: str | None = None, currents: dict[str, float] | None = None,
                    roles: dict[str, str] | None = None, passes: int = 30, timeout: int = 1200, fab: str | None = "jlcpcb",
-                   margin: float = 0.25, neck_rules: bool = True) -> dict:
+                   margin: float = 0.25, neck_rules: bool = True, in_place: bool | None = None) -> dict:
     """Let Freerouting route everything still unrouted, around the locked critical tracks, and bring the result back.
 
     Needs Freerouting's jar (KiCad's Freerouting plugin has one), java, and KiCad's bundled Python for the DSN export;
     environment() says what was found. Nets with a current get the IPC-2221 width as a Freerouting class, capped at the
     smallest pad on the net (widths_capped says where). On the way back, tracks narrower than their net class are widened
-    (widened lists them) and zones are refilled. On the open board the result is one undo step; for a file it goes to
-    out_path (default <name>-routed.kicad_pcb). unrouted lists nets still not joined. Then run review_pcb_layout.
+    (widened lists them) and zones are refilled. On the open board the result is one undo step. unrouted lists nets
+    still not joined. Then run review_pcb_layout.
+    Saved boards: inside a cadmate project the board itself is changed, after a snapshot of its files into history/
+    (snapshot in the result; project_restore undoes the step); in_place=False writes to .cadmate/work/ instead.
+    Outside a project it goes to out_path, default <name>-routed.kicad_pcb.
     On a board with inner-layer planes, each SMD pad on a plane net first gets a locked via into its plane (plane_fanout
     says how many, and which pads had no room), since Freerouting doesn't route to planes itself.
 
@@ -834,19 +863,22 @@ def autoroute_rest(path: str | None = None, out_path: str | None = None, current
     .kicad_dru, cadmate's block only) allowing them inside that part's courtyard, so DRC flags only what needs fixing.
     """
     return _flow_call(pcb_flow.autoroute, path=path, out_path=out_path, currents=currents, roles=roles, passes=passes, timeout=timeout,
-                      fab_name=fab, margin=margin, neck_rules=neck_rules)
+                      fab_name=fab, margin=margin, neck_rules=neck_rules, in_place=in_place)
 
 
 @server.tool()
-def finish_routing(path: str, out_path: str | None = None, outer_only: bool = True) -> dict:
+def finish_routing(path: str, out_path: str | None = None, outer_only: bool = True, in_place: bool | None = None) -> dict:
     """Clean up after autoroute_rest, the way you would by hand: tracks that break clearance or are under the board's
     minimum width (Freerouting squeezes some past fine-pitch pins) are taken out with the stubs they leave, then every net
     still in pieces is joined with cadmate's grid router, nearest pads first, and the zones are refilled. Locked tracks
     are never touched. With outer_only (default) new tracks stay on the outer layers so inner planes stay whole.
-    path is a saved .kicad_pcb; the result goes to out_path (default <name>-finished.kicad_pcb). still_open lists what it
-    couldn't join, with the reason, to route by hand. Run KiCad's DRC on the result.
+    path is a saved .kicad_pcb. still_open lists what it couldn't join, with the reason, to route by hand. Run KiCad's
+    DRC on the result.
+    Saved boards: inside a cadmate project the board itself is changed, after a snapshot of its files into history/
+    (snapshot in the result; project_restore undoes the step); in_place=False writes to .cadmate/work/ instead.
+    Outside a project it goes to out_path, default <name>-finished.kicad_pcb.
     """
-    return _flow_call(pcb_flow.finish_routing, path=path, out_path=out_path, outer_only=outer_only)
+    return _flow_call(pcb_flow.finish_routing, path=path, out_path=out_path, outer_only=outer_only, in_place=in_place)
 
 
 @server.tool()
@@ -854,12 +886,68 @@ def export_fab(path: str, out_dir: str | None = None) -> dict:
     """Manufacturing files for JLCPCB from a finished .kicad_pcb: Gerbers and drill files (zipped, ready to upload), the
     BOM (Comment, Designator, Footprint, LCSC Part #, from the footprints' LCSC field) and the CPL (Designator, Mid X,
     Mid Y, Layer, Rotation). DNP and excluded parts are left out; no_lcsc_number lists parts the BOM has no part number
-    for (empty, TBD, or with a question mark). Zones are refilled on a copy first. Run DRC first. Goes to out_dir (default <board folder>/fab/<board name>).
+    for (empty, TBD, or with a question mark). Zones are refilled on a copy first. Run DRC first. Goes to out_dir (default <project>/fab/<board name> in a cadmate
+    project, else <board folder>/fab/<board name>); the Gerbers there are regenerated, not added to.
     """
     try:
         return fab_export.export(Path(path), Path(out_dir) if out_dir else None)
     except (fab_export.ExportError, OSError, ValueError) as e:
         return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
+
+
+# Projects: one active project, a fixed layout, snapshots in history/ (project.py, skills/cadmate-project).
+
+
+def _project(fn, *a, **kw) -> dict:
+    try:
+        return fn(*a, **kw)
+    except (project.ProjectError, OSError, ValueError) as e:
+        return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
+
+
+@server.tool()
+def project_init(root: str, name: str | None = None, boards: list[str] | None = None) -> dict:
+    """Make a design folder a cadmate project: cadmate-project.json, README.md, CLAUDE.md (the rules, for every session
+    working there), kicad/<board>/ for each board, kicad/lib/, case/, fab/, tools/, docs/, history/ with HISTORY.md, and
+    .cadmate/work/ for scratch. Safe on an existing folder: it only adds what's missing, never moves or overwrites; run
+    project_check after to see what's out of place."""
+    return _project(project.init, root, name, boards)
+
+
+@server.tool()
+def project_snapshot(path: str, label: str, paths: list[str] | None = None, note: str = "") -> dict:
+    """Keep the current state before changing it: copies it into history/<YYYYMMDD-HHMM>_<label>/ at the same relative
+    paths and adds a line to history/HISTORY.md. Then make the change in the active project itself, never in a copy.
+
+    path is the project or anything in it. label: lowercase words with dashes saying what state this is or what comes
+    next ("approved-flat-case", "before-mid-joint"). paths limits it (e.g. ["kicad/core"] or ["case"]); leave it out for
+    the whole project. A KiCad board folder brings along the project libraries it references through ${KIPRJMOD}, so
+    the copy opens with its footprints and 3D models. note says why, in a sentence: it goes into HISTORY.md."""
+    return _project(project.snapshot, path, label, paths, note)
+
+
+@server.tool()
+def project_history(path: str) -> dict:
+    """The project's snapshots, oldest first: name, label, when, note and what each holds."""
+    return _project(project.history, path)
+
+
+@server.tool()
+def project_restore(path: str, name: str, paths: list[str] | None = None) -> dict:
+    """Bring a snapshot back into the active project (all of it, or just paths such as ["kicad/core"]). The current
+    state is snapshotted first, so a restore can itself be undone. Re-export fab/ for any board restored."""
+    return _project(project.restore, path, name, paths)
+
+
+@server.tool()
+def project_check(path: str) -> dict:
+    """Check a project against the layout: files outside it or too deep, names that mark versions or variants
+    (-v2, -routed, -hand3, variant-*, .bak), more than one board per kicad/<board>/ folder, a KiCad project not named
+    after its folder, schematic annotations that belong to another project name (a renamed or copied project), library
+    tables and 3D model links that are absolute, missing or outside the project, fab files older than their board or
+    for a board that's gone, badly named snapshots, and leftover scratch. Each finding has a fix. Run it before telling
+    the user a step is done."""
+    return _project(project.check, path)
 
 
 # Protoboards: through-hole parts on a perfboard's 2.54 mm hole grid (protoboard.py, protoboard_render.py).

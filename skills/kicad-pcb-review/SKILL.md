@@ -26,3 +26,10 @@ Uses cadmate's `review_pcb_layout` tool. It reads the board open in KiCad's PCB 
 Push back on "autoroute everything, then fix it". Freerouting doesn't know which nets matter. Use the `kicad-pcb-route` skill: classify the critical connections, confirm them with the user, route and lock those, let Freerouting route the rest, then review here.
 
 Re-review after every round of changes. Findings that persist across rounds are the ones to discuss with the user.
+
+## Reporting DRC
+
+Report DRC as four numbers every time: errors, warnings, unconnected and schematic parity, plus the warnings by type
+(`review_pcb_layout` returns them under `drc`). "0/0/0" with the warnings left out hides work: in the keyboard run the
+core's 78 warnings (71 silkscreen, 7 dangling stubs) only came up at the final clean-up. Say which warnings you'd leave
+and why.

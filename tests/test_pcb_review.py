@@ -308,6 +308,15 @@ def test_drc_report_becomes_findings():
     r = pr.review_board(board(ic()), fab=None, drc=rep)
     assert r["findings"][0]["rule"] in ("unconnected", "drc") and r["counts"]["problem"] == 2
     assert "kicad_drc" in r["checked"]
+    assert r["drc"]["errors"] == 1 and r["drc"]["unconnected"] == 1 and r["drc"]["warnings"] == 0
+
+
+def test_drc_summary_counts_warnings_by_type():
+    rep = {"violations": [{"type": "silk_overlap", "severity": "warning"}] * 71 + [{"type": "track_dangling", "severity": "warning"}] * 7,
+           "unconnected_items": [], "schematic_parity": []}
+    s = pr.drc_summary(rep)
+    assert (s["errors"], s["warnings"], s["unconnected"]) == (0, 78, 0)
+    assert s["warnings_by_type"] == {"silk_overlap": 71, "track_dangling": 7}
 
 
 # --- differential pairs and what was measured -----------------------------------------------------------

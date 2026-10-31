@@ -62,7 +62,7 @@ To review an existing symbol, run `check_symbol`, with `pins` from the datasheet
 - Never write into KiCad's installed libraries.
 - Project-local: `<project>/<name>.kicad_sym`, added in Preferences > Manage Symbol Libraries (Project tab).
 - A personal library: a `.kicad_sym` file the user picks, added in the Global tab.
-- `generate_symbol` adds the symbol to the library and leaves the other symbols untouched. It refuses to replace a symbol of the same name unless asked, and keeps a `.bak` copy of the library when it writes.
+- `generate_symbol` adds the symbol to the library and leaves the other symbols untouched. It refuses to replace a symbol of the same name unless asked, and keeps the old library when it writes (in `history/` inside a cadmate project, else as `.bak`).
 
 ## Working live with the symbol open in KiCad
 

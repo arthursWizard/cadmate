@@ -112,13 +112,20 @@ def placeholder(lcsc: str) -> bool:
 
 
 def export(board: Path, out_dir: Path | None = None, refill: bool = True) -> dict:
-    """Gerbers + drill (zipped), BOM and CPL for JLCPCB, into out_dir (default <board folder>/fab/<board name>). With
-    refill, the zones are refilled on a copy first: saved fills go stale after any edit, and the Gerbers are the fills."""
+    """Gerbers + drill (zipped), BOM and CPL for JLCPCB, into out_dir (default: <project>/fab/<board name> inside a cadmate
+    project, else <board folder>/fab/<board name>). The folder is regenerated: earlier Gerbers in it are removed first, so
+    a layer the board no longer has can't ride along in the zip. With refill, the zones are refilled on a copy first:
+    saved fills go stale after any edit, and the Gerbers are the fills."""
+    from . import project
+
     board = board.expanduser()
     if not board.exists():
         raise ExportError(f"no board at {board}")
-    out = (out_dir.expanduser() if out_dir else board.parent / "fab" / board.stem)
+    root = project.find_root(board)
+    out = out_dir.expanduser() if out_dir else (root / "fab" / board.stem if root else board.parent / "fab" / board.stem)
     gerb = out / "gerbers"
+    if gerb.exists():
+        shutil.rmtree(gerb)
     gerb.mkdir(parents=True, exist_ok=True)
     if refill:
         from .freerouting import refill as _refill

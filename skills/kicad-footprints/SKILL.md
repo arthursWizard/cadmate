@@ -76,7 +76,7 @@ The same values feed `package_params` for the 3D model (`kicad-3d-models` skill)
 - Never write into KiCad's installed libraries.
 - Project-local: `<project>/<name>.pretty/`, added in Preferences > Manage Footprint Libraries (Project tab).
 - A personal library: a `.pretty` folder the user picks, added in the Global tab.
-- `generate_footprint` refuses to overwrite a file unless asked, and keeps a `.bak` copy when it does.
+- `generate_footprint` refuses to overwrite a file unless asked, and keeps the old file when it does (in `history/` inside a cadmate project, else as `.bak`).
 
 ## Working live with the footprint open in KiCad
 

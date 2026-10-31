@@ -871,6 +871,24 @@ def run_drc(board_file: Path) -> dict | None:
     return json.loads(out.read_text())
 
 
+def drc_summary(rep: dict) -> dict:
+    """The DRC result in the numbers to report, all of them: a "0/0/0" that leaves out the warnings hides work."""
+    def by_type(items: list, sev: str) -> dict:
+        out: dict[str, int] = {}
+        for v in items:
+            if v.get("severity") == sev:
+                out[v.get("type", "?")] = out.get(v.get("type", "?"), 0) + 1
+        return dict(sorted(out.items(), key=lambda kv: -kv[1]))
+
+    vs, par = rep.get("violations", []), rep.get("schematic_parity", [])
+    errors, warnings = by_type(vs, "error"), by_type(vs, "warning")
+    return {"errors": sum(errors.values()), "warnings": sum(warnings.values()),
+            "unconnected": len(rep.get("unconnected_items", [])), "parity": len(par),
+            "errors_by_type": errors, "warnings_by_type": warnings,
+            "report": "give the user all four numbers (errors, warnings, unconnected, parity) and the warning types, "
+                      "even when errors are 0"}
+
+
 def _drc_findings(rep: dict) -> list[dict]:
     out = []
     un = rep.get("unconnected_items", [])
@@ -919,6 +937,7 @@ _ORDER = {"problem": 0, "warning": 1, "note": 2}
 def review_board(board: Board, currents: dict[str, float] | None = None, roles: dict[str, str] | None = None,
                  fab: str | None = "jlcpcb", limits: dict | None = None, drc: dict | None = None) -> dict:
     lim = {**LIMITS, **(limits or {})}
+    summary = None
     r = Review(board, infer_roles(board, roles), currents, lim)
     r.decoupling()
     r.crystals()
@@ -946,6 +965,7 @@ def review_board(board: Board, currents: dict[str, float] | None = None, roles: 
                         f["where"] = {**f.get("where", {}), "x": round(pad.x, 2), "y": round(pad.y, 2)}
         findings = found + findings
         r.checked.append("kicad_drc")
+        summary = drc_summary(drc)
     elif drc is not None:
         r.skipped.append({"rule": "kicad_drc", "why": drc["error"]})
     else:
@@ -960,6 +980,7 @@ def review_board(board: Board, currents: dict[str, float] | None = None, roles: 
     return {
         "ok": True, "board": board.name, "counts": counts, "findings": findings[:LISTED],
         "more": len(findings) - LISTED if len(findings) > LISTED else 0,
+        **({"drc": summary} if summary else {}),
         "checked": r.checked, "not_checked": r.skipped, "measured": r.measured,
         "net_roles": {k: (v if k not in ("signal",) else {"count": len(v), "examples": v[:10]}) for k, v in sorted(by_role.items())},
         "net_roles_note": "Inferred from net names, pin types, power symbols and the parts on each net. 'signal' means cadmate "

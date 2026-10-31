@@ -1,7 +1,7 @@
 """cadmate MCP server: the bridge between KiCad and FreeCAD.
 
-Modelling itself is done through a FreeCAD MCP server (see README); these tools
-cover the KiCad side and the checks that tie the two together.
+These tools cover the KiCad side, FreeCAD models (headless through freecadcmd, or
+live in the user's window through cadmate's bridge) and the checks that tie the two together.
 """
 
 from __future__ import annotations

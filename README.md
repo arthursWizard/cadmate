@@ -2,7 +2,9 @@
 
 An AI companion for KiCad and FreeCAD: your CAD mate. It carries work across the two apps, footprints and boards from KiCad into FreeCAD and 3D models and enclosures back, and brings EE, PCB and 3D-printing know-how along.
 
-cadmate is an [MCP](https://modelcontextprotocol.io) server. You talk to Claude (Claude Code or Claude Desktop). Claude uses cadmate for the KiCad side and the cross-app checks, and uses an existing FreeCAD MCP server for the modelling.
+cadmate is an [MCP](https://modelcontextprotocol.io) server. You talk to Claude (Claude Code or Claude Desktop), and Claude calls cadmate's tools: KiCad files and the live PCB editor, FreeCAD models built headless with `freecadcmd` or live in your FreeCAD window through cadmate's own bridge, and the checks that tie the two together. No other FreeCAD MCP server or addon is needed.
+
+New to cadmate? Start with [docs/getting-started.md](docs/getting-started.md): setup from scratch, the project layout, and a first design step by step.
 
 ## Status
 
@@ -103,20 +105,22 @@ Everything tied to a version lives in `src/cadmate/versions.py`: the supported a
 | FreeCAD models (FreeCADCmd) | yes | yes | yes, untested by hand |
 | Live KiCad editing (IPC API) | yes | yes | the default KiCad instance only |
 | Live FreeCAD bridge | yes | yes | no (needs a Unix socket) |
-| Snapshots (SVG to PNG) | built in | needs `rsvg-convert` (librsvg) or `cairosvg` | needs `cairosvg` and a cairo DLL |
+| Snapshots (SVG to PNG) | built in | needs `rsvg-convert` (librsvg), or the `snapshots` extra | needs the `snapshots` extra and a cairo DLL |
 | Freerouting | yes | yes | yes, untested by hand |
 
-CI runs the test suite on all three without KiCad or FreeCAD installed. Day-to-day use so far has been on macOS.
+CI runs the test suite on all three without KiCad or FreeCAD installed, and runs cadmate's kicad-cli commands against a real KiCad 10 on Linux. Day-to-day use so far has been on macOS only; Linux and Windows haven't been used by hand, and neither has Claude Desktop.
 
 ## Setup
 
 Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```sh
-git clone <this repo> && cd cadmate
+git clone https://github.com/arthursWizard/cadmate.git && cd cadmate
 uv sync
 uv run pytest
 ```
+
+For pictures on Windows, or on Linux without `rsvg-convert`, use `uv sync --extra snapshots`: it adds `cairosvg` (which also needs the cairo library). A `cairosvg` installed by hand is removed by the next plain `uv sync`.
 
 Add it to Claude Code:
 
@@ -124,7 +128,20 @@ Add it to Claude Code:
 claude mcp add --scope user cadmate -- uv run --directory /path/to/cadmate cadmate
 ```
 
-`--scope user` makes it available in every folder. Without it, `claude mcp add` registers the server for the current folder only, and a session started in your KiCad project's folder won't see it. A Claude Code session that is already running doesn't pick up a newly added server: start a new one.
+`--scope user` makes it available in every folder. Without it, `claude mcp add` registers the server for the current folder only, and a session started in your KiCad project's folder won't see it. A Claude Code session that is already running doesn't pick up a newly added server: start a new one. With the `snapshots` extra, put `--extra snapshots` after `uv run`.
+
+Add it to Claude Desktop (untested): in Settings > Developer > Edit Config, add this to `claude_desktop_config.json` and restart Desktop. Use `uv`'s full path, since desktop apps often don't see your shell's `PATH`; `CADMATE_*` variables go in an `"env"` block beside `"args"`.
+
+```json
+{
+  "mcpServers": {
+    "cadmate": {
+      "command": "/full/path/to/uv",
+      "args": ["run", "--directory", "/path/to/cadmate", "cadmate"]
+    }
+  }
+}
+```
 
 cadmate builds and checks models itself with FreeCAD's command-line `freecadcmd` (the `environment` tool says where it found it), so FreeCAD installed is enough for generated models and for models Claude writes as a FreeCAD Python script and runs headless. For working on a model together in the FreeCAD window, start cadmate's bridge (below); no addon is needed.
 

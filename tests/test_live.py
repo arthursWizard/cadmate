@@ -2,13 +2,13 @@ import importlib.util
 import json
 import shutil
 import socket
-import tempfile
 import threading
 from pathlib import Path
 
 import pytest
 
 from cadmate import live
+from conftest import short_tmp, unix_sockets
 
 BRIDGE = Path(live.__file__).parent / "freecad_scripts" / "live_bridge.py"
 
@@ -22,7 +22,7 @@ def load_bridge():
 
 @pytest.fixture
 def sock(monkeypatch):
-    d = Path(tempfile.mkdtemp(dir="/tmp"))  # macOS caps socket paths at 104 bytes; pytest's tmp_path is longer
+    d = Path(short_tmp())
     path = d / "b.sock"
     monkeypatch.setenv(live.SOCKET_ENV, str(path))
     yield path
@@ -53,6 +53,7 @@ def test_socket_path_matches_the_bridge(monkeypatch):
     assert load_bridge().socket_path() == live.socket_path()
 
 
+@unix_sockets
 def test_call_round_trip(sock):
     seen = fake_bridge(sock, [{"ok": True, "bridge": 1}])
     assert live.call("ping", timeout=3) == {"ok": True, "bridge": 1}
@@ -94,6 +95,7 @@ def test_summarize_keeps_user_edits_only():
     ]
 
 
+@unix_sockets
 def test_session_reports_changes_since_last_look(sock):
     seen = fake_bridge(sock, [
         {"ok": True, "seq": 4, "events": [ev(4, "changed", "Box", "Length")]},
@@ -123,6 +125,7 @@ def test_bridge_versions_agree():
     assert load_bridge().BRIDGE_VERSION == live.BRIDGE_VERSION
 
 
+@unix_sockets
 def test_old_bridge_is_reported_not_crashed(sock):
     from cadmate import server
 

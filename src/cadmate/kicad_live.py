@@ -37,7 +37,7 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
-from . import apps, check, footprint, live, sexpr, symbol, symbol_check
+from . import apps, check, footprint, live, sexpr, symbol, symbol_check, versions
 
 RAW_DIFF_LINES = 80  # longer diffs are cut; the item changes cover them
 HISTORY_KEPT = 50
@@ -127,7 +127,7 @@ class Target:
 
 def _load(t: Target) -> dict:
     try:
-        st = json.loads(t.state_file().read_text())
+        st = json.loads(t.state_file().read_text(encoding="utf-8"))
         if st.get("path") == str(t.path) and st.get("name") == t.name:
             return st
     except (OSError, ValueError):
@@ -139,7 +139,7 @@ def _save(t: Target, st: dict) -> None:
     st["steps"] = st["steps"][-HISTORY_KEPT:]
     f = t.state_file()
     f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps(st))
+    f.write_text(json.dumps(st), encoding="utf-8")
 
 
 MAC_SETTLE = 0.5  # seconds between the file leaving its folder and coming back, so KiCad sees both
@@ -157,11 +157,11 @@ def _write(t: Target, text: str) -> None:
     """
     t.parse(t.item(text))  # never hand KiCad a file we can't read back
     if t.kind != "symbol" or platform.system() != "Darwin":
-        t.path.write_text(text, encoding="utf-8")
+        t.path.write_text(text, encoding="utf-8", newline="\n")
         return
     new = t.path.with_name(f".{t.path.name}.cadmate-new")
     old = t.path.with_name(f".{t.path.name}.cadmate-old")
-    new.write_text(text, encoding="utf-8")
+    new.write_text(text, encoding="utf-8", newline="\n")
     os.replace(t.path, old)
     try:
         time.sleep(MAC_SETTLE)
@@ -538,10 +538,10 @@ def snapshot(path: str, name: str | None = None, width: int = 900) -> Path:
     out = Path(tempfile.mkdtemp(prefix="cadmate-snap-"))
     if t.kind == "footprint":
         # Pad outlines and numbers on the fab layer, so the picture shows which pad is which.
-        cmd = [cli, "fp", "export", "svg", "--footprint", t.path.stem, "--sketch-pads-on-fab-layers", "--output", str(out), str(t.path.parent)]
+        cmd = [cli, *versions.kicad_cli_args("fp_svg"), "--footprint", t.path.stem, "--output", str(out), str(t.path.parent)]
     else:
-        cmd = [cli, "sym", "export", "svg", "--symbol", t.name, "--output", str(out), str(t.path)]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        cmd = [cli, *versions.kicad_cli_args("sym_svg"), "--symbol", t.name, "--output", str(out), str(t.path)]
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
     svgs = sorted(out.glob("*.svg"))
     if not svgs:
         raise LiveError(f"kicad-cli made no picture (exit {proc.returncode}): {(proc.stderr or proc.stdout)[-1500:]}")

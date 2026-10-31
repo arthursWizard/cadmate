@@ -193,7 +193,7 @@ def _key(layer: str, s: tuple, e: tuple) -> tuple:
 
 def write(src: Path, dst: Path, res: dict) -> int:
     """The board file with the removed segments taken out and the new copper added. Returns segments removed."""
-    text = src.read_text()
+    text = src.read_text(encoding="utf-8")
     drop = {_key(t.layer, t.start, t.end) for t in res["removed"]}
     n = 0
 
@@ -230,5 +230,5 @@ def write(src: Path, dst: Path, res: dict) -> int:
     text = "".join(out) + text[i:]
     end = text.rstrip().rfind(")")
     dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_text(text[:end] + sexpr_items(text, res["tracks"], res["vias"], locked=False) + text[end:])
+    dst.write_text(text[:end] + sexpr_items(text, res["tracks"], res["vias"], locked=False) + text[end:], encoding="utf-8", newline="\n")
     return n

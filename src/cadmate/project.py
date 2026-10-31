@@ -12,6 +12,7 @@ A project is a folder with a cadmate-project.json marker. Nothing here needs KiC
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 from datetime import datetime
@@ -135,7 +136,7 @@ def init(root: str | Path, name: str | None = None, boards: list[str] | None = N
             p.mkdir(parents=True, exist_ok=True)
         else:
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(text)
+            p.write_text(text, encoding="utf-8", newline="\n")
         made.append(rel)
 
     mk(MARKER, json.dumps({"name": name, "layout": LAYOUT_VERSION, "created": datetime.now().isoformat(timespec="seconds")}, indent=2) + "\n")
@@ -176,7 +177,7 @@ def _kicad_refs(root: Path, folder: Path) -> set[Path]:
     """Project paths a KiCad board folder points at through ${KIPRJMOD}: lib tables and 3D model links. A snapshot carries
     these too, or ${KIPRJMOD}/../lib/... inside the snapshot would point at nothing."""
     refs: set[Path] = set()
-    texts = [f.read_text(errors="replace") for f in folder.iterdir()
+    texts = [f.read_text(encoding="utf-8", errors="replace") for f in folder.iterdir()
              if f.is_file() and (f.name in ("fp-lib-table", "sym-lib-table") or f.suffix == ".kicad_pcb")]
     for text in texts:
         for m in re.finditer(r'\$\{KIPRJMOD\}/([^"\)\s]+)', text):
@@ -250,17 +251,17 @@ def snapshot(path: str | Path, label: str, paths: list[str] | None = None, note:
         else:
             shutil.copy2(src, dst)
             files += 1
-    meta = {"label": label, "taken": now.isoformat(timespec="seconds"), "note": note, "paths": [str(r) for r in rels]}
-    (dest / "SNAPSHOT.json").write_text(json.dumps(meta, indent=2) + "\n")
+    meta = {"label": label, "taken": now.isoformat(timespec="seconds"), "note": note, "paths": [r.as_posix() for r in rels]}
+    (dest / "SNAPSHOT.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     index = hist / INDEX
     if not index.exists():
-        index.write_text(_index_header(json.loads((root / MARKER).read_text()).get("name", root.name)))
-    shown = ", ".join(str(r) for r in rels) if paths else "whole project"
+        index.write_text(_index_header(json.loads((root / MARKER).read_text(encoding="utf-8")).get("name", root.name)), encoding="utf-8")
+    shown = ", ".join(r.as_posix() for r in rels) if paths else "whole project"
     cell = (note or "").replace("|", "/").replace("\n", " ")
     with index.open("a") as f:
         f.write(f"| [{dest.name}]({dest.name}/) | {now.strftime('%Y-%m-%d %H:%M')} | {cell} | {shown} |\n")
     size = sum(f.stat().st_size for f in dest.rglob("*") if f.is_file())
-    return {"ok": True, "snapshot": str(dest), "name": dest.name, "paths": [str(r) for r in rels], "files": files,
+    return {"ok": True, "snapshot": str(dest), "name": dest.name, "paths": [r.as_posix() for r in rels], "files": files,
             "size_mb": round(size / 1e6, 2), "index": str(index),
             "next": "make the change in the active project itself, not in a copy"}
 
@@ -274,7 +275,7 @@ def history(path: str | Path) -> dict:
             continue
         meta = {}
         if (d / "SNAPSHOT.json").exists():
-            meta = json.loads((d / "SNAPSHOT.json").read_text())
+            meta = json.loads((d / "SNAPSHOT.json").read_text(encoding="utf-8"))
         out.append({"name": d.name, "label": meta.get("label"), "taken": meta.get("taken"), "note": meta.get("note", ""),
                     "paths": meta.get("paths", []), "named_right": bool(SNAP_NAME.match(d.name))})
     return {"ok": True, "root": str(root), "snapshots": out}
@@ -287,13 +288,13 @@ def restore(path: str | Path, name: str, paths: list[str] | None = None, now: da
     src = root / HISTORY / name
     if not src.is_dir():
         raise ProjectError(f"no snapshot {name}; project_history lists them")
-    meta = json.loads((src / "SNAPSHOT.json").read_text()) if (src / "SNAPSHOT.json").exists() else {}
+    meta = json.loads((src / "SNAPSHOT.json").read_text(encoding="utf-8")) if (src / "SNAPSHOT.json").exists() else {}
     rels = [_rel(root, p) for p in paths] if paths else [Path(p) for p in meta.get("paths", [])] or \
         [Path(p.name) for p in src.iterdir() if p.name != "SNAPSHOT.json"]
-    missing = [str(r) for r in rels if not (src / r).exists()]
+    missing = [r.as_posix() for r in rels if not (src / r).exists()]
     if missing:
         raise ProjectError(f"not in {name}: {', '.join(missing)}")
-    present = [str(r) for r in rels if (root / r).exists()]
+    present = [r.as_posix() for r in rels if (root / r).exists()]
     label = re.sub(r"[^a-z0-9-]", "", f"before-restore-{SNAP_NAME.match(name)[2] if SNAP_NAME.match(name) else 'snapshot'}")[:40]
     before = snapshot(root, label, present, note=f"automatic, before restoring {name}", now=now) if present else None
     for r in rels:
@@ -304,7 +305,7 @@ def restore(path: str | Path, name: str, paths: list[str] | None = None, now: da
             d.unlink()
         d.parent.mkdir(parents=True, exist_ok=True)
         (shutil.copytree if s.is_dir() else shutil.copy2)(s, d)
-    return {"ok": True, "restored": [str(r) for r in rels], "from": name,
+    return {"ok": True, "restored": [r.as_posix() for r in rels], "from": name,
             "previous_state": before["name"] if before else None,
             "next": "regenerate fab/ for any board restored; fab files aren't restored unless the snapshot had them"}
 
@@ -314,7 +315,8 @@ def restore(path: str | Path, name: str, paths: list[str] | None = None, now: da
 
 
 def _finding(sev: str, path: str, what: str, fix: str) -> dict:
-    return {"severity": sev, "path": path, "problem": what, "fix": fix}
+    # paths are reported with / on every OS, as KiCad writes them and as the layout rules name them
+    return {"severity": sev, "path": path.replace(os.sep, "/"), "problem": what, "fix": fix}
 
 
 def _files(root: Path):
@@ -332,7 +334,7 @@ def check(path: str | Path) -> dict:
     root = _root(path)
     found: list[dict] = []
     try:
-        marker = json.loads((root / MARKER).read_text())
+        marker = json.loads((root / MARKER).read_text(encoding="utf-8"))
     except ValueError:
         marker = {}
         found.append(_finding("error", MARKER, "not valid JSON", "fix or delete it and run project_init again"))
@@ -345,17 +347,17 @@ def check(path: str | Path) -> dict:
         top = rel.parts[0]
         stem = p.name.split(".")[0] if p.is_file() else p.name
         if p.is_file() and (p.suffix in (".bak", ".orig") or p.name.endswith("~")):
-            found.append(_finding("warning", str(rel), "a backup copy beside the original",
+            found.append(_finding("warning", rel.as_posix(), "a backup copy beside the original",
                                   "delete it; history/ holds earlier states (project_snapshot before changing)"))
         elif (top in NAME_CHECKED and VERSIONED.search(stem) and p.parent.name != "renders"
               and not (top == "kicad" and len(rel.parts) > 1 and rel.parts[1] == KICAD_LIB)):
-            found.append(_finding("warning", str(rel), "the name marks a version or variant of something else",
+            found.append(_finding("warning", rel.as_posix(), "the name marks a version or variant of something else",
                                   "apply the change to the original in place (project_snapshot first if the old state matters), "
                                   "then delete this one"))
         limit = DEPTH.get(top)
         if p.is_file() and limit and len(rel.parts) - 1 > limit:
             if not (top == "kicad" and len(rel.parts) > 1 and rel.parts[1] == KICAD_LIB):
-                found.append(_finding("warning", str(rel), f"deeper than the layout allows under {top}/ ({limit} levels)",
+                found.append(_finding("warning", rel.as_posix(), f"deeper than the layout allows under {top}/ ({limit} levels)",
                                       f"flatten it: {LAYOUT[top]}"))
     found += _check_kicad(root)
     found += _check_fab(root)
@@ -393,7 +395,7 @@ def read_brief(root: str | Path) -> dict | None:
     f = Path(root) / BRIEF
     if not f.exists():
         return None
-    items = re.findall(r"^\s*[-*] \[([ xX])\] (.+)$", f.read_text(errors="replace"), re.M)
+    items = re.findall(r"^\s*[-*] \[([ xX])\] (.+)$", f.read_text(encoding="utf-8", errors="replace"), re.M)
     items = [(m, t.strip()) for m, t in items if not t.lower().startswith("(example)")]
     return {"open": [t for m, t in items if m == " "], "met": [t for m, t in items if m != " "]}
 
@@ -404,12 +406,12 @@ def _check_kicad(root: Path) -> list[dict]:
     if not kicad.exists():
         return out
     for p in sorted(kicad.glob("*.kicad_*")):
-        out.append(_finding("warning", str(p.relative_to(root)), "KiCad file directly in kicad/",
+        out.append(_finding("warning", p.relative_to(root).as_posix(), "KiCad file directly in kicad/",
                             "each board gets its own folder: kicad/<board>/<board>.kicad_pro"))
     libs = (".pretty", ".3dshapes", ".kicad_symdir", ".kicad_sym")
     for p in sorted(kicad.iterdir()):
         if p.suffix in libs:
-            out.append(_finding("warning", str(p.relative_to(root)), "project library outside kicad/lib/",
+            out.append(_finding("warning", p.relative_to(root).as_posix(), "project library outside kicad/lib/",
                                 "move it into kicad/lib/ and point the lib tables and model links at ${KIPRJMOD}/../lib/"))
     for board in sorted(d for d in kicad.iterdir() if d.is_dir() and d.name != KICAD_LIB and d.suffix not in libs):
         name = board.name
@@ -417,16 +419,16 @@ def _check_kicad(root: Path) -> list[dict]:
         pros = sorted(board.glob("*.kicad_pro"))
         if not pros:
             if any(board.glob("*.kicad_pcb")) or any(board.glob("*.kicad_sch")):
-                out.append(_finding("error", str(rel), "board files with no .kicad_pro",
+                out.append(_finding("error", rel.as_posix(), "board files with no .kicad_pro",
                                     f"KiCad needs {name}.kicad_pro beside the board for its rules and net classes"))
             continue
         for f in sorted(board.iterdir()):
             if f.suffix in KICAD_DESIGN and f.stem != name and not (f.suffix == ".kicad_sch" and _is_subsheet(board, f.name)):
-                out.append(_finding("warning", str(f.relative_to(root)),
+                out.append(_finding("warning", f.relative_to(root).as_posix(),
                                     f"a second {f.suffix} in the {name} board folder",
                                     f"one board per folder, named {name}{f.suffix}: apply its changes to that one and delete this"))
         if not (board / f"{name}.kicad_pro").exists():
-            out.append(_finding("error", str(rel), f"the project isn't named after its folder ({pros[0].name})",
+            out.append(_finding("error", rel.as_posix(), f"the project isn't named after its folder ({pros[0].name})",
                                 f"name the folder after the project ({pros[0].stem}) rather than renaming the KiCad project"))
         for tbl in ("fp-lib-table", "sym-lib-table"):
             t = board / tbl
@@ -436,9 +438,9 @@ def _check_kicad(root: Path) -> list[dict]:
         if pcb.exists():
             out += _check_models(root, board, pcb)
         for sch in sorted(board.glob("*.kicad_sch")):
-            names = set(re.findall(r'\(instances\s*\(project\s+"([^"]*)"', sch.read_text(errors="replace")))
+            names = set(re.findall(r'\(instances\s*\(project\s+"([^"]*)"', sch.read_text(encoding="utf-8", errors="replace")))
             if names and name not in names:
-                out.append(_finding("error", str(sch.relative_to(root)),
+                out.append(_finding("error", sch.relative_to(root).as_posix(),
                                     f"symbol annotations belong to project {', '.join(sorted(names))!s}, not {name}",
                                     "the project was renamed or copied: KiCad can show the references as R?, U? until "
                                     "re-annotated. Open it in KiCad and check the references; re-annotate if they're lost"))
@@ -446,13 +448,13 @@ def _check_kicad(root: Path) -> list[dict]:
 
 
 def _is_subsheet(board: Path, filename: str) -> bool:
-    return any(f'"{filename}"' in s.read_text(errors="replace") for s in board.glob("*.kicad_sch") if s.name != filename)
+    return any(f'"{filename}"' in s.read_text(encoding="utf-8", errors="replace") for s in board.glob("*.kicad_sch") if s.name != filename)
 
 
 def _check_table(root: Path, board: Path, table: Path) -> list[dict]:
     out = []
-    for uri in re.findall(r'\(uri\s+"([^"]+)"\)', table.read_text(errors="replace")):
-        rel = str(table.relative_to(root))
+    for uri in re.findall(r'\(uri\s+"([^"]+)"\)', table.read_text(encoding="utf-8", errors="replace")):
+        rel = table.relative_to(root).as_posix()
         if KIPRJMOD.search(uri):
             target = (board / KIPRJMOD.sub("", uri).lstrip("/")).resolve()
             if not target.is_relative_to(root):
@@ -468,11 +470,11 @@ def _check_table(root: Path, board: Path, table: Path) -> list[dict]:
 
 def _check_models(root: Path, board: Path, pcb: Path) -> list[dict]:
     out, seen = [], set()
-    for m in re.findall(r'\(model\s+"([^"]+)"', pcb.read_text(errors="replace")):
+    for m in re.findall(r'\(model\s+"([^"]+)"', pcb.read_text(encoding="utf-8", errors="replace")):
         if m in seen:
             continue
         seen.add(m)
-        rel = str(pcb.relative_to(root))
+        rel = pcb.relative_to(root).as_posix()
         if KIPRJMOD.search(m):
             target = (board / KIPRJMOD.sub("", m).lstrip("/")).resolve()
             if not target.is_relative_to(root):
@@ -493,7 +495,7 @@ def _check_fab(root: Path) -> list[dict]:
         return out
     for d in sorted(x for x in fab.iterdir() if x.is_dir()):
         pcb = root / "kicad" / d.name / f"{d.name}.kicad_pcb"
-        rel = str(d.relative_to(root))
+        rel = d.relative_to(root).as_posix()
         if not pcb.exists():
             out.append(_finding("warning", rel, f"fab files for a board that isn't in kicad/{d.name}/",
                                 "delete them (history keeps the old ones if a snapshot was taken)"))

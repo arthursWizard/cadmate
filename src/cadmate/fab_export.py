@@ -11,13 +11,14 @@ from __future__ import annotations
 import csv
 import io
 import re
+import os
 import shutil
 import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
 
-from . import sexpr
+from . import sexpr, versions
 from .apps import KICAD_CLI_ENV, find_kicad_cli
 
 GERBER_LAYERS = ["F.Cu", "B.Cu", "F.Paste", "B.Paste", "F.Silkscreen", "B.Silkscreen", "F.Mask", "B.Mask", "Edge.Cuts"]
@@ -32,7 +33,7 @@ def _cli(*args: str, timeout: int = 300) -> str:
     cli = find_kicad_cli()
     if not cli:
         raise ExportError(f"kicad-cli not found; set {KICAD_CLI_ENV}")
-    r = subprocess.run([cli, *args], capture_output=True, text=True, timeout=timeout)
+    r = subprocess.run([cli, *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     if r.returncode != 0:
         raise ExportError(f"kicad-cli {args[0]} {args[1]} failed: {(r.stderr or r.stdout).strip()[-500:]}")
     return r.stdout
@@ -140,20 +141,19 @@ def export(board: Path, out_dir: Path | None = None, refill: bool = True) -> dic
         except Exception as e:  # noqa: BLE001
             raise ExportError(f"couldn't refill the zones ({e}); refill in KiCad (B), save, and export with refill=False") from None
         board = copy
-    text = board.read_text(errors="replace")
+    text = board.read_text(encoding="utf-8", errors="replace")
     layers = [l for l in GERBER_LAYERS if l != "F.Cu" and l != "B.Cu"] + copper_layers(text)
-    _cli("pcb", "export", "gerbers", "--output", str(gerb) + "/", "--layers", ",".join(layers), "--subtract-soldermask", str(board))
-    _cli("pcb", "export", "drill", "--output", str(gerb) + "/", "--format", "excellon", "--excellon-separate-th",
-         "--generate-map", "--map-format", "gerberx2", str(board))
+    _cli(*versions.kicad_cli_args("pcb_gerbers"), "--output", str(gerb) + os.sep, "--layers", ",".join(layers), str(board))
+    _cli(*versions.kicad_cli_args("pcb_drill"), "--output", str(gerb) + os.sep, str(board))
     zpath = out / f"{board.stem}-gerbers.zip"
     with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
         for f in sorted(gerb.iterdir()):
             z.write(f, f.name)
     pos = out / f"{board.stem}-pos-kicad.csv"
-    _cli("pcb", "export", "pos", "--format", "csv", "--units", "mm", "--side", "both", "--output", str(pos), str(board))
+    _cli(*versions.kicad_cli_args("pcb_pos"), "--output", str(pos), str(board))
     parts = footprints(text)
-    (out / f"{board.stem}-bom-jlc.csv").write_text(jlc_bom(parts))
-    (out / f"{board.stem}-cpl-jlc.csv").write_text(jlc_cpl(pos.read_text(), parts))
+    (out / f"{board.stem}-bom-jlc.csv").write_text(jlc_bom(parts), encoding="utf-8")
+    (out / f"{board.stem}-cpl-jlc.csv").write_text(jlc_cpl(pos.read_text(encoding="utf-8"), parts), encoding="utf-8")
     no_lcsc = sorted((p["ref"] for p in parts if p["bom"] and placeholder(p["lcsc"]) and p["ref"] and not p["ref"].startswith("#")), key=_refkey)
     sides = {p["side"] for p in parts if p["bom"] and p["pos"]}
     return {"ok": True, "folder": str(out), "gerbers_zip": str(zpath), "files": sorted(f.name for f in gerb.iterdir()),

@@ -22,11 +22,11 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from . import apps, check, footprint, generate, model, review, sexpr, symbol, symbol_check, symbol_generate
+from . import apps, check, footprint, generate, model, review, sexpr, symbol, symbol_check, symbol_generate, versions
 from . import project as _project
 from .footprint import BBox, Model
 
-LIB_TABLE_VERSION = 7
+LIB_TABLE_VERSION = versions.LIB_TABLE_FORMAT  # see versions.py
 SYMBOL_KEYS = {"name", "pins", "description", "keywords", "reference", "fp_filters", "pin_length", "unit_shapes"}
 FOOTPRINT_KEYS = {"family", "params", "name", "density", "courtyard_clearance", "description", "tags"}
 
@@ -180,10 +180,10 @@ def generate_part(
     written = []
     kept = _project.keep([sym_lib if existing_sym is not None else None, fp_file, step_file], f"part-{sym_name}")
     symbol.parse_library(new_lib)
-    sym_lib.write_text(new_lib, encoding="utf-8")
+    sym_lib.write_text(new_lib, encoding="utf-8", newline="\n")
     written.append(str(sym_lib))
     lib_dir.mkdir(parents=True, exist_ok=True)
-    fp_file.write_text(fp_text, encoding="utf-8")
+    fp_file.write_text(fp_text, encoding="utf-8", newline="\n")
     written.append(str(fp_file))
     if step_file is not None:
         shapes_dir.mkdir(parents=True, exist_ok=True)
@@ -252,7 +252,7 @@ def add_to_lib_tables(project: Path, library: str) -> list[str]:
         close = root.end - 1
         text = text[:close].rstrip() + "\n" + entry + "\n" + text[close:]
         sexpr.parse(text)
-        path.write_text(text, encoding="utf-8")
+        path.write_text(text, encoding="utf-8", newline="\n")
         written.append(str(path))
     return written
 

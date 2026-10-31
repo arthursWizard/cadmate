@@ -133,7 +133,7 @@ class Session:
 
     def _load(self) -> int:
         try:
-            return int(json.loads(self._file().read_text())["seq"])
+            return int(json.loads(self._file().read_text(encoding="utf-8"))["seq"])
         except (OSError, ValueError, KeyError, TypeError):
             return 0
 
@@ -145,7 +145,7 @@ class Session:
         if r["seq"] < seen:  # a restarted bridge counts from 0 again
             r = call("changes", since=0)
         try:
-            self._file().write_text(json.dumps({"seq": r["seq"]}))
+            self._file().write_text(json.dumps({"seq": r["seq"]}), encoding="utf-8")
         except OSError:
             pass
         return summarize(r["events"])

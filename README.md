@@ -76,18 +76,38 @@ Early. Ten workflows work end to end:
 
 ## Version policy
 
-cadmate requires **KiCad 10** and **FreeCAD 1.1** or later, and follows new releases rather than old ones: it writes the file formats of these versions, which later versions keep reading. `environment` reports an older install as unsupported.
+cadmate requires **KiCad 10** and **FreeCAD 1.1** or later, and follows new releases rather than old ones: it writes the file formats of these versions, which later versions keep reading. `environment` reports an older install as unsupported, and a newer one than cadmate was tested with as `newer_than_tested`.
 
 - **KiCad files** are read directly: footprints from KiCad 5 (`module`) to current (`footprint`) formats, symbol libraries from KiCad 6 on, including KiCad 10's one-file-per-symbol `.kicad_symdir` folders. They are written in KiCad 10's format, as KiCad's own editors write it. No KiCad install is needed for footprint or symbol work.
-- **`kicad-cli`** (KiCad 7+) for exports and checks, in later milestones.
-- **KiCad IPC API** (KiCad 9+) only for live editing, switched on when present.
+- **`kicad-cli`** for DRC, ERC, pictures and fab exports (Gerbers, drill, positions).
+- **KiCad IPC API** (through `kicad-python`, pinned to the release that matches KiCad 10) only for live editing, switched on when present.
 - **FreeCAD** through `FreeCADCmd`, using the Part API that is stable across 0.20 to 1.1. Headless builds keep their colours on FreeCAD 1.0 and later; with 0.20 and 0.21 the STEP is grey.
 
-Developed against KiCad 10.0 and FreeCAD 1.1 on macOS.
+Everything tied to a version lives in `src/cadmate/versions.py`: the supported and tested versions, the file format numbers cadmate writes, and the kicad-cli arguments it uses. When a new KiCad or FreeCAD comes out, start there. CI runs cadmate's kicad-cli commands against a real KiCad (`tests/test_kicad_cli.py`), so a renamed flag or a changed report shows up as a failing check.
+
+| | Tested with |
+| --- | --- |
+| KiCad | 10.0 (10.0.4 on macOS by hand; 10.0 on Linux in CI) |
+| FreeCAD | 1.1 (macOS by hand) |
+| Python | 3.11 and 3.13 in CI |
+
+### Platforms
+
+| | macOS | Linux | Windows |
+| --- | --- | --- | --- |
+| File work: footprints, symbols, parts, reviews | yes | yes | yes |
+| kicad-cli checks and pictures | yes | yes | yes, untested by hand |
+| FreeCAD models (FreeCADCmd) | yes | yes | yes, untested by hand |
+| Live KiCad editing (IPC API) | yes | yes | the default KiCad instance only |
+| Live FreeCAD bridge | yes | yes | no (needs a Unix socket) |
+| Snapshots (SVG to PNG) | built in | needs `rsvg-convert` (librsvg) or `cairosvg` | needs `cairosvg` and a cairo DLL |
+| Freerouting | yes | yes | yes, untested by hand |
+
+CI runs the test suite on all three without KiCad or FreeCAD installed. Day-to-day use so far has been on macOS.
 
 ## Setup
 
-Requires Python 3.10+ and [uv](https://docs.astral.sh/uv/).
+Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```sh
 git clone <this repo> && cd cadmate
@@ -192,15 +212,26 @@ Each item says what to do with it: `route` (cadmate routes and locks it), `place
 
 It infers what each net carries (ground, power, switching node, crystal, fast signal) from net names, the pads' pin types, power symbols and the parts on the net, and says how it decided. When it can't tell, it says so; pass `roles` to correct it. Numbers no standard sets (for example, how far is too far for a decap) are cadmate's own heuristics, listed in the reply under `limits`, and findings based on them cite `heuristic`. Treat them as prompts to look, not as pass or fail.
 
-cadmate finds KiCad and FreeCAD in their usual install locations on macOS, Linux and Windows. To point it elsewhere, set these in the server's environment:
+cadmate looks for each program in this order: the environment variable below, the `PATH`, then the usual install folders for the platform (`/Applications` and `~/Applications` on macOS; `/usr/bin`, `/usr/local/bin` and the FreeCAD snap on Linux; `%ProgramFiles%` and per-user `%LOCALAPPDATA%\Programs` on Windows). Of several installed versions it takes the newest. To point it elsewhere, set these in the server's environment:
 
-| Variable | Example |
-| --- | --- |
-| `CADMATE_KICAD_CLI` | `/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli` |
-| `CADMATE_FREECADCMD` | `/Applications/FreeCAD.app/Contents/Resources/bin/freecadcmd` |
-| `CADMATE_FREEROUTING_JAR` | `~/Documents/KiCad/10.0/3rdparty/plugins/app_freerouting_kicad-plugin/jar/freerouting-2.5.0.jar` |
-| `CADMATE_JAVA` | `/opt/homebrew/opt/openjdk/bin/java` |
-| `CADMATE_KICAD_PYTHON` | `/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/3.9/bin/python3` |
+| Variable | macOS example | Linux example | Windows example |
+| --- | --- | --- | --- |
+| `CADMATE_KICAD_CLI` | `/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli` | `/usr/bin/kicad-cli` | `C:\Program Files\KiCad\10.0\bin\kicad-cli.exe` |
+| `CADMATE_FREECADCMD` | `/Applications/FreeCAD.app/Contents/Resources/bin/freecadcmd` | `/usr/bin/freecadcmd` | `C:\Program Files\FreeCAD 1.1\bin\freecadcmd.exe` |
+| `CADMATE_FREEROUTING_JAR` | `~/Documents/KiCad/10.0/3rdparty/plugins/app_freerouting_kicad-plugin/jar/freerouting-2.5.0.jar` | `~/.local/share/kicad/10.0/3rdparty/plugins/…/freerouting-2.5.0.jar` | `~\Documents\KiCad\10.0\3rdparty\plugins\…\freerouting-2.5.0.jar` |
+| `CADMATE_JAVA` | `/opt/homebrew/opt/openjdk/bin/java` | `/usr/lib/jvm/java-21-openjdk-amd64/bin/java` | `C:\Program Files\Eclipse Adoptium\jdk-21\bin\java.exe` |
+| `CADMATE_KICAD_PYTHON` | `/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/3.9/bin/python3` | `/usr/bin/python3` (the distro's KiCad installs `pcbnew` there) | `C:\Program Files\KiCad\10.0\bin\python.exe` |
+
+`environment` says when a variable is set but points at nothing.
+
+Flatpak and AppImage installs have no `kicad-cli` or `freecadcmd` file to point at. Make a one-line wrapper script and point the variable at it, for example for KiCad from Flathub:
+
+```sh
+#!/bin/sh
+exec flatpak run --command=kicad-cli org.kicad.KiCad "$@"
+```
+
+Flatpak's sandbox only sees some of your folders, so keep projects under your home folder.
 
 KiCad path variables in model paths (for example `${KICAD10_3DMODEL_DIR}`) are expanded from the same environment. `${KIPRJMOD}` falls back to the footprint's folder.
 

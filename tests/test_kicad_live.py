@@ -1,10 +1,10 @@
 import shutil
-import tempfile
 from pathlib import Path
 
 import pytest
 
 from cadmate import kicad_live, live, symbol
+from conftest import short_tmp
 
 FIX = Path(__file__).parent / "fixtures"
 SYMS = FIX / "Symbols.kicad_symdir"
@@ -12,7 +12,7 @@ SYMS = FIX / "Symbols.kicad_symdir"
 
 @pytest.fixture(autouse=True)
 def data(monkeypatch):
-    d = Path(tempfile.mkdtemp(dir="/tmp"))
+    d = Path(short_tmp())
     monkeypatch.setenv(live.SOCKET_ENV, str(d / "b.sock"))
     yield d
     shutil.rmtree(d, ignore_errors=True)

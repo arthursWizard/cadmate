@@ -22,7 +22,7 @@ import tempfile
 import traceback
 from pathlib import Path
 
-from . import apps, live, sexpr
+from . import apps, live, sexpr, versions
 
 TIMEOUT_MS = 20000  # reading a large board as text takes a while
 LISTED_CHANGES = 60  # changes beyond this are counted, not listed
@@ -249,7 +249,7 @@ def _state_file(board_name: str, project: str = "") -> Path:
 
 def _load(f: Path) -> dict:
     try:
-        return json.loads(f.read_text())
+        return json.loads(f.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {"seen": None, "steps": []}
 
@@ -257,7 +257,7 @@ def _load(f: Path) -> dict:
 def _save(f: Path, st: dict) -> None:
     st["steps"] = st["steps"][-50:]
     f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps(st))
+    f.write_text(json.dumps(st), encoding="utf-8")
 
 
 class Session:
@@ -442,8 +442,8 @@ def snapshot(layers: str = "F.Cu,B.Cu,F.SilkS,B.SilkS,F.Fab,Edge.Cuts", width: i
     copy = out / "board.kicad_pcb"
     board.save_as(str(copy), overwrite=True, include_project=False)
     svg = out / "board.svg"
-    proc = subprocess.run([cli, "pcb", "export", "svg", "--layers", layers, "--mode-single", "--fit-page-to-board",
-                           "--exclude-drawing-sheet", "--output", str(svg), str(copy)], capture_output=True, text=True, timeout=180)
+    proc = subprocess.run([cli, *versions.kicad_cli_args("pcb_svg"), "--layers", layers, "--output", str(svg), str(copy)],
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
     if not svg.exists():
         raise LiveError(f"kicad-cli made no picture (exit {proc.returncode}): {(proc.stderr or proc.stdout)[-1500:]}")
     png = out / "board.png"

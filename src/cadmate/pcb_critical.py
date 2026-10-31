@@ -668,9 +668,9 @@ def table(items: list[dict]) -> str:
 
 
 def save_plan(plan: dict, path: Path) -> Path:
-    path.write_text(json.dumps(plan, indent=1))
+    path.write_text(json.dumps(plan, indent=1), encoding="utf-8")
     return path
 
 
 def load_plan(path: Path) -> dict:
-    return json.loads(Path(path).read_text())
+    return json.loads(Path(path).read_text(encoding="utf-8"))

@@ -251,7 +251,7 @@ def build(solids: list[dict], out: Path, name: str) -> dict:
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         spec = Path(tmp) / "model.json"
-        spec.write_text(json.dumps({"name": name, "solids": solids, "out": str(out)}))
+        spec.write_text(json.dumps({"name": name, "solids": solids, "out": str(out)}), encoding="utf-8")
         info = apps.run_freecad_script(Path(__file__).parent / "freecad_scripts" / "build_model.py", env={"CADMATE_SPEC": str(spec)})
     info["colours"] = has_colours(out)
     return info
@@ -260,7 +260,7 @@ def build(solids: list[dict], out: Path, name: str) -> dict:
 def has_colours(step: Path) -> bool:
     """Whether a STEP file carries colours (AP214 COLOUR_RGB entities, which KiCad reads)."""
     try:
-        return "COLOUR_RGB" in step.read_text(errors="replace")
+        return "COLOUR_RGB" in step.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return False
 

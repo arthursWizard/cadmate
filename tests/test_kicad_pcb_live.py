@@ -1,10 +1,10 @@
 import shutil
-import tempfile
 from pathlib import Path
 
 import pytest
 
 from cadmate import kicad_pcb_live as pcb, live
+from conftest import short_tmp
 
 BOARD = '''(kicad_pcb
 	(version 20250926)
@@ -36,7 +36,7 @@ BOARD = '''(kicad_pcb
 
 @pytest.fixture(autouse=True)
 def data(monkeypatch):
-    d = Path(tempfile.mkdtemp(dir="/tmp"))
+    d = Path(short_tmp())
     monkeypatch.setenv(live.SOCKET_ENV, str(d / "b.sock"))
     yield d
     shutil.rmtree(d, ignore_errors=True)

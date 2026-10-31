@@ -19,7 +19,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import apps, sexpr
+from . import apps, sexpr, versions
 
 SOURCES = {
     "kicad_ssg": "KiCad Library Conventions S4.2 (klc.kicad.org/symbol/s4/s4.2/) place a symbol's inputs left, outputs "
@@ -196,7 +196,7 @@ def read(path: str | Path) -> Sheet:
     f = Path(path).expanduser()
     if not f.exists():
         raise ReviewError(f"no schematic at {f}")
-    raw = f.read_text(errors="replace")
+    raw = f.read_text(encoding="utf-8", errors="replace")
     root = sexpr.parse(raw)
     if root.head != "kicad_sch":
         raise ReviewError(f"{f.name} is not a KiCad schematic")
@@ -502,13 +502,13 @@ def run_erc(sch: Path) -> dict | None:
         return None
     out = Path(tempfile.mkdtemp(prefix="cadmate-erc-")) / "erc.json"
     try:
-        proc = subprocess.run([cli, "sch", "erc", "--format", "json", "--severity-all", "--units", "mm", "--output", str(out), str(sch)],
-                              capture_output=True, text=True, timeout=300)
+        proc = subprocess.run([cli, *versions.kicad_cli_args("sch_erc"), "--output", str(out), str(sch)],
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
     except (OSError, subprocess.SubprocessError) as e:
         return {"error": f"kicad-cli erc failed: {e}"}
     if not out.exists():
         return {"error": f"kicad-cli erc wrote no report (exit {proc.returncode}): {(proc.stderr or proc.stdout)[-800:]}"}
-    return json.loads(out.read_text())
+    return json.loads(out.read_text(encoding="utf-8"))
 
 
 def _erc_findings(rep: dict) -> list[dict]:

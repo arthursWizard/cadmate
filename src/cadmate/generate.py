@@ -17,7 +17,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-from . import check, footprint, ipc, packages, sexpr
+from . import check, footprint, ipc, packages, sexpr, versions
 from .footprint import BBox, Model, Pad
 
 FAMILIES: dict[str, dict] = {
@@ -67,7 +67,7 @@ SILK_PAD_CLEARANCE = 0.2
 COURTYARD_GRID = 0.01
 EP_PAD_CLEARANCE = 0.2  # copper gap between the exposed pad and the signal pads
 MAX_RADIUS = 0.25  # roundrect corner radius cap
-FORMAT_VERSION = "20260206"  # KiCad 10, the oldest version cadmate supports
+FORMAT_VERSION = versions.FOOTPRINT_FORMAT  # see versions.py
 SLOT_MIN_RATIO = 2.0  # KLC F7.7: oval holes only for leads longer than twice their width
 
 

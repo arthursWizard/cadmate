@@ -135,7 +135,7 @@ def init(root: str | Path, name: str | None = None, boards: list[str] | None = N
             p.mkdir(parents=True, exist_ok=True)
         else:
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(text)
+            p.write_text(text, encoding="utf-8", newline="\n")
         made.append(rel)
 
     mk(MARKER, json.dumps({"name": name, "layout": LAYOUT_VERSION, "created": datetime.now().isoformat(timespec="seconds")}, indent=2) + "\n")
@@ -176,7 +176,7 @@ def _kicad_refs(root: Path, folder: Path) -> set[Path]:
     """Project paths a KiCad board folder points at through ${KIPRJMOD}: lib tables and 3D model links. A snapshot carries
     these too, or ${KIPRJMOD}/../lib/... inside the snapshot would point at nothing."""
     refs: set[Path] = set()
-    texts = [f.read_text(errors="replace") for f in folder.iterdir()
+    texts = [f.read_text(encoding="utf-8", errors="replace") for f in folder.iterdir()
              if f.is_file() and (f.name in ("fp-lib-table", "sym-lib-table") or f.suffix == ".kicad_pcb")]
     for text in texts:
         for m in re.finditer(r'\$\{KIPRJMOD\}/([^"\)\s]+)', text):
@@ -251,10 +251,10 @@ def snapshot(path: str | Path, label: str, paths: list[str] | None = None, note:
             shutil.copy2(src, dst)
             files += 1
     meta = {"label": label, "taken": now.isoformat(timespec="seconds"), "note": note, "paths": [str(r) for r in rels]}
-    (dest / "SNAPSHOT.json").write_text(json.dumps(meta, indent=2) + "\n")
+    (dest / "SNAPSHOT.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     index = hist / INDEX
     if not index.exists():
-        index.write_text(_index_header(json.loads((root / MARKER).read_text()).get("name", root.name)))
+        index.write_text(_index_header(json.loads((root / MARKER).read_text(encoding="utf-8")).get("name", root.name)), encoding="utf-8")
     shown = ", ".join(str(r) for r in rels) if paths else "whole project"
     cell = (note or "").replace("|", "/").replace("\n", " ")
     with index.open("a") as f:
@@ -274,7 +274,7 @@ def history(path: str | Path) -> dict:
             continue
         meta = {}
         if (d / "SNAPSHOT.json").exists():
-            meta = json.loads((d / "SNAPSHOT.json").read_text())
+            meta = json.loads((d / "SNAPSHOT.json").read_text(encoding="utf-8"))
         out.append({"name": d.name, "label": meta.get("label"), "taken": meta.get("taken"), "note": meta.get("note", ""),
                     "paths": meta.get("paths", []), "named_right": bool(SNAP_NAME.match(d.name))})
     return {"ok": True, "root": str(root), "snapshots": out}
@@ -287,7 +287,7 @@ def restore(path: str | Path, name: str, paths: list[str] | None = None, now: da
     src = root / HISTORY / name
     if not src.is_dir():
         raise ProjectError(f"no snapshot {name}; project_history lists them")
-    meta = json.loads((src / "SNAPSHOT.json").read_text()) if (src / "SNAPSHOT.json").exists() else {}
+    meta = json.loads((src / "SNAPSHOT.json").read_text(encoding="utf-8")) if (src / "SNAPSHOT.json").exists() else {}
     rels = [_rel(root, p) for p in paths] if paths else [Path(p) for p in meta.get("paths", [])] or \
         [Path(p.name) for p in src.iterdir() if p.name != "SNAPSHOT.json"]
     missing = [str(r) for r in rels if not (src / r).exists()]
@@ -332,7 +332,7 @@ def check(path: str | Path) -> dict:
     root = _root(path)
     found: list[dict] = []
     try:
-        marker = json.loads((root / MARKER).read_text())
+        marker = json.loads((root / MARKER).read_text(encoding="utf-8"))
     except ValueError:
         marker = {}
         found.append(_finding("error", MARKER, "not valid JSON", "fix or delete it and run project_init again"))
@@ -391,7 +391,7 @@ def read_brief(root: str | Path) -> dict | None:
     f = Path(root) / BRIEF
     if not f.exists():
         return None
-    items = re.findall(r"^\s*[-*] \[([ xX])\] (.+)$", f.read_text(errors="replace"), re.M)
+    items = re.findall(r"^\s*[-*] \[([ xX])\] (.+)$", f.read_text(encoding="utf-8", errors="replace"), re.M)
     items = [(m, t.strip()) for m, t in items if not t.lower().startswith("(example)")]
     return {"open": [t for m, t in items if m == " "], "met": [t for m, t in items if m != " "]}
 
@@ -434,7 +434,7 @@ def _check_kicad(root: Path) -> list[dict]:
         if pcb.exists():
             out += _check_models(root, board, pcb)
         for sch in sorted(board.glob("*.kicad_sch")):
-            names = set(re.findall(r'\(instances\s*\(project\s+"([^"]*)"', sch.read_text(errors="replace")))
+            names = set(re.findall(r'\(instances\s*\(project\s+"([^"]*)"', sch.read_text(encoding="utf-8", errors="replace")))
             if names and name not in names:
                 out.append(_finding("error", str(sch.relative_to(root)),
                                     f"symbol annotations belong to project {', '.join(sorted(names))!s}, not {name}",
@@ -444,12 +444,12 @@ def _check_kicad(root: Path) -> list[dict]:
 
 
 def _is_subsheet(board: Path, filename: str) -> bool:
-    return any(f'"{filename}"' in s.read_text(errors="replace") for s in board.glob("*.kicad_sch") if s.name != filename)
+    return any(f'"{filename}"' in s.read_text(encoding="utf-8", errors="replace") for s in board.glob("*.kicad_sch") if s.name != filename)
 
 
 def _check_table(root: Path, board: Path, table: Path) -> list[dict]:
     out = []
-    for uri in re.findall(r'\(uri\s+"([^"]+)"\)', table.read_text(errors="replace")):
+    for uri in re.findall(r'\(uri\s+"([^"]+)"\)', table.read_text(encoding="utf-8", errors="replace")):
         rel = str(table.relative_to(root))
         if KIPRJMOD.search(uri):
             target = (board / KIPRJMOD.sub("", uri).lstrip("/")).resolve()
@@ -466,7 +466,7 @@ def _check_table(root: Path, board: Path, table: Path) -> list[dict]:
 
 def _check_models(root: Path, board: Path, pcb: Path) -> list[dict]:
     out, seen = [], set()
-    for m in re.findall(r'\(model\s+"([^"]+)"', pcb.read_text(errors="replace")):
+    for m in re.findall(r'\(model\s+"([^"]+)"', pcb.read_text(encoding="utf-8", errors="replace")):
         if m in seen:
             continue
         seen.add(m)

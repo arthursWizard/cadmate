@@ -358,8 +358,8 @@ def test_cap_with_its_ground_side_unrouted():
     assert any("ground pad" in f["what"] for f in rules(pr.review_board(b, fab=None), "decoupling"))
 
 
-def test_switch_with_back_socket_pads_counts_as_a_back_part():
-    sw = footprint("cadmate:Choc", "SW1", "k00", 20, 20, [pad("1", 3.2, 6, "A", w=2.6, h=2.6, layer="B.Cu"),
+def test_front_part_with_back_smd_pads_counts_as_a_back_part():
+    sw = footprint("cadmate:BackPads", "SW1", "sw", 20, 20, [pad("1", 3.2, 6, "A", w=2.6, h=2.6, layer="B.Cu"),
                                                           pad("2", -8.2, 3.8, "B", w=2.6, h=2.6, layer="B.Cu")])
     r = footprint("R:R", "R1", "1k", 40, 20, [pad("1", -0.5, 0, "A", layer="B.Cu"), pad("2", 0.5, 0, "B", layer="B.Cu")],
                   layer="B.Cu")
@@ -368,10 +368,10 @@ def test_switch_with_back_socket_pads_counts_as_a_back_part():
 
 
 def test_only_the_boards_own_schematic_is_read(tmp_path):
-    (tmp_path / "left.kicad_sch").write_text('(kicad_sch (sheet (property "Sheetfile" "sub.kicad_sch")))')
+    (tmp_path / "main.kicad_sch").write_text('(kicad_sch (sheet (property "Sheetfile" "sub.kicad_sch")))')
     (tmp_path / "sub.kicad_sch").write_text("(kicad_sch)")
-    (tmp_path / "left-routed.kicad_sch").write_text("(kicad_sch)")
-    assert {f.name for f in pb.schematic_files(tmp_path, "left")} == {"left.kicad_sch", "sub.kicad_sch"}
+    (tmp_path / "main-routed.kicad_sch").write_text("(kicad_sch)")
+    assert {f.name for f in pb.schematic_files(tmp_path, "main")} == {"main.kicad_sch", "sub.kicad_sch"}
     assert len(pb.schematic_files(tmp_path, "nothing")) == 3
 
 

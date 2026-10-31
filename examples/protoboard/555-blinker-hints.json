@@ -1,0 +1,125 @@
+{
+  "title": "555 LED blinker, placed from hints",
+  "board": {
+    "type": "perfboard",
+    "cols": 20,
+    "rows": 14,
+    "pads": "double-unplated"
+  },
+  "parts": [
+    {
+      "ref": "J1",
+      "part": "header",
+      "params": {
+        "pins": 2
+      },
+      "value": "5V in",
+      "region": "edge"
+    },
+    {
+      "ref": "C3",
+      "part": "cap_ceramic",
+      "params": {
+        "pitch": 1
+      },
+      "value": "100n"
+    },
+    {
+      "ref": "U1",
+      "part": "dip",
+      "params": {
+        "pins": 8
+      },
+      "value": "NE555"
+    },
+    {
+      "ref": "R1",
+      "part": "resistor_axial",
+      "params": {
+        "span": 4
+      },
+      "value": "1k"
+    },
+    {
+      "ref": "R2",
+      "part": "resistor_axial",
+      "params": {
+        "span": 4
+      },
+      "value": "10k"
+    },
+    {
+      "ref": "C1",
+      "part": "cap_electrolytic",
+      "params": {
+        "diameter": 6.3
+      },
+      "value": "10u"
+    },
+    {
+      "ref": "C2",
+      "part": "cap_ceramic",
+      "params": {
+        "pitch": 1
+      },
+      "value": "10n"
+    },
+    {
+      "ref": "R3",
+      "part": "resistor_axial",
+      "params": {
+        "span": 4
+      },
+      "value": "470"
+    },
+    {
+      "ref": "D1",
+      "part": "led",
+      "params": {
+        "size": 5
+      },
+      "value": "red",
+      "region": "right"
+    }
+  ],
+  "nets": {
+    "VCC": [
+      "J1.1",
+      "C3.1",
+      "U1.8",
+      "U1.4",
+      "R1.1"
+    ],
+    "GND": [
+      "J1.2",
+      "C3.2",
+      "U1.1",
+      "C1.2",
+      "C2.2",
+      "D1.1"
+    ],
+    "DIS": [
+      "U1.7",
+      "R1.2",
+      "R2.1"
+    ],
+    "THR": [
+      "U1.6",
+      "U1.2",
+      "R2.2",
+      "C1.1"
+    ],
+    "CV": [
+      "U1.5",
+      "C2.1"
+    ],
+    "OUT": [
+      "U1.3",
+      "R3.1"
+    ],
+    "LED": [
+      "R3.2",
+      "D1.2"
+    ]
+  }
+}

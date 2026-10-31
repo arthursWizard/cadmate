@@ -25,6 +25,7 @@ Point = tuple[float, float]
 
 GRID = 0.05  # mm
 MAX_EXPANSIONS = 200_000
+ESCAPE = 0.6  # mm from an end pad where the grid margin is dropped
 DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)]
 
 
@@ -41,7 +42,7 @@ class Shape:
 
     def gap(self, p: Point) -> float:
         """Distance from p to this shape's copper edge."""
-        if self.kind == "mask":
+        if self.kind in ("mask", "keepout"):
             if point_in_polygon(p, self.poly):
                 return -1.0
             return min(point_seg(p, a, b)[0] for a, b in zip(self.poly, self.poly[1:] + self.poly[:1]))
@@ -53,7 +54,7 @@ class Shape:
         return d - self.half
 
     def box(self) -> tuple[float, float, float, float]:
-        if self.kind == "mask":
+        if self.kind in ("mask", "keepout"):
             xs, ys = [q[0] for q in self.poly], [q[1] for q in self.poly]
             return min(xs), min(ys), max(xs), max(ys)
         if self.kind == "pad":
@@ -79,16 +80,20 @@ class Obstacles:
         self.min_clearance = rules.get("min_clearance") or 0.2
         self.edge_clearance = max(rules.get("min_copper_edge_clearance") or 0.0, 0.3)
         self.hole_to_hole = rules.get("min_hole_to_hole") or 0.25
+        hole_clr = max(self.min_clearance, rules.get("min_hole_clearance") or 0.25)
         for p in b.pads:
             for l in p.layers:
-                if l in self.buckets:
-                    self.add(l, Shape("pad", p.net, self.clr(p.net), pad=p))
+                if l in self.buckets:  # an unplated hole keeps the hole clearance, not the copper one
+                    self.add(l, Shape("pad", p.net, hole_clr if p.kind == "np_thru_hole" else self.clr(p.net), pad=p))
         for t in b.tracks:
             for s, e in t.pieces():
                 self.add(t.layer, Shape("track", t.net, self.clr(t.net), a=s, b=e, half=t.width / 2))
         for v in b.vias:
             for l in self._via_layers(v.layers):
                 self.add(l, Shape("via", v.net, self.clr(v.net), a=(v.x, v.y), half=v.size / 2))
+        for l, poly in b.keepouts:  # rule areas with tracks or vias not allowed: nothing routed goes in
+            if l in self.buckets:
+                self.add(l, Shape("keepout", None, 0.0, poly=poly))
         for l, poly in b.mask_openings:  # copper there would be bare, and bridge to whatever else the opening bares
             if l in self.buckets:
                 self.add(l, Shape("mask", None, self.min_clearance, poly=poly))
@@ -145,19 +150,21 @@ class Obstacles:
                     out += hit  # a shape in two buckets is checked twice; cheaper than de-duplicating
         return out
 
-    def clear(self, layer: str, p: Point, net: str | frozenset, half: float, margin: float = 0.0) -> tuple[bool, str | None]:
+    def clear(self, layer: str, p: Point, net: str | frozenset, half: float, margin: float = 0.0,
+              masks: bool = True) -> tuple[bool, str | None]:
         """Whether copper of this net (or these nets, for a pair routed as one), half wide, centred at p, keeps clearance to
-        everything else. Returns (ok, what's in the way)."""
+        everything else. Returns (ok, what's in the way). Without masks, solder mask openings don't count: for checking
+        copper already there, which may sit in its own pad's opening."""
         nets = net if isinstance(net, frozenset) else (net,)
         own = max(self.clr(n) for n in nets)
         reach = half + max(own, self.max_clr) + margin + 0.01
         for s in self.near(layer, p, reach):
-            if s.net is not None and s.net in nets:
+            if s.net is not None and s.net in nets or not masks and s.kind == "mask":
                 continue
-            need = half + max(own, s.clearance) + margin
+            need = half + (0.0 if s.kind == "keepout" else max(own, s.clearance)) + margin
             if s.gap(p) < need - 1e-6:
                 return False, (s.pad.name if s.kind == "pad" else "a solder mask opening" if s.kind == "mask"
-                               else f"{s.kind} on {s.net or 'no net'}")
+                               else "a keepout area" if s.kind == "keepout" else f"{s.kind} on {s.net or 'no net'}")
         if self.outline:
             x0, y0, x1, y1 = self.outline
             if not (x0 < p[0] < x1 and y0 < p[1] < y1):
@@ -329,6 +336,8 @@ class Router:
         if max_vias == 0 and not common:
             max_vias = 1  # the pads are on different sides: one via is the minimum
         layers = (common if max_vias == 0 else self.obs.layers) or self.obs.layers
+        if conn.get("layers"):  # e.g. outer layers only, to keep tracks out of the planes
+            layers = [l for l in layers if l in conn["layers"]] or layers
         size, drill = self.via_size(net)
         g = self.g
         ox, oy = a.x, a.y  # grid origin on the start pad's centre
@@ -352,7 +361,10 @@ class Router:
                 elif (lay in a.layers and a.contains(p, -0.0)) or (lay in b.layers and b.contains(p, -0.0)):
                     cache[k] = self.obs.clear(lay, p, net, min(half, 0.05), 0.0)[0] or True
                 else:
-                    cache[k] = self.obs.clear(lay, p, net, half, margin)[0]
+                    # right by an end pad, no grid margin: out of a 0.4 mm pitch pin row a track at the clearance has
+                    # none to spare, and the exact check on the final segments still holds it to the rule
+                    near = a.distance(p) < ESCAPE or b.distance(p) < ESCAPE
+                    cache[k] = self.obs.clear(lay, p, net, half, 0.0 if near else margin)[0]
             return cache[k]
 
         def goal(li: int, i: int, j: int) -> bool:
@@ -730,6 +742,56 @@ def _jog(a: Point, b: Point) -> list[Point]:
 
 
 PROMOTE = 3  # items moved to the front, one at a time, when they failed or broke their rule
+
+
+def plane_nets(b: Board) -> dict[str, list[str]]:
+    """Nets with a zone on an inner layer, and those layers: the planes of a 4+ layer board."""
+    outer = {b.copper_layers[0], b.copper_layers[-1]} if b.copper_layers else set()
+    planes = {n: [l for l in ls if l in b.copper_layers and l not in outer] for n, ls in b.zone_nets.items()}
+    return {n: ls for n, ls in planes.items() if ls}
+
+
+def _pad_joined(b: Board, p: Pad) -> bool:
+    """A via or track end of the pad's own net already in the pad."""
+    if any(v.net == p.net and p.contains((v.x, v.y)) for v in b.vias):
+        return True
+    return any(t.net == p.net and t.layer in p.layers and (p.contains(t.start) or p.contains(t.end)) for t in b.tracks)
+
+
+def plane_fanout(b: Board, grid: float = GRID) -> dict:
+    """A via beside every SMD pad on a plane net, into the plane, locked; added to the board.
+
+    Freerouting 2.5 doesn't fan out to planes on "power" layers: it routes those pins pad to pad on the outer layers,
+    and most fail. With a via down at each pad first, the plane joins them, and Freerouting only routes signals.
+    Pads that already have a via or track of their net are left alone (the critical pass, or stitching vias)."""
+    planes = plane_nets(b)
+    out: dict = {"planes": planes, "tracks": [], "vias": [], "no_room": []}
+    if not planes:
+        return out
+    r = Router(b, grid)
+    outer = (b.copper_layers[0], b.copper_layers[-1])
+    done: set[str] = set()
+    # biggest copy of a pad first: an exposed pad is listed again for its paste windows
+    for p in sorted(b.pads, key=lambda p: -p.w * p.h):
+        name = f"{p.ref}.{p.number}"
+        layer = next((l for l in p.layers if l in outer), None)
+        if p.net not in planes or p.kind != "smd" or layer is None or name in done:
+            continue
+        done.add(name)
+        if _pad_joined(b, p):
+            continue
+        nc = b.net_class(p.net)
+        w = min((nc.track_width if nc and nc.track_width else None) or 0.25, min(p.w, p.h))
+        conn = {"net": p.net, "width": w, "a": {"pad": name, "x": p.x, "y": p.y},
+                "b": {"pour_layers": [l for l in b.zone_nets.get(p.net, []) if l in outer]}}
+        res = r.via_beside(conn, "plane_fanout")
+        if res.ok and (res.tracks or res.vias):
+            r.commit(res)
+            out["tracks"] += res.tracks
+            out["vias"] += res.vias
+        elif not res.ok or res.note:
+            out["no_room"].append({"pad": name, "net": p.net, "why": res.why or res.note})
+    return out
 
 
 def route_plan(b: Board, plan: dict, ids: list[str] | None = None, skip: list[str] | None = None, grid: float = GRID) -> dict:

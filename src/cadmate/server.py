@@ -13,7 +13,7 @@ from pathlib import Path
 
 from mcp.server.mcpserver import Image, MCPServer
 
-from . import (apps, check, footprint, freerouting, generate, ipc, kicad_live, kicad_pcb_live, live, model, packages, part, pcb_flow, pcb_review,
+from . import (apps, check, fab_export, footprint, freerouting, generate, ipc, kicad_live, kicad_pcb_live, live, model, packages, part, pcb_flow, pcb_review,
                pcb_route, review, schematic_review, symbol, symbol_check, symbol_generate)
 from .footprint import read as _read_footprint  # generate_symbol's footprint argument shadows the module
 
@@ -823,6 +823,8 @@ def autoroute_rest(path: str | None = None, out_path: str | None = None, current
     smallest pad on the net (widths_capped says where). On the way back, tracks narrower than their net class are widened
     (widened lists them) and zones are refilled. On the open board the result is one undo step; for a file it goes to
     out_path (default <name>-routed.kicad_pcb). unrouted lists nets still not joined. Then run review_pcb_layout.
+    On a board with inner-layer planes, each SMD pad on a plane net first gets a locked via into its plane (plane_fanout
+    says how many, and which pads had no room), since Freerouting doesn't route to planes itself.
 
     fab_check sorts Freerouting's narrow tracks against the fab's minimums ("jlcpcb" or "pcbway"; ask the user which):
     errors are under the fab's own minimum and must be rerouted, warnings are between it and the minimum plus margin
@@ -832,6 +834,31 @@ def autoroute_rest(path: str | None = None, out_path: str | None = None, current
     """
     return _flow_call(pcb_flow.autoroute, path=path, out_path=out_path, currents=currents, roles=roles, passes=passes, timeout=timeout,
                       fab_name=fab, margin=margin, neck_rules=neck_rules)
+
+
+@server.tool()
+def finish_routing(path: str, out_path: str | None = None, outer_only: bool = True) -> dict:
+    """Clean up after autoroute_rest, the way you would by hand: tracks that break clearance or are under the board's
+    minimum width (Freerouting squeezes some past fine-pitch pins) are taken out with the stubs they leave, then every net
+    still in pieces is joined with cadmate's grid router, nearest pads first, and the zones are refilled. Locked tracks
+    are never touched. With outer_only (default) new tracks stay on the outer layers so inner planes stay whole.
+    path is a saved .kicad_pcb; the result goes to out_path (default <name>-finished.kicad_pcb). still_open lists what it
+    couldn't join, with the reason, to route by hand. Run KiCad's DRC on the result.
+    """
+    return _flow_call(pcb_flow.finish_routing, path=path, out_path=out_path, outer_only=outer_only)
+
+
+@server.tool()
+def export_fab(path: str, out_dir: str | None = None) -> dict:
+    """Manufacturing files for JLCPCB from a finished .kicad_pcb: Gerbers and drill files (zipped, ready to upload), the
+    BOM (Comment, Designator, Footprint, LCSC Part #, from the footprints' LCSC field) and the CPL (Designator, Mid X,
+    Mid Y, Layer, Rotation). DNP and excluded parts are left out; no_lcsc_number lists parts the BOM has no part number
+    for (empty, TBD, or with a question mark). Zones are refilled on a copy first. Run DRC first. Goes to out_dir (default <board folder>/fab/<board name>).
+    """
+    try:
+        return fab_export.export(Path(path), Path(out_dir) if out_dir else None)
+    except (fab_export.ExportError, OSError, ValueError) as e:
+        return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
 
 
 def main() -> None:

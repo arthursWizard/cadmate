@@ -9,6 +9,7 @@ pages (October 2026).
 from __future__ import annotations
 
 import math
+import re
 
 MARGIN = 0.25  # the buffer over a fab's minimum: 25 %, so 0.10 mm becomes 0.125 mm
 
@@ -74,14 +75,21 @@ def neck_rules(warnings: list[dict], hard: float) -> str:
     return "\n".join(out) + "\n"
 
 
+def read_neck_rules(text: str) -> dict[str, list[tuple[str, float]]]:
+    """The neck rules in a .kicad_dru (cadmate's, or written the same way): {net: [(part ref, min width mm)]}."""
+    out: dict[str, list[tuple[str, float]]] = {}
+    for m in re.finditer(r"A\.NetName == '((?:[^'\\]|\\.)*)' && A\.intersectsCourtyard\('([^']+)'\)\"\)\s*"
+                         r"\(constraint track_width \(min ([\d.]+)mm\)", text):
+        out.setdefault(m[1].replace("\\'", "'"), []).append((m[2], float(m[3])))
+    return out
+
+
 def merge_rules(existing: str, block: str) -> str:
     """The board's .kicad_dru with cadmate's block replaced (or added, or removed when block is empty)."""
     text = existing or ""
     if BEGIN in text and END in text:
         a, b = text.index(BEGIN), text.index(END) + len(END)
         text = (text[:a] + text[b:].lstrip("\n")).rstrip() + "\n"
-    if not block:
-        return text
-    if "(version" not in text:
+    if "(version" not in text:  # an empty rules file isn't one: KiCad wants the version line
         text = "(version 1)\n" + text
-    return text.rstrip() + "\n\n" + block
+    return text.rstrip() + "\n" + ("\n" + block if block else "")

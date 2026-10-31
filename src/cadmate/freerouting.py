@@ -6,6 +6,10 @@ Freerouting runs headless on it. Its session file (SES) is read here rather than
 go into the board open in the editor as one undo step, without the user reloading anything. On the way in, tracks
 narrower than their net class (Freerouting 2.5's fan-out puts down tracks below the board minimum) are widened to it
 where clearance allows, and listed; where it doesn't, they stay as wide as they can and are reported. Locked tracks go out as protected wiring, so Freerouting routes around them and leaves them alone.
+
+On a board with planes (a zone on an inner layer), every SMD pad on a plane net first gets a locked via beside it into the
+plane: Freerouting 2.5 neither fans out to planes on "power" layers nor routes on them, so without the vias it tries those
+pins pad to pad on the outer layers and most fail.
 """
 
 from __future__ import annotations
@@ -337,7 +341,8 @@ def parse_ses(text: str, board: Board, via_default: tuple[float, float] = (0.6, 
 
 
 def new_items(board: Board, tracks: list[Track], vias: list[Via]) -> tuple[list[Track], list[Via]]:
-    """The SES lists the protected wiring too; keep only what isn't on the board already."""
+    """The SES lists the protected wiring too; keep only what isn't on the board already. Zero-length tracks (Freerouting
+    leaves them at pad centres) are dropped: they join nothing and can still break clearance."""
 
     def tkey(t: Track):
         a, b = sorted([(round(t.start[0], 3), round(t.start[1], 3)), (round(t.end[0], 3), round(t.end[1], 3))])
@@ -345,7 +350,7 @@ def new_items(board: Board, tracks: list[Track], vias: list[Via]) -> tuple[list[
 
     have = {tkey(t) for t in board.tracks}
     vhave = {(v.net, round(v.x, 3), round(v.y, 3)) for v in board.vias}
-    return ([t for t in tracks if tkey(t) not in have], [v for v in vias if (v.net, round(v.x, 3), round(v.y, 3)) not in vhave])
+    return ([t for t in tracks if tkey(t) not in have and dist(t.start, t.end) > 1e-3], [v for v in vias if (v.net, round(v.x, 3), round(v.y, 3)) not in vhave])
 
 
 def widen(board: Board, tracks: list[Track], widths: dict[str, float], vias: list[Via] = ()) -> list[dict]:
@@ -544,7 +549,12 @@ def autoroute_file(board_file: Path, out_file: Path, widths: dict[str, float] | 
     from .pcb_board import load_project
 
     load_project(board, board_file.with_suffix(".kicad_pro"))
-    export_dsn(board_file, dsn)
+    fan = pcb_route.plane_fanout(board)
+    src = board_file
+    if fan["tracks"] or fan["vias"]:  # the plane vias go out as locked wiring, and into the result with it
+        src = work / board_file.name
+        pcb_route.write_file(board_file, src, fan["tracks"], fan["vias"])
+    export_dsn(src, dsn)
     edge, hole = _clearances(board, fab_limits)
     dsn.write_text(dsn_keepouts(dsn_widths(dsn.read_text(), widths), board, edge, hole))
     fr = run_freerouting(dsn, ses, passes, timeout)
@@ -552,7 +562,7 @@ def autoroute_file(board_file: Path, out_file: Path, widths: dict[str, float] | 
     tracks, vias = new_items(board, tracks, vias)
     tracks, vias, pruned = prune_stubs(board, tracks, vias)
     widened = widen(board, tracks, widths, vias)
-    pcb_route.write_file(board_file, out_file, tracks, vias, locked=False)
+    pcb_route.write_file(src, out_file, tracks, vias, locked=False)
     filled = True
     try:
         refill(out_file)
@@ -563,7 +573,7 @@ def autoroute_file(board_file: Path, out_file: Path, widths: dict[str, float] | 
     left = unrouted(after)
     out = {"ok": True, "complete": not left, "board": str(out_file), "freerouting": fr,
            "added": {"tracks": len(tracks), "vias": len(vias)}, "stubs_removed": pruned,
-           "keepouts": {"edge_mm": edge, "hole_mm": hole}, "widened": widened, "zones_refilled": filled, "unrouted": left,
+           "keepouts": {"edge_mm": edge, "hole_mm": hole}, "widened": widened, "zones_refilled": filled, "plane_fanout": _fan_report(fan), "unrouted": left,
            "work": str(work)}
     if left:
         out["next"] = (f"{len(left)} net(s) not fully routed: run again with more passes (now {passes}), "
@@ -571,6 +581,14 @@ def autoroute_file(board_file: Path, out_file: Path, widths: dict[str, float] | 
     out["clearance_check"] = clearance_check(board, tracks, vias, fab_limits)
     if fab_limits:
         out["fab_check"] = fab_check(board, tracks, fab_limits)
+    return out
+
+
+def _fan_report(fan: dict) -> dict:
+    out = {"planes": fan["planes"], "vias": len(fan["vias"])}
+    if fan["no_room"]:
+        out["no_room"] = fan["no_room"]
+        out["what_to_do"] = "these pads have no via into their plane: move a part or route them to one by hand"
     return out
 
 
@@ -595,6 +613,9 @@ def autoroute_live(widths: dict[str, float] | None = None, passes: int = 30, tim
     dsn, ses = copy.with_suffix(".dsn"), copy.with_suffix(".ses")
     board = parse(copy.read_text(), copy.name)
     load_project(board, copy.with_suffix(".kicad_pro"))
+    fan = pcb_route.plane_fanout(board)
+    if fan["tracks"] or fan["vias"]:
+        pcb_route.write_file(copy, copy, fan["tracks"], fan["vias"])
     export_dsn(copy, dsn)
     edge, hole = _clearances(board, fab_limits)
     dsn.write_text(dsn_keepouts(dsn_widths(dsn.read_text(), widths), board, edge, hole))
@@ -604,8 +625,12 @@ def autoroute_live(widths: dict[str, float] | None = None, passes: int = 30, tim
     tracks, vias, pruned = prune_stubs(board, tracks, vias)
     widened = widen(board, tracks, widths, vias)
 
-    res = kicad_pcb_live.commit(f"Freerouting: {len(tracks)} tracks, {len(vias)} vias",
-                                lambda kicad, b: pcb_route.apply_live(b, tracks, vias, locked=False))
+    def apply(kicad, b):
+        if fan["tracks"] or fan["vias"]:
+            pcb_route.apply_live(b, fan["tracks"], fan["vias"])
+        return pcb_route.apply_live(b, tracks, vias, locked=False)
+
+    res = kicad_pcb_live.commit(f"Freerouting: {len(tracks)} tracks, {len(vias)} vias", apply)
     if not res.get("ok"):
         return res | {"freerouting": fr}
     refill_note = "done, as its own undo step"
@@ -618,7 +643,7 @@ def autoroute_live(widths: dict[str, float] | None = None, passes: int = 30, tim
     left = unrouted(after)
     out = {"ok": True, "complete": not left, "board": live.name, "freerouting": fr,
            "added": {"tracks": len(tracks), "vias": len(vias)}, "stubs_removed": pruned,
-           "keepouts": {"edge_mm": edge, "hole_mm": hole}, "widened": widened, "zones": refill_note, "unrouted": left,
+           "keepouts": {"edge_mm": edge, "hole_mm": hole}, "widened": widened, "zones": refill_note, "plane_fanout": _fan_report(fan), "unrouted": left,
            "undo": "two steps in KiCad's undo list: 'cadmate: Freerouting …' and 'cadmate: refill zones'", "work": str(work)}
     if left:
         out["next"] = (f"{len(left)} net(s) not fully routed: run again with more passes (now {passes}), "

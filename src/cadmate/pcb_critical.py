@@ -349,7 +349,11 @@ def _chain(ctx: Ctx, net: str) -> list[Pad]:
     if len(pads) < 2:
         return pads
     conn = [p for p in pads if re.match(r"^(J|P|CN|USB|X)\d", p.ref) and not _is_crystal(ctx.b.part(p.ref))]
-    start = conn[0] if conn else max(pads, key=lambda p: sum(_d(p, q) for q in pads))
+    rest = [p for p in pads if p not in conn]
+    if len(conn) > 1 and rest:  # a net on two connector pins (USB-C's A and B rows): leave from the one nearest the rest
+        start = max(conn, key=lambda p: min(_d(p, q) for q in rest))
+    else:
+        start = conn[0] if conn else max(pads, key=lambda p: sum(_d(p, q) for q in pads))
     out, left = [start], [p for p in pads if p is not start]
     while left:
         nxt = _nearest(out[-1], left)
@@ -424,8 +428,11 @@ def _esd(ctx: Ctx) -> None:
                 if any(it["class"] == "diff_pair" and s.net in it["nets"] for it in ctx.items):
                     continue
                 chain = _chain(ctx, s.net)
+                # no via before the TVS on a data line (SLVA680); a supply rail's clamp pin (VBUS on a USB TVS) sits
+                # between the data pins, and holding it to one layer can box in the data lines, so it may take a via
+                data = ctx.role(s.net) != "power"
                 for a, b in zip(chain, chain[1:]):
-                    conns.append(_conn(s.net, a, b, ctx.width(s.net), 0 if part.ref in (a.ref, b.ref) else None))
+                    conns.append(_conn(s.net, a, b, ctx.width(s.net), 0 if data and part.ref in (a.ref, b.ref) else None))
         sig_nets = sorted({s.net for _, _, sig in members for s in sig})
         if any(it["class"] == "diff_pair" and set(sig_nets) & set(it["nets"]) for it in ctx.items):
             notes.append("the protected lines are routed with their pair, through the TVS pads")

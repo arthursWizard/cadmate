@@ -460,3 +460,165 @@ def test_stub_vias_and_their_dead_end_tracks_are_pruned():
 def test_no_ground_net_means_no_pour_item():
     b = board(footprint("R:R", "R1", "1k", 20, 20, [pad("1", -0.5, 0, "A"), pad("2", 0.5, 0, "B")]))
     assert "return_path" not in pc.classify(b)["counts"]
+
+
+def four_layer(*items) -> pb.Board:
+    head = HEAD.replace('(2 "B.Cu" signal)', '(4 "In1.Cu" power) (6 "In2.Cu" power) (2 "B.Cu" signal)')
+    return pb.parse(head + "".join(items) + ")\n", "test.kicad_pcb")
+
+
+def test_plane_fanout_puts_a_locked_via_at_each_plane_pad():
+    b = four_layer(ic(), cap("C1", 22, 14), zone("GND", "In1.Cu", [[(0, 0), (60, 0), (60, 40), (0, 40)]]),
+                   zone("+3V3", "In2.Cu", [[(0, 0), (60, 0), (60, 40), (0, 40)]]))
+    assert rt.plane_nets(b) == {"GND": ["In1.Cu"], "+3V3": ["In2.Cu"]}
+    fan = rt.plane_fanout(b)
+    assert not fan["no_room"]
+    pads = {f"{p.ref}.{p.number}" for p in b.pads if p.net in ("GND", "+3V3")}
+    assert len(fan["vias"]) == len(pads) == 4
+    assert all(t.locked for t in fan["tracks"]) and all(v.layers == ["F.Cu", "B.Cu"] for v in fan["vias"])
+    for p in b.pads:
+        if p.net in ("GND", "+3V3"):  # a track from the pad to its own via, close by
+            [t] = [t for t in fan["tracks"] if p.contains(t.start)]
+            assert t.net == p.net and any((v.x, v.y) == t.end and v.net == p.net for v in fan["vias"]) and t.length < 2
+    _clear(b, fan["tracks"], fan["vias"])
+    assert rt.plane_fanout(b)["vias"] == []  # pads already joined are left alone
+
+
+def test_no_fanout_without_inner_planes():
+    b = board(ic(), cap("C1", 22, 14), gnd_pour())
+    assert rt.plane_nets(b) == {} and rt.plane_fanout(b)["vias"] == []
+
+
+def test_zero_length_ses_tracks_are_dropped():
+    b = board(ic())
+    t = pb.Track((27.3, 18.1), (27.3005, 18.1), 0.25, "F.Cu", "+3V3")
+    keep = pb.Track((27.3, 18.1), (25.0, 18.1), 0.25, "F.Cu", "+3V3")
+    assert fr.new_items(b, [t, keep], [])[0] == [keep]
+
+
+def test_rules_file_keeps_its_version_line_when_cadmate_has_nothing_to_add():
+    from cadmate import fab
+
+    assert fab.merge_rules("", "") == "(version 1)\n"
+
+
+def test_router_keeps_out_of_keepout_areas_and_holds_hole_clearance():
+    ko = ('\t(zone (net 0) (net_name "") (layers "F.Cu" "B.Cu") (name "hole") (keepout (tracks not_allowed) (vias not_allowed) '
+          '(pads allowed) (copperpour not_allowed) (footprints allowed)) (polygon (pts (xy 10 10) (xy 12 10) (xy 12 12) (xy 10 12))))\n')
+    npth = footprint("MountingHole:MountingHole_2.2mm", "H1", "", 40, 20, ['(pad "" np_thru_hole circle (at 0 0) (size 2.2 2.2) (drill 2.2) (layers "*.Cu" "*.Mask"))'])
+    b = board(ko, npth)
+    assert b.keepouts and {l for l, _ in b.keepouts} == {"F.Cu", "B.Cu"}
+    obs = rt.Obstacles(b)
+    assert obs.clear("F.Cu", (11, 11), "A", 0.1) == (False, "a keepout area")
+    assert obs.clear("F.Cu", (12.2, 11), "A", 0.1)[0]  # beside it is fine: a keepout has no clearance of its own
+    # 0.25 mm hole clearance (KiCad's default), not the 0.2 mm copper clearance
+    assert not obs.clear("F.Cu", (40 + 1.1 + 0.1 + 0.22, 20), "A", 0.1)[0]
+    assert obs.clear("F.Cu", (40 + 1.1 + 0.1 + 0.27, 20), "A", 0.1)[0]
+
+
+def test_router_leaves_a_fine_pitch_pin_row_at_full_clearance():
+    """Out of a 0.4 mm pitch row, a 0.2 mm track at 0.2 mm clearance has nothing to spare: the grid margin used elsewhere
+    must not apply right at the pad, or the pin can't be left at all."""
+    row = footprint("Package_DFN_QFN:QFN", "U1", "MCU", 30, 20,
+                    [pad(n, 0, (n - 3) * 0.4, "SIG" if n == 3 else f"N{n}", 0.8, 0.2) for n in range(1, 6)])
+    end = footprint("Resistor_SMD:R_0402", "R1", "1k", 34, 20, [pad(1, -0.5, 0, "SIG", 0.6, 0.6), pad(2, 0.5, 0, "X", 0.6, 0.6)])
+    b = board(row, end)
+    a, z = b.part("U1").copper_pads[2], b.part("R1").copper_pads[0]
+    conn = {"net": "SIG", "width": 0.2, "max_vias": 0, "a": {"pad": "U1.3", "x": a.x, "y": a.y}, "b": {"pad": "R1.1", "x": z.x, "y": z.y}}
+    res = rt.Router(b).route(conn, "test")
+    assert res.ok, res.why
+    _clear(b, res.tracks, res.vias)
+
+
+def test_net_on_two_connector_pins_leaves_from_the_pin_nearest_the_rest():
+    usb = footprint("Connector_USB:USB_C", "J1", "USB", 30, 10, [pad("A7", -0.25, 0, "DM"), pad("B7", 0.75, 0, "DM")])
+    tvs = footprint("Package_TO_SOT_SMD:SOT-23-6", "U3", "USBLC6", 29, 13, [pad(3, 0, 0, "DM")])
+    b = board(usb, tvs)
+    ctx = pc.Ctx(b, {}, {}, {})
+    chain = pc._chain(ctx, "DM")
+    assert [f"{p.ref}.{p.number}" for p in chain] == ["J1.B7", "J1.A7", "U3.3"]
+
+
+def test_finish_rips_a_track_too_close_and_routes_around(tmp_path):
+    from cadmate import pcb_finish
+    from test_pcb_review import seg
+
+    other = footprint("Resistor_SMD:R_0603", "R9", "0", 34.6, 22.6, [pad(1, 0, 0, "OTHER", 0.8, 0.8), pad(2, 0, 2.0, "OTHER", 0.8, 0.8)])
+    clk = footprint("Resistor_SMD:R_0603", "R8", "0", 37.5, 21.9, [pad(1, 0, 0, "CLK", 0.8, 0.8), pad(2, 1.6, 0, "OTHER2", 0.8, 0.8)])
+    src = tmp_path / "b.kicad_pcb"
+    src.write_text(HEAD + ic() + other + clk + seg((32.7, 21.9), (37.5, 21.9), "CLK") + ")\n")
+    b = pb.parse(src.read_text(), src.name)
+    res = pcb_finish.finish(b)
+    assert [r["net"] for r in res["ripped"]] == ["CLK"] and not res["open"], res
+    _clear(b, res["tracks"], res["vias"])
+    dst = tmp_path / "b-finished.kicad_pcb"
+    assert pcb_finish.write(src, dst, res) == 1
+    again = pb.parse(dst.read_text(), dst.name)
+    assert len(pb.NetGraph(again, "CLK").islands()) == 1
+    assert not pcb_finish.faulty(again)
+
+
+def test_finish_keeps_locked_tracks_and_good_ones():
+    from cadmate import pcb_finish
+    from test_pcb_review import seg
+
+    clk = footprint("Resistor_SMD:R_0603", "R8", "0", 37.5, 21.9, [pad(1, 0, 0, "CLK", 0.8, 0.8)])
+    b = board(ic(), clk, seg((32.7, 21.9), (37.5, 21.9), "CLK"))
+    res = pcb_finish.finish(b)
+    assert not res["ripped"] and not res["removed"] and not res["tracks"]
+
+
+def test_finish_replaces_a_bad_neck_with_a_hop_to_the_rest_of_the_track(tmp_path):
+    from cadmate import pcb_finish
+    from test_pcb_review import seg
+
+    other = footprint("Resistor_SMD:R_0603", "R9", "0", 33.3, 22.75, [pad(1, 0, 0, "OTHER", 0.8, 0.8)])
+    clk = footprint("Resistor_SMD:R_0603", "R8", "0", 40.0, 22.3, [pad(1, 0, 0, "CLK", 0.8, 0.8)])
+    src = tmp_path / "b.kicad_pcb"
+    src.write_text(HEAD + ic() + other + clk + seg((32.7, 21.9), (34.2, 22.3), "CLK") + seg((34.2, 22.3), (40.0, 22.3), "CLK") + ")\n")
+    b = pb.parse(src.read_text(), src.name)
+    res = pcb_finish.finish(b)
+    assert len(res["ripped"]) == 1 and not res["open"] and res["open_after"] == 0, res
+    assert len(res["removed"]) == 1  # the long run stays
+    dst = tmp_path / "b-finished.kicad_pcb"
+    assert pcb_finish.write(src, dst, res) == 1
+    again = pb.parse(dst.read_text(), dst.name)
+    assert len(pb.NetGraph(again, "CLK").islands()) == 1 and not pcb_finish.faulty(again)
+    assert any(abs(t.start[0] - 34.2) < 1e-3 and abs(t.end[0] - 40.0) < 1e-3 for t in again.tracks)
+
+
+def test_finish_routing_needs_the_project_rules(tmp_path):
+    from cadmate import pcb_flow
+
+    src = tmp_path / "b.kicad_pcb"
+    src.write_text(HEAD + ic() + ")\n")
+    with pytest.raises(pcb_flow.FlowError, match="kicad_pro"):
+        pcb_flow.finish_routing(str(src))
+
+
+def test_finish_keeps_a_neck_its_rules_file_allows():
+    from cadmate import fab, pcb_finish
+    from test_pcb_review import seg
+
+    clk = footprint("Resistor_SMD:R_0603", "R8", "0", 37.5, 21.9, [pad(1, 0, 0, "CLK", 0.8, 0.8)])
+    b = board(ic(), clk, seg((32.7, 21.9), (33.5, 21.9), "CLK", w=0.1), seg((33.5, 21.9), (37.5, 21.9), "CLK"))
+    b.rules = {**(b.rules or {}), "min_track_width": 0.125}
+    assert [t.width for t, _ in pcb_finish.faulty(b)] == [0.1]
+    necks = fab.read_neck_rules(fab.neck_rules([{"net": "CLK", "ref": "U1"}], 0.09))
+    assert not pcb_finish.faulty(b, necks)
+    assert not pcb_finish.faulty(b, skip={"CLK"})
+
+
+def test_finish_routing_flow_leaves_crystal_nets_alone(tmp_path, monkeypatch):
+    from cadmate import pcb_flow
+    xtal = footprint("Crystal:Crystal_SMD_3215-2Pin_3.2x1.5mm", "Y1", "32.768kHz", 20, 20,
+                     [pad(1, -1.25, 0, "XI", 1, 1.8), pad(2, 1.25, 0, "XO2", 1, 1.8), pad(3, 0, 1.5, "GND", 0.8, 0.6)],
+                     court=((-2.2, -1.2), (2.2, 2.0)))
+    series = footprint("Resistor_SMD:R_0402", "R5", "1k", 24, 23, [pad(1, -0.5, 0, "XO", 0.5, 0.6), pad(2, 0.5, 0, "XO2", 0.5, 0.6)])
+    src = tmp_path / "b.kicad_pcb"
+    pulldown = footprint("Resistor_SMD:R_0402", "R7", "10k", 30, 30, [pad(1, -0.5, 0, "SENSE", 0.5, 0.6), pad(2, 0.5, 0, "GND", 0.5, 0.6)])
+    src.write_text(HEAD + ic() + xtal + series + pulldown + ")\n")
+    src.with_suffix(".kicad_pro").write_text("{}")
+    monkeypatch.setattr(fr, "refill", lambda f: None)
+    out = pcb_flow.finish_routing(str(src))
+    assert {"XI", "XO", "XO2"} <= set(out["left_alone"]) and "SENSE" not in out["left_alone"] and not any(o["net"].startswith("X") for o in out["still_open"])

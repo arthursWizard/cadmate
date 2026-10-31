@@ -232,7 +232,7 @@ A design is one folder, the active project. Everything changes in place; history
   fab/<board>/          generated fab files
   tools/                generator scripts: the design's source
   docs/                 datasheets, drawings, notes
-  history/HISTORY.md    and 20261031-1213_before-mid-joint/ ... (same paths as the project)
+  history/HISTORY.md    and 20261031-1213_before-rework/ ... (same paths as the project)
   .cadmate/work/        scratch
 ```
 

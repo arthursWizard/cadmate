@@ -207,7 +207,9 @@ def _existing_placement(spec: dict, fp_result: dict, warnings: list[str], projec
     so it moves with the footprint when the generator shifted the origin (custom footprints, origin pin 1 or centre).
     An absolute path inside the project is linked through ${KIPRJMOD}, so the project can move."""
     path = str(spec["path"])
-    if project is not None and Path(path).expanduser().is_absolute():
+    # rooted counts as absolute: on Windows /x/y.step has no drive letter, so isn't is_absolute(), but it still breaks
+    # when the project moves
+    if project is not None and (Path(path).expanduser().is_absolute() or Path(path).root):
         try:
             rel = Path(path).expanduser().resolve().relative_to(project.resolve())
         except ValueError:

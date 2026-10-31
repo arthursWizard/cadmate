@@ -37,7 +37,7 @@ def test_windows_per_user_install_is_found(tmp_path, monkeypatch, no_path):
     monkeypatch.setenv("ProgramFiles", str(tmp_path / "nothing here"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
     cands = {"Windows": [p.replace("\\", "/") for p in apps._KICAD_CANDIDATES["Windows"]]}
-    assert apps.locate(apps.KICAD_CLI_ENV, ["kicad-cli"], cands, system="Windows") == str(exe)
+    assert Path(apps.locate(apps.KICAD_CLI_ENV, ["kicad-cli"], cands, system="Windows")) == exe
 
 
 def test_every_platform_has_install_locations():

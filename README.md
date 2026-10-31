@@ -6,7 +6,7 @@ cadmate is an [MCP](https://modelcontextprotocol.io) server. You talk to Claude 
 
 ## Status
 
-Early. Nine workflows work end to end:
+Early. Ten workflows work end to end:
 
 - **Make the missing 3D model**: point Claude at a footprint and the part's datasheet, and get a checked STEP model linked into that footprint.
 - **Make a footprint from a datasheet**: Claude reads the package drawing, cadmate computes IPC-7351B pads (or places the datasheet's recommended land pattern) and writes a checked `.kicad_mod`. For JEDEC packages the pads and courtyard match KiCad's own library footprints exactly.
@@ -18,6 +18,8 @@ Early. Nine workflows work end to end:
 - **Review a schematic for readability**: text running over text or symbols, symbols on top of each other, items off the sheet or under the title block, four-way junctions, ground symbols pointing up, and a sheet that joins its resistors and caps by net labels instead of wires. The `kicad-schematics` skill carries the drawing rules (wires inside a functional block, labels where a net leaves it, signals left to right, power up and ground down). KiCad's ERC runs alongside when kicad-cli is found.
 - **Review a routed board**: after routing by hand or with Freerouting, cadmate points out what a reviewer would. A decap whose track wanders to its pin or loops back through a distant ground. A crystal trace that is long, uses vias or has another signal alongside. Fast signals crossing gaps in the ground pour. Tracks narrower than their net class or than IPC-2221 asks for the current. JLCPCB's spacing and via limits. Each finding comes with its location, the reasoning and a source. See "Reviewing a layout" below.
 - **Make a symbol from a datasheet**: Claude reads the pin table, cadmate lays out the symbol per KiCad's library conventions (grid, sides by pin type, stacked power pins, hidden NC pins, fields) and writes it into a `.kicad_sym` library, checked against the pin table and the footprint's pads.
+
+- **Lay out a circuit on perfboard**: through-hole parts on the 2.54 mm hole grid, each taking the holes its leads go through and covering the holes under its body. cadmate checks the placement, routes the nets with bottom-side solder bridges and bare wire and, where the bottom can't get through, insulated jumpers on top, and draws the board to copy by hand: the component side, the solder side mirrored as it looks turned over, and a build list. See "Perfboard layouts" below.
 
 | Tool | What it does | Needs |
 | --- | --- | --- |
@@ -58,6 +60,10 @@ Early. Nine workflows work end to end:
 | `autoroute_rest` | Freerouting on the rest, around the locked tracks, with IPC-2221 widths for nets with a current; brings the result back, widens tracks below the net class, refills zones | Freerouting's jar, java, KiCad's bundled Python |
 | `review_schematic` | Readability review of a `.kicad_sch`: overlapping text and symbols, off-sheet items, four-way junctions, power symbol direction, label vs wire use; plus KiCad's ERC | nothing; kicad-cli for the ERC part |
 | `review_pcb_layout` | Layout review of the open board or a `.kicad_pcb`: decoupling, crystal, switching nodes, return paths, width and current, vias, JLCPCB rules, and KiCad's DRC | nothing; kicad-cli for the DRC part |
+| `list_protoboard_parts` | The perfboard parts library: pins in holes, covered holes, lead notes | nothing |
+| `check_protoboard` | Checks a perfboard design: leads off the board or sharing a hole, leads under bodies, bodies overlapping, bad nets; and for wires: shorts, jumpers over parts, which nets are done | nothing |
+| `route_protoboard` | Routes a perfboard design on the hole grid, keeping wires already drawn; lists what stays open | nothing |
+| `render_protoboard` | Top and mirrored bottom views as PNG and SVG, plus a step-by-step build list | an SVG converter (rsvg-convert or cairosvg; macOS has one) |
 | `kicad_pcb_snapshot` | A picture of the open board, unsaved edits included | KiCad API on, and an SVG converter |
 
 ## Version policy
@@ -190,6 +196,16 @@ cadmate finds KiCad and FreeCAD in their usual install locations on macOS, Linux
 
 KiCad path variables in model paths (for example `${KICAD10_3DMODEL_DIR}`) are expanded from the same environment. `${KIPRJMOD}` falls back to the footprint's folder.
 
+### Perfboard layouts
+
+A perfboard design is a JSON file: the board size in holes, the parts with the hole of pin 1 ("C5": row letter, column number, A1 top left from the component side) and a rotation, and the nets. `examples/protoboard/555-blinker.json` is a whole one. Parts come from a small library (`list_protoboard_parts`: axial resistors and diodes, ceramic and electrolytic caps, LEDs, DIPs, headers, TO-92, TO-220, screw terminals, tact switches, trimmers, crystals) or are given inline with their pins and body.
+
+The router works on holes. On the bottom, a pad belongs to one net, and wires run pad to pad along rows and columns, under bodies if need be. On top, a jumper is a straight insulated wire whose two ends go down free holes; it can't lie over a lead, a body or another jumper. Nets are routed together, PathFinder style: a hole two nets want gets dearer each round until they share none. Wires already in the design are kept, so you can lay a ground bus by hand and let it route the rest. It doesn't place parts, and on a crowded board it lists what it couldn't connect instead of making a mess.
+
+`render_protoboard` writes `<name>.png`, `<name>.svg` and `<name>-build.md`. The bottom view is mirrored the way the board looks when you turn it over, with the same row letters and column numbers, so a hole is called the same on both sides.
+
+Stripboard (copper strips you cut) isn't supported yet.
+
 ## Skills
 
 `skills/` holds the domain knowledge Claude loads for each workflow. Link the skill folders into `~/.claude/skills/` (or your project's `.claude/skills/`) to use them:
@@ -208,6 +224,7 @@ To read datasheets, Claude needs a way to read PDFs and to look at drawings as i
 - `kicad-pcb-live`: working on a board in the open PCB editor.
 - `kicad-pcb-route`: routing a board with the user: critical connections first, then Freerouting, then review.
 - `kicad-pcb-review`: reviewing a routed board, and how to use an autorouter without letting it decide the critical nets.
+- `protoboard`: laying out, routing and drawing a through-hole circuit on perfboard.
 
 ## Roadmap
 

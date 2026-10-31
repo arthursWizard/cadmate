@@ -1,0 +1,307 @@
+{
+  "title": "555 LED blinker",
+  "board": {
+    "type": "perfboard",
+    "cols": 20,
+    "rows": 14
+  },
+  "parts": [
+    {
+      "ref": "J1",
+      "part": "header",
+      "params": {
+        "pins": 2
+      },
+      "at": "B2",
+      "rotation": 90,
+      "value": "5V in"
+    },
+    {
+      "ref": "C3",
+      "part": "cap_ceramic",
+      "params": {
+        "pitch": 1
+      },
+      "at": "B5",
+      "rotation": 90,
+      "value": "100n"
+    },
+    {
+      "ref": "U1",
+      "part": "dip",
+      "params": {
+        "pins": 8
+      },
+      "at": "H8",
+      "value": "NE555"
+    },
+    {
+      "ref": "R1",
+      "part": "resistor_axial",
+      "params": {
+        "span": 4
+      },
+      "at": "C6",
+      "value": "1k"
+    },
+    {
+      "ref": "R2",
+      "part": "resistor_axial",
+      "params": {
+        "span": 4
+      },
+      "at": "C11",
+      "value": "10k"
+    },
+    {
+      "ref": "C1",
+      "part": "cap_electrolytic",
+      "params": {
+        "diameter": 6.3
+      },
+      "at": "K10",
+      "value": "10u"
+    },
+    {
+      "ref": "C2",
+      "part": "cap_ceramic",
+      "params": {
+        "pitch": 1
+      },
+      "at": "K14",
+      "value": "10n"
+    },
+    {
+      "ref": "R3",
+      "part": "resistor_axial",
+      "params": {
+        "span": 4
+      },
+      "at": "H14",
+      "value": "470"
+    },
+    {
+      "ref": "D1",
+      "part": "led",
+      "params": {
+        "size": 5
+      },
+      "at": "L18",
+      "rotation": 270,
+      "value": "red"
+    }
+  ],
+  "nets": {
+    "VCC": [
+      "J1.1",
+      "C3.1",
+      "U1.8",
+      "U1.4",
+      "R1.1"
+    ],
+    "GND": [
+      "J1.2",
+      "C3.2",
+      "U1.1",
+      "C1.2",
+      "C2.2",
+      "D1.1"
+    ],
+    "DIS": [
+      "U1.7",
+      "R1.2",
+      "R2.1"
+    ],
+    "THR": [
+      "U1.6",
+      "U1.2",
+      "R2.2",
+      "C1.1"
+    ],
+    "CV": [
+      "U1.5",
+      "C2.1"
+    ],
+    "OUT": [
+      "U1.3",
+      "R3.1"
+    ],
+    "LED": [
+      "R3.2",
+      "D1.2"
+    ]
+  },
+  "wires": [
+    {
+      "net": "LED",
+      "side": "bottom",
+      "path": [
+        "H18",
+        "K18"
+      ]
+    },
+    {
+      "net": "OUT",
+      "side": "bottom",
+      "path": [
+        "H10",
+        "I10",
+        "I12",
+        "H12",
+        "H14"
+      ]
+    },
+    {
+      "net": "DIS",
+      "side": "bottom",
+      "path": [
+        "E9",
+        "C9",
+        "C10"
+      ]
+    },
+    {
+      "net": "DIS",
+      "side": "bottom",
+      "path": [
+        "C10",
+        "C11"
+      ]
+    },
+    {
+      "net": "CV",
+      "side": "bottom",
+      "path": [
+        "E11",
+        "E15",
+        "J15",
+        "J14",
+        "K14"
+      ]
+    },
+    {
+      "net": "THR",
+      "side": "bottom",
+      "path": [
+        "H9",
+        "K9",
+        "K10"
+      ]
+    },
+    {
+      "net": "THR",
+      "side": "bottom",
+      "path": [
+        "J9",
+        "J12"
+      ]
+    },
+    {
+      "net": "THR",
+      "side": "top",
+      "path": [
+        "J12",
+        "F12"
+      ]
+    },
+    {
+      "net": "THR",
+      "side": "bottom",
+      "path": [
+        "F12",
+        "F10",
+        "E10"
+      ]
+    },
+    {
+      "net": "THR",
+      "side": "bottom",
+      "path": [
+        "E10",
+        "D10",
+        "D15",
+        "C15"
+      ]
+    },
+    {
+      "net": "VCC",
+      "side": "bottom",
+      "path": [
+        "B2",
+        "B5"
+      ]
+    },
+    {
+      "net": "VCC",
+      "side": "bottom",
+      "path": [
+        "B5",
+        "B6",
+        "C6"
+      ]
+    },
+    {
+      "net": "VCC",
+      "side": "bottom",
+      "path": [
+        "C6",
+        "C8",
+        "E8"
+      ]
+    },
+    {
+      "net": "VCC",
+      "side": "bottom",
+      "path": [
+        "E8",
+        "G8",
+        "G11",
+        "H11"
+      ]
+    },
+    {
+      "net": "GND",
+      "side": "bottom",
+      "path": [
+        "C2",
+        "C5"
+      ]
+    },
+    {
+      "net": "GND",
+      "side": "bottom",
+      "path": [
+        "C5",
+        "H5",
+        "H8"
+      ]
+    },
+    {
+      "net": "GND",
+      "side": "bottom",
+      "path": [
+        "H8",
+        "L8",
+        "L11",
+        "K11"
+      ]
+    },
+    {
+      "net": "GND",
+      "side": "bottom",
+      "path": [
+        "L11",
+        "L15",
+        "K15"
+      ]
+    },
+    {
+      "net": "GND",
+      "side": "bottom",
+      "path": [
+        "L15",
+        "L18"
+      ]
+    }
+  ]
+}

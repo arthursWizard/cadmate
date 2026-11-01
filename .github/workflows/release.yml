@@ -1,8 +1,9 @@
 name: release
 
-# Push a tag such as v0.2.0 to publish that version to PyPI and make a GitHub release.
-# Before tagging, bump the version in src/cadmate/__init__.py and .claude-plugin/{plugin,marketplace}.json
-# (tests/test_packaging.py fails if they disagree).
+# Push a tag such as v0.2.0 on main to release that version (docs/releasing.md):
+# the tests run, the stable branch fast-forwards to the tag (that is what cadmate@cadmate installs),
+# and a GitHub release is made. PyPI publishing runs only when the repo variable PUBLISH_PYPI is "true".
+# Before tagging, bump __version__ in src/cadmate/__init__.py; the tag must be v + that version.
 on:
   push:
     tags: ["v*"]
@@ -34,8 +35,29 @@ jobs:
           name: dist
           path: dist/
 
-  publish:
+  # Move stable to the tagged commit. A plain push only fast-forwards, so this fails, rather than rewriting
+  # stable, if the tag isn't ahead of it. The tag must be on main so stable never holds unmerged work.
+  promote-stable:
     needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Tag is on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_REF_NAME ($GITHUB_SHA) isn't on main; tag a commit that has been merged to main"
+            exit 1
+          fi
+      - name: Fast-forward stable
+        run: git push origin "$GITHUB_SHA:refs/heads/stable"
+
+  publish:
+    needs: promote-stable
+    if: vars.PUBLISH_PYPI == 'true'
     runs-on: ubuntu-latest
     # PyPI trusted publishing: PyPI trusts this workflow in this repo, so no token is stored anywhere.
     environment:
@@ -51,7 +73,9 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
 
   github-release:
-    needs: publish
+    needs: [promote-stable, publish]
+    # Run after publish when PyPI is on, and without it when PyPI is off (publish skipped).
+    if: ${{ !cancelled() && needs.promote-stable.result == 'success' && needs.publish.result != 'failure' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

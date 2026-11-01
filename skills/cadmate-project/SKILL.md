@@ -23,9 +23,17 @@ sprawl. Apply them to everything you write and everything you ask another sessio
 
 ## Layout
 
+The shape depends on which tools the design uses, recorded as `"tools"` in `cadmate-project.json`:
+
+- **KiCad and FreeCAD**: each tool's files in its own folder, `kicad/` and `case/` (below).
+- **One tool only**: flat. There is no `kicad/` or `case/` level; what would go in it sits at the project root.
+  A folder holding only one thing is nesting with no purpose.
+
+Two tools:
+
 ```
 <project>/
-  cadmate-project.json     marker: name, layout version
+  cadmate-project.json     marker: name, layout version, tools
   README.md                what it is, boards, what to order where, open items, decisions
   CLAUDE.md                these rules in short, for every session working in the folder
   kicad/
@@ -48,6 +56,43 @@ sprawl. Apply them to everything you write and everything you ask another sessio
     20261031-1213_before-rework/   same relative paths as the project
   .cadmate/work/           scratch: comparisons, temp outputs. Delete when the step is done
 ```
+
+KiCad only (`"tools": ["kicad"]`): the contents of `kicad/` move up a level, everything else is the same.
+
+```
+<project>/
+  cadmate-project.json  README.md  CLAUDE.md
+  <board>/                 <board>.kicad_pro ... fp-lib-table, paths still ${KIPRJMOD}/../lib/...
+  lib/                     <project>.pretty/  <project>.kicad_sym  <project>.3dshapes/
+  fab/<board>/  tools/  docs/brief.md  history/  .cadmate/work/
+```
+
+FreeCAD only (`"tools": ["freecad"]`): the contents of `case/` sit at the root; no `fab/`.
+
+```
+<project>/
+  cadmate-project.json  README.md  CLAUDE.md
+  <part>.FCStd  <part>.step  assembly.step  enclosure.json  enclosure-check.json
+  renders/  pcb-models/
+  tools/  docs/brief.md  history/  .cadmate/work/
+```
+
+Board folders stay even when there's one board: every board has the same depth, `${KIPRJMOD}/../lib/` works in both
+shapes, and the move to `kicad/` later edits no file. A board can't be named after a shared folder (`docs`, `tools`,
+`lib`, `fab`, `case`, ...).
+
+Pass `tools` to `project_init` for what the design uses; ask the user when it isn't clear. Without it, `project_init`
+goes by the files already there, else makes both. A marker with no `tools` (made before this) is the two-tool layout.
+
+### When a one-tool project gains the other tool
+
+`project_add_tool` (with `kicad` or `freecad`) does it: it snapshots the whole project (`before-add-<tool>`), moves the
+existing tool's files from the root into `kicad/` or `case/`, makes the new tool's folders and updates the marker.
+Board folders and `lib/` move together, so library and model paths still resolve; nothing inside a file changes. Ask
+the user to save and close the files in KiCad and FreeCAD first, and to reopen them from the new place after. Then
+update the layout lines in CLAUDE.md and README.md. Don't move the files by hand. `project_check` flags the other
+tool's files at the root of a one-tool project and points at `project_add_tool`. cadmate doesn't go the other way
+(both to one): if a tool is dropped, ask the user, snapshot, and move the files up yourself.
 
 `project_init` makes it (safe on an existing folder: it only adds). `project_check` lists everything out of place,
 each with a fix. Run it before you tell the user a step is done.
@@ -72,7 +117,8 @@ stage looks, a stage builds something else or asks again.
 
 ## The case
 
-Before showing the user a case, run `check_enclosure` on the project. It needs case/assembly.step with every part
+Before showing the user a case, run `check_enclosure` on the project. In a FreeCAD-only project, read case/ below as
+the project root. It needs case/assembly.step with every part
 placed and named (case parts, boards with their components, cables) and case/<part>.step for each printed part. It
 reports parts that collide, openings in each shell, joints between case parts with a gap or a step, and part heights.
 These are the defects a user otherwise finds by eye or after printing: one part standing above the one beside it, a
@@ -85,7 +131,8 @@ gap along a seam, a slot left open in a wall, a board pressed into a wall.
 
 ## When to snapshot
 
-Snapshot the part you're about to change (`paths: ["kicad/main"]`, `["case"]`), or the whole project, when:
+Snapshot the part you're about to change (`paths: ["kicad/main"]`, `["case"]`; `["main"]` in a flat KiCad project),
+or the whole project, when:
 
 - the user has seen or approved the current state ("seems good", "PR good", a picked option), and the next change
   replaces it;
@@ -122,7 +169,8 @@ label like `option-b`.
 - **Don't snapshot while KiCad has the file open and unsaved**: the snapshot is what's on disk. Ask the user to save,
   or use `kicad_pcb_save`, first. After `project_restore` the user has to reload the file in KiCad.
 - **FreeCAD**: STEP files are self-contained. An `.FCStd` that links other documents (App::Link, assembly parts) stores
-  relative paths when they're in the same tree; keep linked documents inside case/ so snapshots keep working.
+  relative paths when they're in the same tree; keep linked documents inside case/ (the root, in a FreeCAD-only
+  project) so snapshots and `project_add_tool`'s move keep working.
 - **fab/ is generated.** Re-export after every board change (`project_check` flags fab files older than the board).
   Snapshots include fab/ only when you snapshot the whole project, which is what you want for "ordered".
 - **Git.** If the project is a git repository, commits do the same job better for text files (all KiCad files are

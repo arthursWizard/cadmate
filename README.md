@@ -21,7 +21,7 @@ Early. Ten workflows work end to end:
 - **Review a routed board**: after routing by hand or with Freerouting, cadmate points out what a reviewer would. A decap whose track wanders to its pin or loops back through a distant ground. A crystal trace that is long, uses vias or has another signal alongside. Fast signals crossing gaps in the ground pour. Tracks narrower than their net class or than IPC-2221 asks for the current. JLCPCB's spacing and via limits. Each finding comes with its location, the reasoning and a source. See "Reviewing a layout" below.
 - **Make a symbol from a datasheet**: Claude reads the pin table, cadmate lays out the symbol per KiCad's library conventions (grid, sides by pin type, stacked power pins, hidden NC pins, fields) and writes it into a `.kicad_sym` library, checked against the pin table and the footprint's pads.
 
-- **Keep one active project with its history**: every design lives in one folder with a fixed layout (`kicad/<board>/`, `kicad/lib/`, `case/`, `fab/<board>/`, `tools/`, `docs/`). Changes go into it in place; when a state is worth keeping, `project_snapshot` copies it into `history/<YYYYMMDD-HHMM>_<label>/` first, and `project_restore` brings it back. The routing tools and the footprint, symbol and part writers follow this by themselves inside a project, and `project_check` points out anything out of place. See "Projects and history" below.
+- **Keep one active project with its history**: every design lives in one folder with a fixed layout (`kicad/<board>/`, `kicad/lib/`, `case/`, `fab/<board>/`, `tools/`, `docs/`; a KiCad-only or FreeCAD-only design drops the `kicad/` or `case/` level and keeps its files at the root). Changes go into it in place; when a state is worth keeping, `project_snapshot` copies it into `history/<YYYYMMDD-HHMM>_<label>/` first, and `project_restore` brings it back. The routing tools and the footprint, symbol and part writers follow this by themselves inside a project, and `project_check` points out anything out of place. See "Projects and history" below.
 
 - **Check a printed case**: `check_enclosure` reads the case assembly in FreeCAD and reports what you'd otherwise find by eye or after printing: case parts colliding with boards, components or each other, a shell with an opening nobody asked for, and two case parts that don't meet flush (a gap along the seam, or one standing proud of the other). The openings meant to be there (buttons, USB, a display window) and the heights from the brief go in `case/enclosure.json`.
 
@@ -71,7 +71,8 @@ Early. Ten workflows work end to end:
 | `place_protoboard` | Places the parts automatically, steered by hints (fixed, near a hole, a board region, an edge), routes several placements and keeps the best | nothing |
 | `route_protoboard` | Routes a perfboard design on the hole grid (bottom, top on unplated double-sided boards, jumpers), keeping wires already drawn; lists what stays open | nothing |
 | `render_protoboard` | Top and mirrored bottom views as PNG and SVG, plus a step-by-step build list | an SVG converter (rsvg-convert or cairosvg; macOS has one) |
-| `project_init` | Makes a design folder a cadmate project with the fixed layout; adds what's missing, moves nothing | nothing |
+| `project_init` | Makes a design folder a cadmate project with the fixed layout (flat for a KiCad-only or FreeCAD-only design); adds what's missing, moves nothing | nothing |
+| `project_add_tool` | Adds KiCad or FreeCAD to a one-tool project: snapshots it, then moves the existing files from the root into `kicad/` or `case/` | nothing |
 | `project_snapshot` | Copies the current state (or part of it) into `history/<YYYYMMDD-HHMM>_<label>/` before a change, with the libraries KiCad needs to open it | nothing |
 | `project_history` | The snapshots, oldest first, with what each holds and why it was taken | nothing |
 | `project_restore` | Puts a snapshot back into the active project, snapshotting the current state first | nothing |
@@ -290,6 +291,11 @@ A design is one folder, the active project. Everything changes in place; history
   history/HISTORY.md    and 20261031-1213_before-rework/ ... (same paths as the project)
   .cadmate/work/        scratch
 ```
+
+That's the shape with both KiCad and FreeCAD. A design with only one of them is flat: no `kicad/` or `case/`, so a
+KiCad-only project has `<board>/`, `lib/` and `fab/` at the root, and a FreeCAD-only one has its `.FCStd` and STEP
+files there. `cadmate-project.json` records the tools; pass `tools` to `project_init`. When a flat project gains the
+other tool, `project_add_tool` snapshots it and moves the files into `kicad/` or `case/`.
 
 Inside a project, `route_critical_nets`, `autoroute_rest` and `finish_routing` change the board itself after
 snapshotting it (`in_place=False` sends the result to `.cadmate/work/` instead), `export_fab` writes to `fab/<board>/`

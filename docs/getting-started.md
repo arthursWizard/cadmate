@@ -161,6 +161,11 @@ my-design/
   history/               20261031-1213_before-rework/ ... and HISTORY.md
 ```
 
+That's a design with a board and a case. If it's only a board, or only a case, the `kicad/` or `case/` level is left
+out and those files sit in `my-design/` itself (`my-design/main/main.kicad_pro`, `my-design/lib/`). Add a case to a
+board-only design later and Claude runs `project_add_tool`, which snapshots the project and moves the board files into
+`kicad/`. Close the files in KiCad first.
+
 The tools behind it: `project_init` makes this layout (safe on an existing folder, it only adds), `project_snapshot`
 saves a state under a label, `project_history` lists the snapshots, `project_restore` brings one back (snapshotting the
 current state first), and `project_check` lists anything out of place. Claude gets these rules every time it connects,

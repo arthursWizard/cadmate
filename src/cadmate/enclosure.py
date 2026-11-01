@@ -4,7 +4,8 @@ case parts that don't sit flush (a gap, or one part standing proud of the other)
 FreeCAD does the geometry (freecad_scripts/check_enclosure.py); this module works out what to check, turns the
 measurements into findings, and keeps the report beside the case so project_check can tell when it's missing or stale.
 
-Inputs, in a cadmate project: case/assembly.step (every part placed, each a named child), case/<part>.step for each
+Inputs, in a cadmate project (the case folder is case/ when the project has KiCad too, else the project root):
+case/assembly.step (every part placed, each a named child), case/<part>.step for each
 printed part (their names say which assembly children are the case), and optionally case/enclosure.json:
 
     {
@@ -285,12 +286,15 @@ def check(path: str | Path, spec: dict | str | None = None, save: bool = True) -
 
 
 def project_findings(root: Path) -> list[dict]:
-    case = root / "case"
+    sh = project.shape(root)
+    if "freecad" not in sh.tools:
+        return []
+    case = root / sh.dir("freecad")
     steps = [f for f in case.glob("*.step")] if case.exists() else []
     if not steps:
         return []
     rep = case / REPORT
-    rel = str(rep.relative_to(root))
+    rel = rep.relative_to(root).as_posix()
     if not rep.exists():
         return [project._finding("info", rel, "the case has never been checked",
                                  "run check_enclosure on the project (collisions, openings, flush joints)")]

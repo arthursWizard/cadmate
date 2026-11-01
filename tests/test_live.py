@@ -88,7 +88,8 @@ def test_paths_and_transport_match_the_bridge_on_each_platform(monkeypatch, syst
     monkeypatch.setattr(bridge.platform, "system", lambda: system)
     for fn in ("data_dir", "socket_path", "endpoint_path", "transport"):
         assert getattr(bridge, fn)() == getattr(live, fn)(), fn
-    assert live.transport() == ("tcp" if system == "Windows" else "unix")
+    has_unix = hasattr(socket, "AF_UNIX")  # Python on Windows has none, whatever platform.system() says
+    assert live.transport() == ("unix" if system != "Windows" and has_unix else "tcp")
     assert live.endpoint_path().parent == live.data_dir()
     monkeypatch.setenv(live.TRANSPORT_ENV, "TCP")
     assert live.transport() == bridge.transport() == "tcp"

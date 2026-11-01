@@ -40,3 +40,29 @@ jobs:
       - run: uv run pytest -q -rs tests/test_kicad_cli.py tests/test_apps.py
         env:
           CADMATE_REQUIRE_KICAD: "1"
+
+  # The wheel as PyPI would ship it, run from a clean environment the way `uvx cadmate` runs it.
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - run: uv build
+      - name: Run the built wheel in isolation
+        run: |
+          whl=$(ls dist/*.whl)
+          uvx --isolated --from "$whl" cadmate --version
+          skills=$(uvx --isolated --from "$whl" cadmate skills-path)
+          ls "$skills/cadmate-project/SKILL.md"
+          uvx --isolated --from "$whl" cadmate install-skills --dest "$RUNNER_TEMP/skills"
+          ls "$RUNNER_TEMP/skills/kicad-footprints/SKILL.md"
+          python -m zipfile -l "$whl" | grep -q "cadmate/freecad_scripts/live_bridge.py"

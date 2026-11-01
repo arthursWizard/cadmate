@@ -104,7 +104,7 @@ Everything tied to a version lives in `src/cadmate/versions.py`: the supported a
 | kicad-cli checks and pictures | yes | yes | yes, untested by hand |
 | FreeCAD models (FreeCADCmd) | yes | yes | yes, untested by hand |
 | Live KiCad editing (IPC API) | yes | yes | the default KiCad instance only |
-| Live FreeCAD bridge | yes | yes | no (needs a Unix socket) |
+| Live FreeCAD bridge | yes | yes | yes, over a localhost port; CI only, untested by hand |
 | Snapshots (SVG to PNG) | built in | needs `rsvg-convert` (librsvg), or the `snapshots` extra | needs the `snapshots` extra and a cairo DLL |
 | Freerouting | yes | yes | yes, untested by hand |
 
@@ -149,7 +149,7 @@ cadmate builds and checks models itself with FreeCAD's command-line `freecadcmd`
 
 FreeCAD has no built-in way for another program to work in a window that's already open, so cadmate ships a small bridge script that runs inside FreeCAD. It only runs when you start it:
 
-1. Ask Claude for the start line (the `freecad_live_status` tool gives it). It looks like `exec(open('~/Library/Application Support/cadmate/cadmate_bridge.py').read())` with your home folder spelled out.
+1. Ask Claude for the start line (the `freecad_live_status` tool gives it). It looks like `exec(open('~/Library/Application Support/cadmate/cadmate_bridge.py', encoding='utf-8').read())` with your home folder spelled out (on Windows the folder is `%LOCALAPPDATA%\cadmate`).
 2. In FreeCAD, open View > Panels > Python console and paste it. The Report view shows `[cadmate] bridge listening on ...`.
 3. To stop it, run `App._cadmate_bridge.stop()` in the same console, or quit FreeCAD. Running the start line again replaces a running bridge. It doesn't start with FreeCAD; to have it do that, add the start line to a macro of your own that FreeCAD runs at startup.
 
@@ -159,7 +159,11 @@ What it does to your document:
 - Every edit is one undo step named `cadmate: <what changed>`, so the undo list shows Claude's edits apart from yours and Ctrl+Z takes one back. An edit that fails is undone as a whole.
 - Claude edits the objects that are there, it doesn't regenerate the document, so your hand edits stay. Before each edit it reads the bridge's change log, which records every change with whether it came from cadmate or from you.
 
-The bridge listens on a Unix socket in a folder only your account can open (`~/Library/Application Support/cadmate/` on macOS, `$XDG_RUNTIME_DIR/cadmate/` on Linux), not on a network port, so a web page or another account can't reach it. Any program running as you can, the same as with your files, and what it sends is Python that FreeCAD runs: start the bridge when you want to work with Claude, and stop it afterwards if that matters to you. Windows isn't supported yet. `CADMATE_BRIDGE_SOCKET` moves the socket, in both FreeCAD's and the cadmate server's environment.
+On macOS and Linux the bridge listens on a Unix socket in a folder only your account can open (`~/Library/Application Support/cadmate/` on macOS, `$XDG_RUNTIME_DIR/cadmate/` on Linux), not on a network port, so a web page or another account can't reach it.
+
+Windows has no Unix sockets in Python, so there the bridge listens on a port on `127.0.0.1` (never on the network) and writes the port and a random token, new each time it starts, to `bridge.json` in `%LOCALAPPDATA%\cadmate`, which only your account can read. cadmate reads that file and sends the token with every request; the bridge refuses anything without it, so a web page or another account that finds the port gets nothing. Setting `CADMATE_BRIDGE_TRANSPORT=tcp` in FreeCAD's environment does the same on macOS or Linux, for a FreeCAD that can't use the socket; the cadmate server follows `bridge.json` when it's there, so it needs no setting.
+
+Either way, any program running as you can reach the bridge, the same as with your files, and what it sends is Python that FreeCAD runs: start the bridge when you want to work with Claude, and stop it afterwards if that matters to you. `CADMATE_BRIDGE_SOCKET` moves the socket and cadmate's data folder with it, in both FreeCAD's and the cadmate server's environment.
 
 ### Live editing in KiCad
 

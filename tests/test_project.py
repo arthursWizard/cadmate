@@ -19,6 +19,7 @@ def make(tmp_path, boards=("main",)):
     (root / "kicad/lib/proj.3dshapes/Conn.step").write_text("ISO-10303-21;\n")
     for b in boards:
         d = root / "kicad" / b
+        d.mkdir(exist_ok=True)
         (d / f"{b}.kicad_pro").write_text("{}")
         (d / f"{b}.kicad_pcb").write_text('(kicad_pcb (footprint "proj:Conn" (model "${KIPRJMOD}/../lib/proj.3dshapes/Conn.step")))\n')
         (d / f"{b}.kicad_sch").write_text(f'(kicad_sch (symbol (instances (project "{b}" (path "/x" (reference "R1"))))))\n')
@@ -106,10 +107,10 @@ def test_check_finds_side_by_side_versions_and_backups(tmp_path):
     (main / "main.kicad_pcb.bak").write_text("x")
     (root / "kicad/sensor-v2").mkdir()
     (root / "kicad/sensor-v2/sensor-v2.kicad_pro").write_text("{}")
-    (root / "case/variant-flat").mkdir(parents=True)
-    (root / "case/variant-flat/half.step").write_text("x")
-    (root / "case/a/b/c").mkdir(parents=True)
-    (root / "case/a/b/c/deep.step").write_text("x")
+    (root / "freecad/variant-flat").mkdir(parents=True)
+    (root / "freecad/variant-flat/half.step").write_text("x")
+    (root / "freecad/a/b/c").mkdir(parents=True)
+    (root / "freecad/a/b/c/deep.step").write_text("x")
     (root / "semi-split-piantor").mkdir()
     (root / "history/mid joint try").mkdir()
     out = project.check(root)
@@ -118,8 +119,8 @@ def test_check_finds_side_by_side_versions_and_backups(tmp_path):
     assert "a second .kicad_pcb" in by_path["kicad/main/main-hand3.kicad_pcb"]["problem"]
     assert "backup" in by_path["kicad/main/main.kicad_pcb.bak"]["problem"]
     assert "version" in by_path["kicad/sensor-v2"]["problem"]
-    assert "version" in by_path["case/variant-flat"]["problem"]
-    assert "deeper" in by_path["case/a/b/c/deep.step"]["problem"]
+    assert "version" in by_path["freecad/variant-flat"]["problem"]
+    assert "deeper" in by_path["freecad/a/b/c/deep.step"]["problem"]
     assert "top level" in by_path["semi-split-piantor"]["problem"]
     assert "named" in by_path["history/mid joint try"]["problem"]
     # library part names with dashes and numbers aren't versions
@@ -153,7 +154,7 @@ def test_check_flags_stale_and_orphaned_fab_files(tmp_path):
     (root / "fab/port-centre-v3/x.zip").write_text("x")
     probs = {f["path"]: f["problem"] for f in project.check(root)["findings"]}
     assert "older than the board" in probs["fab/main"]
-    assert "isn't in kicad" in probs["fab/port-centre-v3"]
+    assert "isn't in the project" in probs["fab/port-centre-v3"]
 
 
 def test_routing_target_in_a_project_is_the_board_itself_after_a_snapshot(tmp_path):
@@ -216,30 +217,56 @@ def test_brief_open_items_show_in_the_check(tmp_path):
     assert any(f["path"] == "docs/brief.md" for f in project.check(root)["findings"])
 
 
+ROOT_TABLE = FP_TABLE.replace("${KIPRJMOD}/../lib/", "${KIPRJMOD}/lib/")
+
+
+def board_files(d, b, lib="${KIPRJMOD}/lib"):
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{b}.kicad_pro").write_text("{}")
+    (d / f"{b}.kicad_pcb").write_text(f'(kicad_pcb (footprint "proj:Conn" (model "{lib}/proj.3dshapes/Conn.step")))\n')
+    (d / f"{b}.kicad_sch").write_text(f'(kicad_sch (symbol (instances (project "{b}" (path "/x" (reference "R1"))))))\n')
+    (d / "fp-lib-table").write_text(FP_TABLE.replace("${KIPRJMOD}/../lib", lib))
+
+
 def make_flat(tmp_path, boards=("main",)):
-    """A KiCad-only project: board folders and lib/ at the root."""
+    """A KiCad-only project. One board: its files at the root, beside lib/. Two or more: a folder each."""
     root = tmp_path / "flat"
     out = project.init(root, boards=list(boards), tools=["kicad"])
     assert out["flat"] and out["tools"] == ["kicad"]
     (root / "lib/proj.pretty").mkdir(parents=True)
     (root / "lib/proj.pretty/Conn.kicad_mod").write_text("(footprint \"Conn\")\n")
+    (root / "lib/proj.3dshapes").mkdir()
+    (root / "lib/proj.3dshapes/Conn.step").write_text("ISO-10303-21;\n")
     for b in boards:
-        d = root / b
-        (d / f"{b}.kicad_pro").write_text("{}")
-        (d / f"{b}.kicad_pcb").write_text('(kicad_pcb (footprint "proj:Conn"))\n')
-        (d / f"{b}.kicad_sch").write_text(f'(kicad_sch (symbol (instances (project "{b}" (path "/x" (reference "R1"))))))\n')
-        (d / "fp-lib-table").write_text(FP_TABLE)
+        if len(boards) == 1:
+            board_files(root, b)
+        else:
+            board_files(root / b, b, "${KIPRJMOD}/../lib")
     return root
 
 
-def test_one_tool_projects_are_flat(tmp_path):
-    root = make_flat(tmp_path, ("main", "sensor"))
-    assert not (root / "kicad").exists() and not (root / "case").exists() and (root / "fab").is_dir()
+def test_one_board_sits_at_the_root(tmp_path):
+    root = make_flat(tmp_path)
+    assert not (root / "main").exists() and not (root / "kicad").exists() and not (root / "freecad").exists()
     assert json.loads((root / "cadmate-project.json").read_text())["tools"] == ["kicad"]
-    assert "main/<board>" not in (root / "CLAUDE.md").read_text() and "<board>/<board>.*" in (root / "CLAUDE.md").read_text()
     out = project.check(root)
     assert out["ok"] and out["flat"], out["findings"]
-    # the same rules apply one level up: second boards, version names, libraries outside lib/, orphaned fab files
+    snap = project.snapshot(root, "approved", [str(f) for f in project.board_files(root / "main.kicad_pcb")], now=T0)
+    assert {"main.kicad_pcb", "lib/proj.3dshapes"} <= set(snap["paths"])  # ${KIPRJMOD}/lib came along
+    dst, s = pcb_flow.target(str(root / "main.kicad_pcb"), None, "routed", None)
+    assert dst == root / "main.kicad_pcb" and s is not None
+    (root / "main-routed.kicad_pcb").write_text("x")
+    (root / "stray.kicad_pro").write_text("{}")
+    probs = {f["path"]: f["problem"] for f in project.check(root)["findings"]}
+    assert "a second .kicad_pcb beside the main board" in probs["main-routed.kicad_pcb"]
+    assert "a second board directly in the project root" in probs["stray.kicad_pro"]
+
+
+def test_two_boards_get_a_folder_each_with_the_same_rules(tmp_path):
+    root = make_flat(tmp_path, ("main", "sensor"))
+    assert not (root / "kicad").exists() and (root / "fab").is_dir()
+    out = project.check(root)
+    assert out["ok"], out["findings"]
     (root / "main/main-routed.kicad_pcb").write_text("x")
     (root / "sensor-v2").mkdir()
     (root / "sensor-v2/sensor-v2.kicad_pro").write_text("{}")
@@ -252,29 +279,86 @@ def test_one_tool_projects_are_flat(tmp_path):
     assert "a second .kicad_pcb" in probs["main/main-routed.kicad_pcb"]
     assert "version" in probs["sensor-v2"]
     assert "outside lib/" in probs["other.pretty"]
-    assert "isn't in gone/" in probs["fab/gone"]
+    assert "isn't in the project (gone)" in probs["fab/gone"]
     assert "isn't a board" in probs["notes"]
 
 
-def test_a_freecad_only_project_keeps_the_case_at_the_root(tmp_path):
-    root = tmp_path / "box"
+def test_add_board_moves_the_first_board_into_its_folder_and_fixes_its_paths(tmp_path):
+    root = make_flat(tmp_path)
+    (root / "fab/main").mkdir()
+    (root / "fab/main/main.zip").write_text("x")
+    board_files(root / "sensor", "sensor", "${KIPRJMOD}/../lib")  # a second board, added by hand
+    f = next(f for f in project.check(root)["findings"] if f["path"] == "main.kicad_pro")
+    assert "beside board folders (sensor)" in f["problem"] and "project_add_board" in f["fix"]
+    out = project.add_board(root, now=T0)
+    assert out["board"] == "main" and out["snapshot"] == "20261031-1213_before-board-folders-main"
+    assert (root / "history" / out["snapshot"] / "main.kicad_pcb").exists()
+    assert sorted(p.name for p in (root / "main").iterdir()) == ["fp-lib-table", "main.kicad_pcb", "main.kicad_pro", "main.kicad_sch"]
+    assert "${KIPRJMOD}/../lib/proj.pretty" in (root / "main/fp-lib-table").read_text()
+    assert "${KIPRJMOD}/../lib/proj.3dshapes/Conn.step" in (root / "main/main.kicad_pcb").read_text()
+    assert set(out["rewritten"]) == {"main/fp-lib-table", "main/main.kicad_pcb"}
+    assert project.check(root)["ok"], project.check(root)["findings"]
+    # once boards have folders, a new one just gets its folder
+    assert project.add_board(root, "power")["made"] == ["power"] and (root / "power").is_dir()
+
+
+def test_add_board_with_one_board_says_where_the_new_one_goes(tmp_path):
+    root = tmp_path / "p"
+    project.init(root, tools="kicad")
+    assert "no folder" in project.add_board(root, "main")["next"] and not (root / "main").exists()
+    with pytest.raises(project.ProjectError, match="layout folder"):
+        project.add_board(root, "docs")
+
+
+def test_a_freecad_only_project_keeps_its_part_at_the_root(tmp_path):
+    root = tmp_path / "bracket"
     out = project.init(root, tools="freecad")
-    assert out["flat"] and not (root / "case").exists() and not (root / "fab").exists() and not (root / "lib").exists()
-    (root / "top.step").write_text("x")
-    (root / "box.FCStd").write_text("x")
+    assert out["flat"] and not any((root / d).exists() for d in ("case", "freecad", "fab", "lib"))
+    assert "## Parts" in (root / "README.md").read_text() and "case" not in (root / "README.md").read_text().lower()
+    (root / "bracket.step").write_text("x")
+    (root / "bracket.FCStd").write_text("x")
     (root / "renders").mkdir()
     (root / "renders/top.png").write_text("x")
-    probs = {f["path"]: f for f in project.check(root)["findings"]}
-    assert probs == {"enclosure-check.json": probs["enclosure-check.json"]}  # only: the case hasn't been checked
+    assert project.check(root)["ok"], project.check(root)["findings"]  # no assembly: nothing for check_enclosure
     (root / "renders/a/b").mkdir(parents=True)
     (root / "renders/a/b/deep.png").write_text("x")
-    (root / "top-v2.step").write_text("x")
+    (root / "bracket-v2.step").write_text("x")
     (root / "case").mkdir()
+    (root / "junk").mkdir()
+    (root / "junk/notes.txt").write_text("x")
     probs = {f["path"]: f["problem"] for f in project.check(root)["findings"]}
-    assert "deeper" in probs["renders/a/b/deep.png"] and "version" in probs["top-v2.step"]
-    assert "flat" in probs["case"]
-    with pytest.raises(project.ProjectError, match="boards need KiCad"):
+    assert "deeper" in probs["renders/a/b/deep.png"] and "version" in probs["bracket-v2.step"]
+    assert "whose files sit at the root" in probs["case"] and "isn't a part" in probs["junk"]
+    with pytest.raises(project.ProjectError, match="boards need kicad"):
         project.init(tmp_path / "x", boards=["main"], tools="freecad")
+
+
+def test_add_part_moves_the_first_part_into_a_folder_named_for_it(tmp_path):
+    root = tmp_path / "desk"
+    project.init(root, tools="freecad")
+    (root / "Bracket.FCStd").write_text("x")
+    (root / "bracket.step").write_text("x")
+    (root / "renders").mkdir()
+    (root / "renders/a.png").write_text("x")
+    (root / ".gitignore").write_text("x")
+    (root / "knob").mkdir()
+    (root / "knob/knob.FCStd").write_text("x")
+    f = next(f for f in project.check(root)["findings"] if "beside part folders" in f["problem"])
+    assert "project_add_part" in f["fix"]
+    out = project.add_part(root, now=T0)  # the part's name comes from its only .FCStd
+    assert out["part"] == "bracket" and sorted(out["moved"]) == [
+        "Bracket.FCStd -> bracket/Bracket.FCStd", "bracket.step -> bracket/bracket.step", "renders -> bracket/renders"]
+    assert (root / ".gitignore").exists() and (root / "README.md").exists() and (root / "docs/brief.md").exists()
+    assert project.check(root)["ok"], project.check(root)["findings"]
+    # with no .FCStd to go by, the caller names it
+    other = tmp_path / "other"
+    project.init(other, tools="freecad")
+    (other / "a.step").write_text("x")
+    (other / "b.step").write_text("x")
+    with pytest.raises(project.ProjectError, match="pass current"):
+        project.add_part(other, "lid")
+    assert project.add_part(other, "lid", current="enclosure", now=T0)["part"] == "enclosure"
+    assert (other / "enclosure/a.step").exists() and (other / "lid").is_dir()
 
 
 def test_init_infers_the_tools_and_keeps_them(tmp_path):
@@ -282,45 +366,66 @@ def test_init_infers_the_tools_and_keeps_them(tmp_path):
     (root / "main").mkdir(parents=True)
     (root / "main/main.kicad_pro").write_text("{}")
     (root / "lib/x.3dshapes").mkdir(parents=True)
-    (root / "lib/x.3dshapes/a.step").write_text("x")  # a library model isn't a case
+    (root / "lib/x.3dshapes/a.step").write_text("x")  # a library model isn't a FreeCAD part
     assert project.init(root)["tools"] == ["kicad"]
     assert project.init(root)["made"] == []
     with pytest.raises(project.ProjectError, match="project_add_tool freecad"):
         project.init(root, tools=["kicad", "freecad"])
-    assert project.init(tmp_path / "empty")["tools"] == ["kicad", "freecad"]  # nothing to go by: both, nested
+    both = project.init(tmp_path / "empty")  # nothing to go by: both, each in its folder
+    assert both["tools"] == ["kicad", "freecad"] and (tmp_path / "empty/freecad").is_dir()
+    assert not (tmp_path / "empty/case").exists()
+
+
+def test_a_layout_1_project_keeps_its_case_folder(tmp_path):
+    root = make(tmp_path)
+    m = json.loads((root / "cadmate-project.json").read_text())
+    (root / "freecad").rename(root / "case")
+    (root / "cadmate-project.json").write_text(json.dumps({"name": m["name"], "layout": 1}))
+    assert project.shape(root).dir("freecad") == "case"
+    assert project.check(root)["ok"], project.check(root)["findings"]
 
 
 def test_check_flags_the_other_tool_at_the_root(tmp_path):
     root = make_flat(tmp_path)
-    (root / "case.FCStd").write_text("x")
-    f = next(f for f in project.check(root)["findings"] if f["path"] == "case.FCStd")
+    (root / "enclosure.FCStd").write_text("x")
+    f = next(f for f in project.check(root)["findings"] if f["path"] == "enclosure.FCStd")
     assert "freecad files in a kicad-only project" in f["problem"] and "project_add_tool freecad" in f["fix"]
 
 
-def test_add_tool_moves_a_flat_project_into_subfolders_after_a_snapshot(tmp_path):
-    root = make_flat(tmp_path, ("main", "sensor"))
+def test_add_tool_moves_a_one_board_project_into_kicad(tmp_path):
+    root = make_flat(tmp_path)
     (root / "fab/main").mkdir()
     (root / "fab/main/main.zip").write_text("x")
     (root / "tools/gen.py").write_text("x")
     out = project.add_tool(root, "freecad", now=T0)
     assert out["tools"] == ["kicad", "freecad"] and out["snapshot"] == "20261031-1213_before-add-freecad"
-    snap = root / "history" / out["snapshot"]
-    assert (snap / "main/main.kicad_pcb").exists() and (snap / "lib/proj.pretty/Conn.kicad_mod").exists()
-    assert sorted(p.name for p in (root / "kicad").iterdir()) == ["lib", "main", "sensor"]
-    assert (root / "case").is_dir() and (root / "fab/main/main.zip").exists() and (root / "tools/gen.py").exists()
-    assert not (root / "main").exists() and project.shape(root).nested
-    # ${KIPRJMOD}/../lib still resolves, so the moved project is clean
+    assert (root / "history" / out["snapshot"] / "main.kicad_pcb").exists()
+    assert sorted(p.name for p in (root / "kicad").iterdir()) == [
+        "fp-lib-table", "lib", "main.kicad_pcb", "main.kicad_pro", "main.kicad_sch"]
+    assert (root / "freecad").is_dir() and not (root / "case").exists()
+    assert (root / "fab/main/main.zip").exists() and (root / "tools/gen.py").exists()
+    # ${KIPRJMOD}/lib still resolves: the board and lib/ moved together
     assert project.check(root)["ok"], project.check(root)["findings"]
     assert project.add_tool(root, "kicad")["moved"] == []
 
 
-def test_add_tool_to_a_freecad_project_moves_the_case(tmp_path):
+def test_add_tool_moves_board_folders_too(tmp_path):
+    root = make_flat(tmp_path, ("main", "sensor"))
+    project.add_tool(root, "freecad", now=T0)
+    assert sorted(p.name for p in (root / "kicad").iterdir()) == ["lib", "main", "sensor"]
+    assert project.check(root)["ok"], project.check(root)["findings"]
+
+
+def test_add_tool_to_a_freecad_project_moves_the_part(tmp_path):
     root = tmp_path / "box"
     project.init(root, tools=["freecad"])
+    (root / "enclosure.FCStd").write_text("x")
     (root / "top.step").write_text("x")
     (root / "renders").mkdir()
     (root / "renders/a.png").write_text("x")
     out = project.add_tool(root, "kicad", now=T0)
-    assert sorted(out["moved"]) == ["renders -> case/renders", "top.step -> case/top.step"]
-    assert (root / "case/top.step").exists() and (root / "kicad/lib").is_dir() and (root / "fab").is_dir()
+    assert sorted(out["moved"]) == ["enclosure.FCStd -> freecad/enclosure.FCStd", "renders -> freecad/renders",
+                                    "top.step -> freecad/top.step"]
+    assert (root / "kicad/lib").is_dir() and (root / "fab").is_dir()
     assert (root / "README.md").exists() and (root / "docs/brief.md").exists()
+    assert project.check(root)["ok"], project.check(root)["findings"]

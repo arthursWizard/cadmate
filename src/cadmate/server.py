@@ -22,24 +22,26 @@ cadmate keeps each design as ONE active project with a fixed layout and a single
 session that creates or changes design files, whoever asked for the change:
 
 - Apply every change to the active project in place. Never create side-by-side versions: no main-v2/,
-  main-routed.kicad_pcb, main-hand3.kicad_pcb, case/variant-b/, *.bak, or copies "to keep the old one".
+  main-routed.kicad_pcb, main-hand3.kicad_pcb, enclosure-variant-b/, *.bak, or copies "to keep the old one".
 - To keep the old state, call project_snapshot first (label like "before-rework"). It copies the files into
   history/<YYYYMMDD-HHMM>_<label>/ at the same relative paths and logs it in history/HISTORY.md; project_restore puts
   one back. Snapshot when the user has seen or approved the current state, or before a big or risky change. The routing
   tools snapshot the board themselves when they change it in place.
-- Layout, with KiCad and FreeCAD: kicad/<board>/<board>.kicad_pro|.kicad_sch|.kicad_pcb|.kicad_dru, kicad/lib/
-  (project footprints, symbols, 3D models), case/ (FreeCAD sources, <part>.step, assembly.step, renders/, pcb-models/),
-  fab/<board>/ (generated), tools/ (generator scripts: the design's source, never archived or deleted), docs/,
-  history/, .cadmate/work/ (scratch). A project with one tool is flat: no kicad/ or case/, that tool's files sit at the
-  root (<board>/ and lib/, or the .FCStd and STEP files). cadmate-project.json's "tools" says which; project_check
-  reports it. When a flat project gains the other tool, project_add_tool moves the files into subfolders.
+- Layout: no folder holds just one thing. One tool: its files at the project root; KiCad and FreeCAD: kicad/ and
+  freecad/. In each, one board (<board>.kicad_pro|.kicad_sch|.kicad_pcb|.kicad_dru) or one FreeCAD part (<part>.FCStd,
+  its STEPs, assembly.step, renders/) sits directly there; two or more get a folder each, named for what it is
+  (main/, sensor/; enclosure/, bracket/, knob/: take the part's name from the conversation or the brief, never a
+  generic "case"). KiCad's lib/ (project footprints, symbols, 3D models) sits in the KiCad area. Also fab/<board>/
+  (generated), tools/ (generator scripts: the design's source, never archived or deleted), docs/, history/,
+  .cadmate/work/ (scratch). Going from one to two, use project_add_tool, project_add_board or project_add_part: they
+  snapshot, move the files and fix the paths. Never move them by hand.
 - To compare options, build them in .cadmate/work/, show the user, apply the pick to the active project, delete the rest.
 - Never rename a KiCad project: its schematic annotations are tied to the name. Use ${KIPRJMOD}-relative library paths.
 - Keep docs/brief.md: every requirement the user states, as a checklist. Re-read it before each stage and before
   showing a result; project_check lists the open items, and a stage isn't done until you've said which are met.
 - Report DRC as errors, warnings, unconnected and parity, with the warnings by type, never errors alone.
 - project_init on a new design folder; project_check before telling the user a step is done.
-- check_enclosure before showing the user a case: collisions, openings nobody declared, joints with a gap or a step.
+- check_enclosure before showing the user an enclosure: collisions, openings nobody declared, joints with a gap or a step.
 The cadmate-project skill has the reasons and the edge cases."""
 
 server = MCPServer("cadmate", instructions=INSTRUCTIONS)
@@ -912,25 +914,44 @@ def _project(fn, *a, **kw) -> dict:
 
 @server.tool()
 def project_init(root: str, name: str | None = None, boards: list[str] | None = None,
-                 tools: list[str] | None = None) -> dict:
+                 tools: list[str] | None = None, parts: list[str] | None = None) -> dict:
     """Make a design folder a cadmate project: cadmate-project.json, README.md, CLAUDE.md (the rules, for every session
     working there), tools/, docs/ with brief.md, history/ with HISTORY.md, and .cadmate/work/ for scratch.
 
-    tools: ["kicad"], ["freecad"] or both; pass what the design uses (ask if it isn't clear). One tool makes a flat
-    project, its files at the root: <board>/ for each board, lib/ and fab/ for KiCad; the .FCStd and STEP files for
-    FreeCAD. Both make kicad/<board>/, kicad/lib/, case/ and fab/. Left out, it goes by the files already there, else
-    both. Safe on an existing folder: it only adds what's missing, never moves or overwrites; run project_check after
-    to see what's out of place. To add the second tool later, project_add_tool."""
-    return _project(project.init, root, name, boards, tools)
+    tools: ["kicad"], ["freecad"] or both; pass what the design uses (ask if it isn't clear). One tool keeps its files
+    at the project root (with lib/ and fab/ for KiCad); both make kicad/ and freecad/. Left out, it goes by the files
+    already there, else both. boards and parts: their names, if known. One board or part sits directly in its tool's
+    place, so no folder is made; two or more get a folder each. Name a part for what it is (enclosure, bracket, knob),
+    from the conversation or the brief. Safe on an existing folder: it only adds what's missing, never moves or
+    overwrites; run project_check after to see what's out of place."""
+    return _project(project.init, root, name, boards, tools, parts)
 
 
 @server.tool()
 def project_add_tool(path: str, tool: str) -> dict:
-    """Add KiCad or FreeCAD to a flat, one-tool project. Snapshots the whole project first, then moves the existing
-    tool's files from the root into kicad/ (board folders and lib/ together, so ${KIPRJMOD}/../lib/ paths still work)
-    or case/, makes the new tool's folders and updates cadmate-project.json. Nothing inside a file is rewritten. Ask
-    the user to save and close the files in KiCad and FreeCAD first; they reopen them from the new place after."""
+    """Add KiCad or FreeCAD to a one-tool project. Snapshots the whole project first, then moves the existing tool's
+    files from the root into kicad/ (boards and lib/ together, so ${KIPRJMOD} paths still work) or freecad/, makes the
+    new tool's folders and updates cadmate-project.json. Nothing inside a file is rewritten. Ask the user to save and
+    close the files in KiCad and FreeCAD first; they reopen them from the new place after."""
     return _project(project.add_tool, path, tool)
+
+
+@server.tool()
+def project_add_board(path: str, board: str | None = None) -> dict:
+    """Add a second board. The board sitting directly in the KiCad area (the root, or kicad/) moves into a folder named
+    after it, after a snapshot, and its ${KIPRJMOD} paths (lib tables, 3D model links) get the ../ they now need; board
+    is the new one's name, and gets its folder too. With board folders already, it only makes the new folder. Ask the
+    user to save and close the board in KiCad first."""
+    return _project(project.add_board, path, board)
+
+
+@server.tool()
+def project_add_part(path: str, part: str | None = None, current: str | None = None) -> dict:
+    """Add a second FreeCAD part. The part sitting directly in the FreeCAD area (the root, or freecad/) moves into a
+    folder named for it, after a snapshot, with its STEPs, renders/ and enclosure files; part is the new one's name,
+    and gets its folder too. current: what the part already there is (enclosure, bracket), from the conversation or the
+    brief; left out, it's taken from the part's only .FCStd. Ask the user to save and close the files in FreeCAD first."""
+    return _project(project.add_part, path, part, current)
 
 
 @server.tool()
@@ -939,9 +960,8 @@ def project_snapshot(path: str, label: str, paths: list[str] | None = None, note
     paths and adds a line to history/HISTORY.md. Then make the change in the active project itself, never in a copy.
 
     path is the project or anything in it. label: lowercase words with dashes saying what state this is or what comes
-    next ("approved-layout", "before-rework"). paths limits it (e.g. ["kicad/main"], ["case"], or ["main"] in a flat
-    KiCad-only project); leave it out for
-    the whole project. A KiCad board folder brings along the project libraries it references through ${KIPRJMOD}, so
+    next ("approved-layout", "before-rework"). paths limits it (e.g. ["kicad/main"], ["freecad/enclosure"], or
+    ["main.kicad_pcb"] for a lone board at the root); leave it out for the whole project. A KiCad board folder brings along the project libraries it references through ${KIPRJMOD}, so
     the copy opens with its footprints and 3D models. note says why, in a sentence: it goes into HISTORY.md."""
     return _project(project.snapshot, path, label, paths, note)
 
@@ -965,29 +985,31 @@ def project_check(path: str) -> dict:
     (-v2, -routed, -hand3, variant-*, .bak), more than one board per board folder, a KiCad project not named
     after its folder, schematic annotations that belong to another project name (a renamed or copied project), library
     tables and 3D model links that are absolute, missing or outside the project, fab files older than their board or
-    for a board that's gone, badly named snapshots, leftover scratch, a case whose enclosure check is missing,
-    older than the case or failing, and the other tool's files at the root of a one-tool project (project_add_tool).
-    Works on both shapes: flat (one tool) and kicad/ + case/ (both); the result says which. Each finding has a fix. Run it before telling the user a step is done."""
+    for a board that's gone, badly named snapshots, leftover scratch, an assembly whose enclosure check is missing,
+    older than its STEPs or failing, the other tool's files at the root of a one-tool project (project_add_tool), and a
+    board or part sitting loose beside board or part folders (project_add_board, project_add_part). The result says
+    which tools the project uses and whether it's flat. Each finding has a fix. Run it before telling the user a step
+    is done."""
     return _project(project.check, path)
 
 
-# Enclosures: collisions, closed shells and flush joints on a case assembly (enclosure.py, freecad_scripts/check_enclosure.py).
+# Enclosures: collisions, closed shells and flush joints on an assembly (enclosure.py, freecad_scripts/check_enclosure.py).
 
 
 @server.tool()
 def check_enclosure(path: str, spec: dict | str | None = None) -> dict:
-    """Check a printed case in FreeCAD before showing it: parts that collide (case with boards, components, flex
+    """Check a printed enclosure in FreeCAD before showing it: parts that collide (case with boards, components, flex
     cables, each other), openings in each shell that aren't declared (a slot left in a wall, a gap at a seam), and
     joints between case parts that don't sit flush (a gap, or one part standing proud of the other), plus part heights
     against the brief.
 
-    path: the project, its case/ folder, or an assembly STEP whose children are the placed parts, named; the case parts
-    are the ones with a case/<part>.step. In a FreeCAD-only project the case files sit at the root, so case/ below means
-    the root. spec (a dict or JSON path; default case/enclosure.json) declares the openings
-    meant to be there, joint limits, heights and allowed overlaps: see enclosure.py for the format. Without a spec every
-    opening is reported, so the first run is how you list them: write the intended ones into case/enclosure.json, keep
-    the rest as errors to fix. The report is saved as case/enclosure-check.json; project_check flags it when it's missing,
-    stale or failing. Takes a minute or two on a case with a few boards; longer with min_clearance."""
+    path: the part's folder (the one with assembly.step), an assembly STEP whose children are the placed parts, named,
+    or the project when only one part has an assembly. The case parts are the ones with a <piece>.step beside the
+    assembly. spec (a dict or JSON path; default enclosure.json beside the assembly) declares the openings meant to be
+    there, joint limits, heights and allowed overlaps: see enclosure.py for the format. Without a spec every opening is
+    reported, so the first run is how you list them: write the intended ones into enclosure.json, keep the rest as
+    errors to fix. The report is saved beside the assembly as enclosure-check.json; project_check flags it when it's
+    missing, stale or failing. Takes a minute or two with a few boards; longer with min_clearance."""
     try:
         return enclosure.check(path, spec)
     except (enclosure.EnclosureError, RuntimeError, OSError, ValueError) as e:

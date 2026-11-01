@@ -4,9 +4,9 @@ case parts that don't sit flush (a gap, or one part standing proud of the other)
 FreeCAD does the geometry (freecad_scripts/check_enclosure.py); this module works out what to check, turns the
 measurements into findings, and keeps the report beside the case so project_check can tell when it's missing or stale.
 
-Inputs, in a cadmate project (the case folder is case/ when the project has KiCad too, else the project root):
-case/assembly.step (every part placed, each a named child), case/<part>.step for each
-printed part (their names say which assembly children are the case), and optionally case/enclosure.json:
+Inputs, in the folder of the FreeCAD part being checked (in a cadmate project: the FreeCAD area when it holds one
+part, else <part>/, named for what it is): assembly.step (every part placed, each a named child), <piece>.step for each
+printed piece (their names say which assembly children are the case), and optionally enclosure.json:
 
     {
       "enclosures": {"main": ["main-top", "main-base"], "sensor": ["sensor-cap"]},  # the closed shells; default below
@@ -52,35 +52,51 @@ class EnclosureError(RuntimeError):
     pass
 
 
+def assemblies(root: Path) -> list[Path]:
+    """The part folders of a project's FreeCAD side that hold an assembly.step: the area, or each <part>/ in it."""
+    sh = project.shape(root)
+    if "freecad" not in sh.tools:
+        return []
+    area = root / sh.dir("freecad")
+    _, folders = project.units(root, sh, "freecad")
+    return [d for d in [area, *folders] if (d / ASSEMBLY).exists()]
+
+
 def locate(path: str | Path) -> tuple[Path, Path]:
-    """(assembly STEP, case folder) from a STEP, a case folder or a project."""
+    """(assembly STEP, its folder) from a STEP, a part folder or a project."""
     p = Path(path).expanduser().resolve()
     if p.is_file():
         return p, p.parent
-    for d in (p / "case", p):
-        if (d / ASSEMBLY).exists():
-            return d / ASSEMBLY, d
-    raise EnclosureError(f"no {ASSEMBLY} in {p} or {p / 'case'}: export the case with every part placed, each a named child")
+    if (p / ASSEMBLY).exists():
+        return p / ASSEMBLY, p
+    if project.find_root(p) == p:
+        found = assemblies(p)
+        if len(found) == 1:
+            return found[0] / ASSEMBLY, found[0]
+        if found:
+            names = ", ".join(d.relative_to(p).as_posix() for d in found)
+            raise EnclosureError(f"several parts have an {ASSEMBLY} ({names}); pass the folder of the one to check")
+    raise EnclosureError(f"no {ASSEMBLY} in {p}: export the assembly with every part placed, each a named child")
 
 
 def case_part_names(case_dir: Path) -> list[str]:
-    """The printed parts: case/<part>.step, except the assembly."""
+    """The printed pieces: each <piece>.step beside the assembly, except the assembly."""
     return sorted(f.stem for f in case_dir.glob("*.step") if f.name != ASSEMBLY)
 
 
-def group_enclosures(case_parts: list[str]) -> dict[str, list[str]]:
+def group_enclosures(case_parts: list[str], name: str = "enclosure") -> dict[str, list[str]]:
     """Parts whose names agree up to the last dash (main-top, main-base) make one shell, and a part alone is its own;
     when no two names agree that way (top, base), all the parts make one shell."""
     groups: dict[str, list[str]] = {}
     for n in case_parts:
         groups.setdefault(n.rsplit("-", 1)[0] if "-" in n else n, []).append(n)
     if all(len(v) == 1 for v in groups.values()):
-        return {"case": list(case_parts)}
+        return {name: list(case_parts)}
     return groups
 
 
 def load_spec(case_dir: Path, spec: dict | str | None) -> tuple[dict, str | None]:
-    """The spec as given, else case/enclosure.json, else {}; and where it came from."""
+    """The spec as given, else enclosure.json beside the assembly, else {}; and where it came from."""
     if isinstance(spec, dict):
         return spec, "argument"
     f = Path(spec).expanduser() if spec else case_dir / SPEC
@@ -94,13 +110,21 @@ def load_spec(case_dir: Path, spec: dict | str | None) -> tuple[dict, str | None
         raise EnclosureError(f"{f} isn't valid JSON: {e}") from None
 
 
+def _part_name(folder: Path) -> str:
+    """The shell's default name: the part's folder, or the project's name when the part sits at its root."""
+    root = project.find_root(folder)
+    if root is not None and folder.resolve() in (root, root / project.shape(root).dir("freecad")):
+        return project._marker(root).get("name") or root.name
+    return folder.name
+
+
 def resolve(case_dir: Path, spec: dict) -> dict:
     """Everything the FreeCAD script needs, with the defaults filled in."""
     s = DEFAULTS | {k: v for k, v in spec.items() if k in DEFAULTS}
     s["case_parts"] = spec.get("case_parts") or case_part_names(case_dir)
     if not s["case_parts"]:
         raise EnclosureError(f"no case parts: put each printed part in {case_dir}/<part>.step or list them as case_parts")
-    s["enclosures"] = spec.get("enclosures") or group_enclosures(s["case_parts"])
+    s["enclosures"] = spec.get("enclosures") or group_enclosures(s["case_parts"], _part_name(case_dir))
     plugs: dict[str, list] = {}
     for o in spec.get("openings", []):
         if "box" in o and o.get("enclosure"):
@@ -169,7 +193,7 @@ def evaluate(raw: dict, spec: dict, resolved: dict) -> dict:
             region = f" (region {_size(r['at'])} mm)" if r.get("at") else ""
             out.append(_f("error", "collision", pair, f"{r['a']} and {r['b']} overlap by {r['volume']:.3g} mm³{region}",
                           "move or cut one of them; if the overlap is "
-                          "meant (a press fit, a clip), add the pair to allow_overlap in case/enclosure.json", r.get("at")))
+                          "meant (a press fit, a clip), add the pair to allow_overlap in enclosure.json", r.get("at")))
         elif (mc := resolved.get("min_clearance")) and 0 < r.get("gap", mc) < mc and bool(case & set(pair)) != (set(pair) <= case):
             out.append(_f("warning", "clearance", pair, f"only {r['gap']} mm between {r['a']} and {r['b']}",
                           f"give it at least {mc} mm", r.get("gap_at")))
@@ -188,7 +212,7 @@ def evaluate(raw: dict, spec: dict, resolved: dict) -> dict:
             out.append(_f("error", "closed shell", e["parts"],
                           f"{ename}: opening in the {o['face']} ({_size(o['outer_box'])} mm, about {o['outer_area']} mm² "
                           f"on the outside) at {o['centre']}{near}",
-                          "close it; if it's meant to be there, add it to openings in case/enclosure.json (name plus "
+                          "close it; if it's meant to be there, add it to openings in enclosure.json (name plus "
                           "box, near or face)", o["outer_box"]))
         ex = e.get("exact", {})
         if "error" in ex:
@@ -228,7 +252,7 @@ def evaluate(raw: dict, spec: dict, resolved: dict) -> dict:
             out.append(_f("error", "flush joint", [j["a"], j["b"]],
                           f"{proud} stands {abs(w['step']):.2f} mm proud of the other at the seam, {len(steps)} of {n} "
                           f"points over {js['max_step']} mm", "bring the two surfaces level at the joint; if the step is "
-                          f"meant (a rim), set max_step for '{j['a']}/{j['b']}' in case/enclosure.json", w["at"]))
+                          f"meant (a rim), set max_step for '{j['a']}/{j['b']}' in enclosure.json", w["at"]))
     tops = {n: raw["parts"][n]["bbox"][5] for n in resolved["case_parts"] if n in raw.get("parts", {})}
     for n, want in spec.get("heights", {}).items():
         if n not in tops:
@@ -272,7 +296,7 @@ def check(path: str | Path, spec: dict | str | None = None, save: bool = True) -
               "findings": ev["findings"], "summary": summary(raw, ev), "checked": datetime.now().isoformat(timespec="seconds"),
               "settings": {k: resolved[k] for k in DEFAULTS} | {"enclosures": resolved["enclosures"]}}
     if spec_from is None:
-        result["next"] = (f"no {SPEC}: every opening found is reported as unintended. Write case/{SPEC} with the "
+        result["next"] = (f"no {SPEC}: every opening found is reported as unintended. Write {SPEC} beside the assembly with the "
                           "openings that are meant to be there (and heights from the brief), then run this again")
     if save:
         f = case_dir / REPORT
@@ -286,18 +310,19 @@ def check(path: str | Path, spec: dict | str | None = None, save: bool = True) -
 
 
 def project_findings(root: Path) -> list[dict]:
-    sh = project.shape(root)
-    if "freecad" not in sh.tools:
-        return []
-    case = root / sh.dir("freecad")
-    steps = [f for f in case.glob("*.step")] if case.exists() else []
-    if not steps:
-        return []
+    out = []
+    for d in assemblies(root):
+        out += _folder_findings(root, d)
+    return out
+
+
+def _folder_findings(root: Path, case: Path) -> list[dict]:
+    steps = list(case.glob("*.step"))
     rep = case / REPORT
     rel = rep.relative_to(root).as_posix()
     if not rep.exists():
-        return [project._finding("info", rel, "the case has never been checked",
-                                 "run check_enclosure on the project (collisions, openings, flush joints)")]
+        return [project._finding("info", rel, "this assembly has never been checked",
+                                 "run check_enclosure on its folder (collisions, openings, flush joints)")]
     newer = [f.name for f in steps + [case / SPEC] if f.exists() and f.stat().st_mtime > rep.stat().st_mtime]
     if newer:
         return [project._finding("warning", rel, f"older than {', '.join(sorted(newer)[:3])}",
@@ -311,5 +336,6 @@ def project_findings(root: Path) -> list[dict]:
         first = next((f["problem"] for f in r.get("findings", []) if f["severity"] == "error"), "")
         first = re.sub(r"\s+", " ", first)[:160]
         return [project._finding("warning", rel, f"the last enclosure check found {n} error(s), e.g. {first}",
-                                 "fix the case, or declare what's intended in case/enclosure.json, and run check_enclosure again")]
+                                 f"fix the part, or declare what's intended in {(case / SPEC).relative_to(root).as_posix()}, "
+                                 "and run check_enclosure again")]
     return []

@@ -152,19 +152,20 @@ and before a change worth undoing, Claude takes a snapshot into `history/`.
 ```
 my-design/
   cadmate-project.json   README.md   CLAUDE.md
-  kicad/<board>/         <board>.kicad_pro .kicad_sch .kicad_pcb ...
+  kicad/                 main.kicad_pro .kicad_sch .kicad_pcb ...
   kicad/lib/             your own footprints, symbols, 3D models
-  case/                  FreeCAD files, STEP exports, enclosure.json
+  freecad/               enclosure.FCStd, STEP exports, enclosure.json
   fab/<board>/           Gerbers, BOM, CPL (generated, never edited)
   tools/                 generator scripts
   docs/brief.md          your requirements, as a checklist
   history/               20261031-1213_before-rework/ ... and HISTORY.md
 ```
 
-That's a design with a board and a case. If it's only a board, or only a case, the `kicad/` or `case/` level is left
-out and those files sit in `my-design/` itself (`my-design/main/main.kicad_pro`, `my-design/lib/`). Add a case to a
-board-only design later and Claude runs `project_add_tool`, which snapshots the project and moves the board files into
-`kicad/`. Close the files in KiCad first.
+That's a design with one board and one enclosure. No folder holds just one thing: a board-only design has
+`main.kicad_pro`, `lib/` and `fab/` right in `my-design/`, and a FreeCAD-only one its `.FCStd` and STEPs. A second
+board or part gets a folder each, named for what it is (`kicad/main/`, `kicad/sensor/`; `freecad/enclosure/`,
+`freecad/knob/`). Claude moves things when that happens (`project_add_tool`, `project_add_board`, `project_add_part`),
+after a snapshot; close the files in KiCad and FreeCAD first.
 
 The tools behind it: `project_init` makes this layout (safe on an existing folder, it only adds), `project_snapshot`
 saves a state under a label, `project_history` lists the snapshots, `project_restore` brings one back (snapshotting the
@@ -209,7 +210,7 @@ change. When you say good, Claude snapshots.
 7. **Fab files.** `export_fab` writes the Gerber zip, BOM and CPL for JLCPCB into `fab/<board>/`, and lists the parts
    that have no LCSC number yet.
 8. **Enclosure.** Claude builds the case in FreeCAD, live in your window on macOS and Linux, or headless from a script.
-   The openings you want and the heights from the brief go in `case/enclosure.json`, and `check_enclosure` reports
+   The openings you want and the heights from the brief go in `enclosure.json` beside the assembly, and `check_enclosure` reports
    collisions with the board and parts, openings nobody declared, and seams with a gap or a step. Fixing the case is a
    conversation in FreeCAD, not one tool.
 9. **Done.** "Run project_check." It flags stale fab files, a missing or failing enclosure check, open items in the

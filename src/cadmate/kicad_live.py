@@ -48,7 +48,7 @@ class LiveError(ValueError):
 
 
 def data_dir() -> Path:
-    return live.socket_path().parent / "kicad_live"
+    return live.data_dir() / "kicad_live"
 
 
 class Target:

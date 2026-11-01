@@ -45,9 +45,9 @@ What each OS has been tested with:
 - **Linux**: CI runs the test suite, and runs cadmate's kicad-cli commands against a real KiCad 10. Nothing has been
   used by hand yet. For pictures install `rsvg-convert` (`librsvg2-bin` on Debian and Ubuntu). Flatpak and AppImage
   installs need a one-line wrapper script (see the README's Flatpak note).
-- **Windows**: CI runs the test suite without KiCad or FreeCAD installed. Nothing has been used by hand. Known gaps: no
-  live FreeCAD bridge (it needs a Unix socket), live KiCad editing reaches only the default KiCad instance, and
-  pictures need the `snapshots` extra (step 2) plus the cairo DLL, for example from the GTK runtime.
+- **Windows**: CI runs the test suite without KiCad or FreeCAD installed. Nothing has been used by hand. The live FreeCAD
+  bridge uses a localhost port with a token instead of a Unix socket and has only been tested in CI, without a real
+  FreeCAD. Known gaps: live KiCad editing reaches only the default KiCad instance, and pictures need the `snapshots` extra (step 2) plus the cairo DLL, for example from the GTK runtime.
 
 ### 2. Get cadmate
 
@@ -131,7 +131,7 @@ For Claude Code, add `-e NAME=value` to the `claude mcp add` line. The README li
 
 - **KiCad's PCB editor**: KiCad > Settings (Preferences on Linux and Windows) > Plugins, tick "Enable KiCad API",
   restart KiCad. Any program running as you can then reach the open board; turn it off the same way when that matters.
-- **FreeCAD's window** (macOS and Linux): ask Claude for the bridge start line (`freecad_live_status` gives it) and
+- **FreeCAD's window**: ask Claude for the bridge start line (`freecad_live_status` gives it) and
   paste it into FreeCAD's Python console (View > Panels > Python console). The Report view shows
   `[cadmate] bridge listening on ...`. It runs until you quit FreeCAD or run `App._cadmate_bridge.stop()`, and doesn't
   start by itself next time.

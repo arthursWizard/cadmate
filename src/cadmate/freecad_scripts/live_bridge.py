@@ -2,9 +2,15 @@
 # started by the user from FreeCAD's Python console (cadmate's freecad_live_status
 # tool gives the exact line); it never starts on its own.
 #
-# It listens on a Unix socket in a folder only the user can open (0700, socket
-# 0600), so a browser or another account can't reach it. Any program running as
-# the user can, as with any of their files.
+# On macOS and Linux it listens on a Unix socket in a folder only the user can
+# open (0700, socket 0600), so a browser or another account can't reach it.
+# On Windows (Python has no Unix sockets there), or with
+# CADMATE_BRIDGE_TRANSPORT=tcp, it listens on a port on 127.0.0.1 and writes the
+# port and a random token, new on each start, to bridge.json in the user's own
+# folder (0600; on Windows %LOCALAPPDATA%, which only the user can read).
+# Requests without that token are refused, so another account or a web page
+# that finds the port gets nothing. Either way, any program running as the user
+# can reach the bridge, as with any of their files.
 #
 # Protocol: one JSON object per line each way, one request per connection.
 # Requests are queued and run on FreeCAD's main thread by a Qt timer, because
@@ -20,11 +26,13 @@
 # Stop it with App._cadmate_bridge.stop(). Running this file again replaces
 # the running bridge.
 import contextlib
+import hmac
 import io
 import json
 import os
 import platform
 import queue
+import secrets
 import socket
 import stat
 import tempfile
@@ -35,6 +43,7 @@ from pathlib import Path
 
 BRIDGE_VERSION = 1
 SOCKET_ENV = "CADMATE_BRIDGE_SOCKET"
+TRANSPORT_ENV = "CADMATE_BRIDGE_TRANSPORT"
 TICK_MS = 20
 LOG_LIMIT = 5000
 # Changed on every recompute or by FreeCAD itself; noise in a list of what someone edited.
@@ -49,15 +58,47 @@ STATE_TYPES = (
 )
 
 
-def socket_path() -> Path:
-    """Where the bridge listens. cadmate/live.py has the same rule; keep them in step."""
+# Where things are. cadmate/live.py has the same rules; keep them in step (a test checks).
+
+def data_dir() -> Path:
     override = os.environ.get(SOCKET_ENV)
     if override:
-        return Path(override).expanduser()
-    if platform.system() == "Darwin":
-        return Path.home() / "Library" / "Application Support" / "cadmate" / "bridge.sock"
+        return Path(override).expanduser().parent
+    system = platform.system()
+    if system == "Darwin":
+        return Path.home() / "Library" / "Application Support" / "cadmate"
+    if system == "Windows":
+        local = os.environ.get("LOCALAPPDATA")
+        return (Path(local) if local else Path.home() / "AppData" / "Local") / "cadmate"
     runtime = os.environ.get("XDG_RUNTIME_DIR")
-    return (Path(runtime) if runtime else Path.home() / ".cache") / "cadmate" / "bridge.sock"
+    return (Path(runtime) if runtime else Path.home() / ".cache") / "cadmate"
+
+
+def socket_path() -> Path:
+    override = os.environ.get(SOCKET_ENV)
+    return Path(override).expanduser() if override else data_dir() / "bridge.sock"
+
+
+def endpoint_path() -> Path:
+    return data_dir() / "bridge.json"
+
+
+def transport() -> str:
+    chosen = os.environ.get(TRANSPORT_ENV, "").strip().lower()
+    if chosen in ("unix", "tcp"):
+        return chosen
+    return "tcp" if platform.system() == "Windows" or not hasattr(socket, "AF_UNIX") else "unix"
+
+
+def _write_private(path: Path, text: str):
+    """Write a file only the user can read (0600 where the OS has modes), replacing any old one in one step."""
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    with contextlib.suppress(FileNotFoundError):
+        tmp.unlink()
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, stat.S_IRUSR | stat.S_IWUSR)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, path)
 
 
 def _jsonable(value):
@@ -85,11 +126,13 @@ def _placement(p) -> dict:
 
 
 class Bridge:
-    def __init__(self, path: Path):
-        import FreeCAD as App
-
-        self.App = App
-        self.path = path
+    def __init__(self, app, kind: str = "unix", path: Path | None = None, endpoint: Path | None = None):
+        self.App = app
+        self.kind = kind
+        self.path = path or socket_path()
+        self.endpoint = endpoint or endpoint_path()
+        self.token = None  # TCP only
+        self.where = None
         self.requests: queue.Queue = queue.Queue()
         self.events: list[dict] = []
         self.seq = 0
@@ -103,21 +146,12 @@ class Bridge:
     def start(self):
         from PySide import QtCore
 
-        d = self.path.parent
-        d.mkdir(parents=True, exist_ok=True)
-        os.chmod(d, 0o700)
-        if self.path.exists() or self.path.is_socket():
-            self.path.unlink()
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.bind(str(self.path))
-        os.chmod(self.path, stat.S_IRUSR | stat.S_IWUSR)
-        self.sock.listen(4)
-        threading.Thread(target=self._accept, name="cadmate-bridge", daemon=True).start()
+        self.listen()
         self.timer = QtCore.QTimer()
         self.timer.timeout.connect(self._drain)
         self.timer.start(TICK_MS)
         self.App.addDocumentObserver(self.observer)
-        self._say(f"bridge listening on {self.path}; stop it with App._cadmate_bridge.stop()")
+        self._say(f"bridge listening on {self.where}; stop it with App._cadmate_bridge.stop()")
 
     def stop(self):
         self.running = False
@@ -125,13 +159,49 @@ class Bridge:
             self.timer.stop()
         with contextlib.suppress(Exception):
             self.App.removeDocumentObserver(self.observer)
+        self.close()
+        self._say("bridge stopped")
+
+    def listen(self):
+        """Open the socket and accept connections on a background thread. Needs no FreeCAD, so tests run it."""
+        d = self.endpoint.parent
+        d.mkdir(parents=True, exist_ok=True)
+        os.chmod(d, 0o700)
+        if self.kind == "tcp":
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.bind(("127.0.0.1", 0))  # any free port; cadmate finds it in the endpoint file
+            self.sock.listen(4)
+            port = self.sock.getsockname()[1]
+            self.token = secrets.token_urlsafe(32)
+            _write_private(self.endpoint, json.dumps({"bridge": BRIDGE_VERSION, "host": "127.0.0.1", "port": port,
+                                                      "token": self.token, "pid": os.getpid()}))
+            self.where = f"127.0.0.1:{port} (port and token in {self.endpoint})"
+        else:
+            with contextlib.suppress(FileNotFoundError):
+                self.endpoint.unlink()  # left by a TCP bridge that didn't stop cleanly; cadmate would follow it
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            if self.path.exists() or self.path.is_socket():
+                self.path.unlink()
+            self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.sock.bind(str(self.path))
+            os.chmod(self.path, stat.S_IRUSR | stat.S_IWUSR)
+            self.sock.listen(4)
+            self.where = str(self.path)
+        threading.Thread(target=self._accept, name="cadmate-bridge", daemon=True).start()
+
+    def close(self):
+        self.running = False
         with contextlib.suppress(OSError):
             self.sock.shutdown(socket.SHUT_RDWR)  # wakes the accept thread
         with contextlib.suppress(OSError):
             self.sock.close()
-        with contextlib.suppress(OSError):
-            self.path.unlink()
-        self._say("bridge stopped")
+        if self.kind == "tcp":
+            with contextlib.suppress(OSError, ValueError, KeyError):
+                if json.loads(self.endpoint.read_text(encoding="utf-8"))["token"] == self.token:
+                    self.endpoint.unlink()  # only ours: another FreeCAD may have started a bridge since
+        else:
+            with contextlib.suppress(OSError):
+                self.path.unlink()
 
     def _say(self, text: str, error: bool = False):
         line = f"[cadmate] {text}\n"
@@ -155,7 +225,12 @@ class Bridge:
             except ValueError:
                 reply = {"ok": False, "error": "request is not JSON"}
             else:
-                if req.get("op") == "ping_thread":  # answers without the GUI, to tell a stuck GUI from a dead bridge
+                if not isinstance(req, dict):
+                    reply = {"ok": False, "error": "request is not a JSON object"}
+                elif self.token is not None and not hmac.compare_digest(str(req.get("token", "")).encode(),
+                                                                         self.token.encode()):
+                    reply = {"ok": False, "error": "wrong or missing token; cadmate reads it from the bridge's endpoint file"}
+                elif req.get("op") == "ping_thread":  # answers without the GUI, to tell a stuck GUI from a dead bridge
                     reply = {"ok": True}
                 else:
                     reply = self._wait(_Request(req), float(req.get("timeout", 120)))
@@ -213,7 +288,7 @@ class Bridge:
             return {"ok": False, "error": f"unknown op {op!r}"}
         summary = req.get("label") or req.get("path") or req.get("doc") or ""
         self._say(f"{op}{': ' + summary if summary else ''}")
-        args = {k: v for k, v in req.items() if k not in ("op", "timeout")}
+        args = {k: v for k, v in req.items() if k not in ("op", "timeout", "token")}
         return {"ok": True} | fn(**args)
 
     def _doc(self, name: str | None):
@@ -340,7 +415,7 @@ class Bridge:
             elif suffix in (".py", ".fcmacro"):
                 before = set(App.listDocuments())
                 ns = {"__name__": "__main__", "__file__": p}
-                exec(compile(Path(p).read_text(), p, "exec"), ns)
+                exec(compile(Path(p).read_text(encoding="utf-8"), p, "exec"), ns)
                 new = [n for n in App.listDocuments() if n not in before]
                 d = App.getDocument(new[-1]) if new else App.ActiveDocument
             else:
@@ -461,7 +536,7 @@ def start() -> Bridge:
     old = getattr(App, "_cadmate_bridge", None)
     if old is not None:
         old.stop()
-    b = Bridge(socket_path())
+    b = Bridge(App, transport())
     b.start()
     App._cadmate_bridge = b
     return b

@@ -560,8 +560,8 @@ def freecad_live_snapshot(doc: str | None = None, view: str = "isometric", width
     """Picture of a document in the user's FreeCAD window, from a standard view, fitted to the model.
 
     view: isometric, front, rear, top, bottom, left, right, or "" to keep the
-    user's current view (also skips the fit). This changes the view in the
-    user's window.
+    user's current view (also skips the fit). The user's view is put back
+    after the picture is taken.
     """
     r = _live("snapshot", doc=doc, view=view, width=width, height=height, fit=bool(view))
     if not r.get("ok"):

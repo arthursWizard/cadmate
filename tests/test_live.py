@@ -132,3 +132,43 @@ def test_old_bridge_is_reported_not_crashed(sock):
     fake_bridge(sock, [{"ok": True, "pong": True}])
     r = server.freecad_live_status()
     assert not r["running"] and "version None" in r["error"]
+
+
+def bare_bridge():
+    """A Bridge without FreeCAD: just the queue, enough to test how requests reach the main thread."""
+    b = load_bridge()
+    bridge = object.__new__(b.Bridge)
+    bridge.requests = __import__("queue").Queue()
+    bridge.handled = []
+    bridge._handle = lambda req: bridge.handled.append(req["op"]) or {"ok": True, "op": req["op"]}
+    bridge._say = lambda *a, **kw: None
+    return b, bridge
+
+
+def test_request_answered_by_the_main_thread():
+    b, bridge = bare_bridge()
+    item = b._Request({"op": "state"})
+    t = threading.Thread(target=lambda: item.__setattr__("answer", bridge._wait(item, 5)))
+    t.start()
+    while bridge.requests.empty():
+        pass
+    bridge._drain()
+    t.join()
+    assert item.answer == {"ok": True, "op": "state"} and bridge.handled == ["state"]
+
+
+def test_request_not_started_in_time_is_dropped_not_run_later():
+    b, bridge = bare_bridge()
+    item = b._Request({"op": "run"})
+    r = bridge._wait(item, 0.05)  # the main thread is busy: nothing drains the queue
+    assert not r["ok"] and r["ran"] is False and "nothing changed" in r["error"]
+    bridge._drain()  # FreeCAD frees up later
+    assert bridge.handled == []  # the edit the caller gave up on never runs
+
+
+def test_request_started_but_slow_says_it_may_still_finish():
+    b, bridge = bare_bridge()
+    item = b._Request({"op": "run"})
+    item.state = "running"  # the main thread picked it up and is still in it
+    r = bridge._wait(item, 0.05)
+    assert not r["ok"] and r["ran"] is True and "may still complete" in r["error"]

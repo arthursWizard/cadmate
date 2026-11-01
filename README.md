@@ -124,6 +124,10 @@ or, in a session, `/plugin install cadmate --marketplace arthursWizard/cadmate`.
 `claude plugin marketplace update cadmate && claude plugin update cadmate@cadmate`, or turn on auto-update for the
 marketplace in `/plugin`. Start a new session after installing or updating.
 
+`cadmate@cadmate` is the latest release. To try what is merged on `main` but not released, install `cadmate-dev@cadmate`
+from the same marketplace and disable `cadmate@cadmate`; keep only one of the two enabled. See
+[Getting started](docs/getting-started.md#trying-unreleased-changes) and [Releasing](docs/releasing.md).
+
 For pictures on Linux, install `rsvg-convert` (macOS has a converter built in). The plugin doesn't install
 `cairosvg`, so pictures on Windows don't work through it yet.
 
@@ -136,7 +140,7 @@ From source, to work on cadmate itself:
 git clone https://github.com/arthursWizard/cadmate.git && cd cadmate
 uv sync
 uv run pytest
-claude plugin marketplace add ./ && claude plugin install cadmate@cadmate   # runs from your checkout
+claude plugin marketplace add ./ && claude plugin install cadmate-dev@cadmate   # runs from your checkout
 ```
 
 cadmate builds and checks models itself with FreeCAD's command-line `freecadcmd` (the `environment` tool says where it found it), so FreeCAD installed is enough for generated models and for models Claude writes as a FreeCAD Python script and runs headless. For working on a model together in the FreeCAD window, start cadmate's bridge (below); no addon is needed.

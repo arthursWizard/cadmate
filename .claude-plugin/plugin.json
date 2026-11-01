@@ -1,6 +1,5 @@
 {
   "name": "cadmate",
-  "version": "0.1.0",
   "description": "KiCad and FreeCAD companion: footprints, symbols, 3D models, routing, reviews and enclosure checks, with the skills that go with them.",
   "author": { "name": "arthursWizard" },
   "homepage": "https://github.com/arthursWizard/cadmate",

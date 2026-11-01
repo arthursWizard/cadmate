@@ -112,36 +112,50 @@ CI runs the test suite on all three without KiCad or FreeCAD installed, and runs
 
 ## Setup
 
-Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
+Needs [uv](https://docs.astral.sh/uv/) (it fetches Python 3.11+ if you don't have it). No clone needed.
+
+**Claude Code**: install the plugin. It brings the MCP server and the skills, at the same version:
 
 ```sh
-git clone https://github.com/arthursWizard/cadmate.git && cd cadmate
-uv sync
-uv run pytest
+claude plugin marketplace add arthursWizard/cadmate
+claude plugin install cadmate@cadmate
 ```
 
-For pictures on Windows, or on Linux without `rsvg-convert`, use `uv sync --extra snapshots`: it adds `cairosvg` (which also needs the cairo library). A `cairosvg` installed by hand is removed by the next plain `uv sync`.
+or, in a session, `/plugin install cadmate --marketplace arthursWizard/cadmate`. Update with
+`claude plugin marketplace update cadmate && claude plugin update cadmate@cadmate`, or turn on auto-update for the
+marketplace in `/plugin`. Start a new session after installing or updating.
 
-Add it to Claude Code:
-
-```sh
-claude mcp add --scope user cadmate -- uv run --directory /path/to/cadmate cadmate
-```
-
-`--scope user` makes it available in every folder. Without it, `claude mcp add` registers the server for the current folder only, and a session started in your KiCad project's folder won't see it. A Claude Code session that is already running doesn't pick up a newly added server: start a new one. With the `snapshots` extra, put `--extra snapshots` after `uv run`.
-
-Add it to Claude Desktop (untested): in Settings > Developer > Edit Config, add this to `claude_desktop_config.json` and restart Desktop. Use `uv`'s full path, since desktop apps often don't see your shell's `PATH`; `CADMATE_*` variables go in an `"env"` block beside `"args"`.
+**Claude Desktop and other MCP clients** (untested): run it from PyPI with `uvx`. In Settings > Developer > Edit Config,
+add this to `claude_desktop_config.json` and restart Desktop. Use `uvx`'s full path, since desktop apps often don't see
+your shell's `PATH`; `CADMATE_*` variables go in an `"env"` block beside `"args"`. `@latest` picks up new releases on
+each start; `cadmate==0.1.0` pins one.
 
 ```json
 {
   "mcpServers": {
     "cadmate": {
-      "command": "/full/path/to/uv",
-      "args": ["run", "--directory", "/path/to/cadmate", "cadmate"]
+      "command": "/full/path/to/uvx",
+      "args": ["cadmate@latest"]
     }
   }
 }
 ```
+
+The same in Claude Code without the plugin: `claude mcp add --scope user cadmate -- uvx cadmate@latest`, then
+`uvx cadmate@latest install-skills` for the skills (see Skills below).
+
+For pictures on Windows, or on Linux without `rsvg-convert`, cadmate needs `cairosvg` (which also needs the cairo library): run `uvx --with cairosvg cadmate@latest`.
+
+From source, to work on cadmate itself:
+
+```sh
+git clone https://github.com/arthursWizard/cadmate.git && cd cadmate
+uv sync
+uv run pytest
+claude mcp add --scope user cadmate -- uv run --directory /path/to/cadmate cadmate
+```
+
+Releases are one tag; [docs/releasing.md](docs/releasing.md) has the steps.
 
 cadmate builds and checks models itself with FreeCAD's command-line `freecadcmd` (the `environment` tool says where it found it), so FreeCAD installed is enough for generated models and for models Claude writes as a FreeCAD Python script and runs headless. For working on a model together in the FreeCAD window, start cadmate's bridge (below); no addon is needed.
 
@@ -295,11 +309,10 @@ connects, and the `cadmate-project` skill has the reasons and the edge cases (li
 
 ## Skills
 
-`skills/` holds the domain knowledge Claude loads for each workflow. Link the skill folders into `~/.claude/skills/` (or your project's `.claude/skills/`) to use them:
+`skills/` holds the domain knowledge Claude loads for each workflow. The Claude Code plugin installs them. Otherwise copy them into `~/.claude/skills/` (or `--dest <project>/.claude/skills`), and run it again after an update; it only replaces folders it installed:
 
 ```sh
-mkdir -p ~/.claude/skills
-for s in /path/to/cadmate/skills/*/; do ln -s "$s" ~/.claude/skills/; done
+uvx cadmate@latest install-skills
 ```
 
 To read datasheets, Claude needs a way to read PDFs and to look at drawings as images; `pip install pypdf cryptography pypdfium2 pillow` (or poppler's `pdftotext` and `pdftoppm`) covers both. `cryptography` is for the AES-encrypted PDFs some manufacturers publish (GCT's, for one), `pillow` for saving pypdfium2's page renders.

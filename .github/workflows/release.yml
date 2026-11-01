@@ -1,0 +1,65 @@
+name: release
+
+# Push a tag such as v0.2.0 to publish that version to PyPI and make a GitHub release.
+# Before tagging, bump the version in src/cadmate/__init__.py and .claude-plugin/{plugin,marketplace}.json
+# (tests/test_packaging.py fails if they disagree).
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - name: Tag matches the package version
+        run: |
+          version=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' src/cadmate/__init__.py)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME doesn't match cadmate $version in src/cadmate/__init__.py"
+            exit 1
+          fi
+      - run: uv sync
+      - run: uv run pytest -q
+      - run: uv build
+      - name: Check the wheel from a clean environment
+        run: |
+          uvx --isolated --from dist/*.whl cadmate --version
+          ls "$(uvx --isolated --from dist/*.whl cadmate skills-path)/cadmate-project/SKILL.md"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # PyPI trusted publishing: PyPI trusts this workflow in this repo, so no token is stored anywhere.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/cadmate
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

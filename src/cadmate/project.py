@@ -53,7 +53,7 @@ SNAP_NAME = re.compile(r"^(\d{8}-\d{4}(?:\d{2})?)_([a-z0-9][a-z0-9-]*)$")
 
 CLAUDE_MD = """# {name}: a cadmate project
 
-Follow cadmate's project rules (skills/cadmate-project in the cadmate repo). In short:
+Follow cadmate's project rules (the cadmate-project skill). In short:
 
 - This folder is the one active project. Apply every change here, in place. Never make side-by-side copies such as
   main-v2/, main-routed.kicad_pcb, case/variant-x/ or *.bak.

@@ -158,30 +158,53 @@ class Bridge:
                 if req.get("op") == "ping_thread":  # answers without the GUI, to tell a stuck GUI from a dead bridge
                     reply = {"ok": True}
                 else:
-                    done = threading.Event()
-                    box = {}
-                    self.requests.put((req, box, done))
-                    if not done.wait(float(req.get("timeout", 120))):
-                        reply = {"ok": False, "error": "FreeCAD did not answer in time; it may be showing a dialog or busy"}
-                    else:
-                        reply = box["reply"]
+                    reply = self._wait(_Request(req), float(req.get("timeout", 120)))
             f.write((json.dumps(reply) + "\n").encode())
             f.flush()
+
+    def _wait(self, item, timeout: float) -> dict:
+        """Queue a request for the main thread and wait for its reply.
+
+        A request that hasn't started when the caller gives up is dropped, so
+        it can't run later behind the caller's back (and run twice if the
+        caller retries). One that has started can't be stopped; the reply says so.
+        """
+        self.requests.put(item)
+        if item.done.wait(timeout):
+            return item.reply
+        with item.lock:
+            if item.state == "queued":
+                item.state = "dropped"
+        if item.state == "dropped":
+            return {"ok": False, "ran": False,
+                    "error": "FreeCAD was busy (a dialog open, or a long operation) and didn't start this request in "
+                             "time; it was dropped and nothing changed"}
+        if item.state == "done":  # finished between the timeout and the lock
+            return item.reply
+        return {"ok": False, "ran": True,
+                "error": "FreeCAD started this request but didn't finish it in time; it may still complete. "
+                         "Look at the document (freecad_live_state) before trying again"}
 
     # GUI side (main thread)
 
     def _drain(self):
         while True:
             try:
-                req, box, done = self.requests.get_nowait()
+                item = self.requests.get_nowait()
             except queue.Empty:
                 return
+            with item.lock:
+                if item.state == "dropped":  # the caller gave up before it started
+                    self._say(f"{item.req.get('op')} skipped: cadmate stopped waiting for it", error=True)
+                    continue
+                item.state = "running"
             try:
-                box["reply"] = self._handle(req)
+                item.reply = self._handle(item.req)
             except Exception as e:  # a reply always goes back, or the caller waits for the timeout
-                self._say(f"{req.get('op')} failed: {e}", error=True)
-                box["reply"] = {"ok": False, "error": str(e), "traceback": traceback.format_exc()}
-            done.set()
+                self._say(f"{item.req.get('op')} failed: {e}", error=True)
+                item.reply = {"ok": False, "error": str(e), "traceback": traceback.format_exc()}
+            item.state = "done"
+            item.done.set()
 
     def _handle(self, req: dict) -> dict:
         op = req.get("op")
@@ -374,12 +397,23 @@ class Bridge:
         gd = Gui.getDocument(d.Name)
         Gui.ActiveDocument = gd
         v = gd.ActiveView
-        if view:
-            getattr(v, "view" + view[:1].upper() + view[1:])()
-        if fit:
-            v.fitAll()
-        p = path or tempfile.mkstemp(prefix="cadmate-view-", suffix=".png")[1]
-        v.saveImage(str(p), int(width), int(height), "Current")
+        camera = v.getCamera() if view or fit else None  # put the user's view back afterwards
+        animate = getattr(v, "isAnimationEnabled", lambda: False)()
+        try:
+            if animate:
+                v.setAnimationEnabled(False)  # or the picture can catch the camera mid-turn
+            if view:
+                getattr(v, "view" + view[:1].upper() + view[1:])()
+            if fit:
+                v.fitAll()
+            Gui.updateGui()
+            p = path or tempfile.mkstemp(prefix="cadmate-view-", suffix=".png")[1]
+            v.saveImage(str(p), int(width), int(height), "Current")
+        finally:
+            if camera is not None:
+                v.setCamera(camera)
+            if animate:
+                v.setAnimationEnabled(True)
         return {"file": str(p)}
 
     def _fit(self):
@@ -388,6 +422,17 @@ class Bridge:
 
             with contextlib.suppress(Exception):
                 Gui.SendMsgToActiveView("ViewFit")
+
+
+class _Request:
+    """One request on its way to the main thread: queued, then running or dropped, then done."""
+
+    def __init__(self, req: dict):
+        self.req = req
+        self.state = "queued"
+        self.lock = threading.Lock()
+        self.done = threading.Event()
+        self.reply: dict | None = None
 
 
 class _Observer:

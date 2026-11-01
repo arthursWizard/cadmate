@@ -11,6 +11,10 @@ dependencies = [
     "mcp>=2,<3",
 ]
 
+[project.optional-dependencies]
+# PNG snapshots on Windows (and on Linux without rsvg-convert). Also needs the cairo library itself.
+snapshots = ["cairosvg>=2.7"]
+
 [project.scripts]
 cadmate = "cadmate.server:main"
 

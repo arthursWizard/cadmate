@@ -5,7 +5,7 @@ description: Lay out a through-hole circuit on perfboard (protoboard) with the u
 
 # Perfboard layouts with cadmate
 
-Uses `list_protoboard_parts`, `check_protoboard`, `place_protoboard`, `route_protoboard` and `render_protoboard`. A design is a JSON dict (format in `src/cadmate/protoboard.py`'s docstring, example in `examples/protoboard/555-blinker.json`). Save it as a file next to the user's project and pass the path.
+Uses `list_protoboard_parts`, `check_protoboard`, `place_protoboard`, `route_protoboard` and `render_protoboard`. A design is a JSON dict (format in `src/cadmate/protoboard.py`'s docstring, example in `examples/protoboard/555-blinker.json`). Save it as a file and pass the path. In a cadmate project it goes where its layout puts a protoboard: `<name>.json` directly in the protoboard area (the project root when protoboards are the only thing in it, else `protoboard/`), or `<name>/<name>.json` once there are two. `render_protoboard` writes beside it (`out` is the design's path without `.json`), and placing or routing writes back over the same file, after `project_snapshot` if the old state matters. A design and its pictures are design files, not documents: never put them in `docs/`. If the project doesn't list protoboards yet, `project_add_tool protoboard` adds the folder.
 
 ## What the tools assume
 

@@ -36,7 +36,7 @@ def run(r, spec=None):
 def test_parts_group_into_shells_by_name():
     assert enclosure.group_enclosures(["main-top", "main-base", "probe-top", "probe-base", "knob"]) == {
         "main": ["main-top", "main-base"], "probe": ["probe-top", "probe-base"], "knob": ["knob"]}
-    assert enclosure.group_enclosures(["top", "base", "front-panel"]) == {"case": ["top", "base", "front-panel"]}
+    assert enclosure.group_enclosures(["top", "base", "front-panel"], "box") == {"box": ["top", "base", "front-panel"]}
 
 
 def test_undeclared_opening_is_an_error_and_a_declared_one_is_not():
@@ -89,18 +89,36 @@ def test_heights_from_the_brief():
 
 def test_project_check_knows_about_the_enclosure_report(tmp_path):
     root = tmp_path / "kb"
-    project.init(root)
-    (root / "case/box-lid.step").write_text("x")
+    project.init(root, tools=["kicad", "freecad"], parts=["enclosure", "knob"])
+    (root / "freecad/knob/knob.step").write_text("x")  # a part with no assembly isn't an enclosure to check
+    (root / "freecad/enclosure/box-lid.step").write_text("x")
+    (root / "freecad/enclosure/assembly.step").write_text("x")
     paths = lambda: {f["path"]: f for f in project.check(root)["findings"]}  # noqa: E731
-    assert paths()["case/enclosure-check.json"]["severity"] == "info"
-    rep = root / "case/enclosure-check.json"
+    rel = "freecad/enclosure/enclosure-check.json"
+    assert paths()[rel]["severity"] == "info" and not any("knob" in p for p in paths())
+    rep = root / rel
     rep.write_text(json.dumps({"counts": {"error": 1}, "findings": [{"severity": "error", "problem": "slot in the back"}]}))
-    assert "slot in the back" in paths()["case/enclosure-check.json"]["problem"]
+    assert "slot in the back" in paths()[rel]["problem"]
     rep.write_text(json.dumps({"counts": {"error": 0}, "findings": []}))
-    assert "case/enclosure-check.json" not in paths()
+    assert rel not in paths()
     later = time.time() + 5
-    os.utime(root / "case/box-lid.step", (later, later))
-    assert "older than box-lid.step" in paths()["case/enclosure-check.json"]["problem"]
+    os.utime(root / "freecad/enclosure/box-lid.step", (later, later))
+    assert "older than box-lid.step" in paths()[rel]["problem"]
+    # the project finds the assembly when only one part has one, and asks when several do
+    assert enclosure.locate(root)[1] == (root / "freecad/enclosure").resolve()
+    (root / "freecad/knob/assembly.step").write_text("x")
+    with pytest.raises(enclosure.EnclosureError, match="several parts"):
+        enclosure.locate(root)
+
+
+def test_a_freecad_only_project_with_one_part_keeps_it_at_the_root(tmp_path):
+    root = tmp_path / "bracket"
+    project.init(root, tools="freecad")
+    (root / "assembly.step").write_text("x")
+    (root / "bracket.step").write_text("x")
+    assert enclosure.locate(root) == ((root / "assembly.step").resolve(), root.resolve())
+    assert enclosure._part_name(root) == "bracket"
+    assert "enclosure-check.json" in {f["path"] for f in project.check(root)["findings"]}
 
 
 BUILD = r'''

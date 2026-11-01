@@ -21,9 +21,9 @@ Early. Ten workflows work end to end:
 - **Review a routed board**: after routing by hand or with Freerouting, cadmate points out what a reviewer would. A decap whose track wanders to its pin or loops back through a distant ground. A crystal trace that is long, uses vias or has another signal alongside. Fast signals crossing gaps in the ground pour. Tracks narrower than their net class or than IPC-2221 asks for the current. JLCPCB's spacing and via limits. Each finding comes with its location, the reasoning and a source. See "Reviewing a layout" below.
 - **Make a symbol from a datasheet**: Claude reads the pin table, cadmate lays out the symbol per KiCad's library conventions (grid, sides by pin type, stacked power pins, hidden NC pins, fields) and writes it into a `.kicad_sym` library, checked against the pin table and the footprint's pads.
 
-- **Keep one active project with its history**: every design lives in one folder with a fixed layout (`kicad/<board>/`, `kicad/lib/`, `case/`, `fab/<board>/`, `tools/`, `docs/`). Changes go into it in place; when a state is worth keeping, `project_snapshot` copies it into `history/<YYYYMMDD-HHMM>_<label>/` first, and `project_restore` brings it back. The routing tools and the footprint, symbol and part writers follow this by themselves inside a project, and `project_check` points out anything out of place. See "Projects and history" below.
+- **Keep one active project with its history**: every design lives in one folder with a fixed layout (`kicad/`, `kicad/lib/`, `freecad/`, `fab/<board>/`, `tools/`, `docs/`) where no folder holds just one thing: a one-tool design keeps its files at the root, one board or part sits directly in its tool's place, and two or more get a folder each, named for what they are (`enclosure/`, `bracket/`). Changes go into it in place; when a state is worth keeping, `project_snapshot` copies it into `history/<YYYYMMDD-HHMM>_<label>/` first, and `project_restore` brings it back. The routing tools and the footprint, symbol and part writers follow this by themselves inside a project, and `project_check` points out anything out of place. See "Projects and history" below.
 
-- **Check a printed case**: `check_enclosure` reads the case assembly in FreeCAD and reports what you'd otherwise find by eye or after printing: case parts colliding with boards, components or each other, a shell with an opening nobody asked for, and two case parts that don't meet flush (a gap along the seam, or one standing proud of the other). The openings meant to be there (buttons, USB, a display window) and the heights from the brief go in `case/enclosure.json`.
+- **Check a printed case**: `check_enclosure` reads the case assembly in FreeCAD and reports what you'd otherwise find by eye or after printing: case parts colliding with boards, components or each other, a shell with an opening nobody asked for, and two case parts that don't meet flush (a gap along the seam, or one standing proud of the other). The openings meant to be there (buttons, USB, a display window) and the heights from the brief go in `enclosure.json` beside the assembly.
 
 - **Lay out a circuit on perfboard**: through-hole parts on the 2.54 mm hole grid, each taking the holes its leads go through and covering the holes under its body. cadmate checks the placement, routes the nets with bottom-side solder bridges and bare wire and, where the bottom can't get through, insulated jumpers on top, and draws the board to copy by hand: the component side, the solder side mirrored as it looks turned over, and a build list. See "Perfboard layouts" below.
 
@@ -71,11 +71,13 @@ Early. Ten workflows work end to end:
 | `place_protoboard` | Places the parts automatically, steered by hints (fixed, near a hole, a board region, an edge), routes several placements and keeps the best | nothing |
 | `route_protoboard` | Routes a perfboard design on the hole grid (bottom, top on unplated double-sided boards, jumpers), keeping wires already drawn; lists what stays open | nothing |
 | `render_protoboard` | Top and mirrored bottom views as PNG and SVG, plus a step-by-step build list | an SVG converter (rsvg-convert or cairosvg; macOS has one) |
-| `project_init` | Makes a design folder a cadmate project with the fixed layout; adds what's missing, moves nothing | nothing |
+| `project_init` | Makes a design folder a cadmate project with the fixed layout (flat for one tool, one board or one part); adds what's missing, moves nothing | nothing |
+| `project_add_tool` | Adds KiCad or FreeCAD to a one-tool project: snapshots it, then moves the existing files from the root into `kicad/` or `freecad/` | nothing |
+| `project_add_board`, `project_add_part`, `project_add_protoboard` | Add a second board, FreeCAD part or protoboard: snapshot, move the first one into a folder named for it (fixing a board's `${KIPRJMOD}` paths), make the new one's folder | nothing |
 | `project_snapshot` | Copies the current state (or part of it) into `history/<YYYYMMDD-HHMM>_<label>/` before a change, with the libraries KiCad needs to open it | nothing |
 | `project_history` | The snapshots, oldest first, with what each holds and why it was taken | nothing |
 | `project_restore` | Puts a snapshot back into the active project, snapshotting the current state first | nothing |
-| `project_check` | Everything out of place: stray versions and backups, wrong depth, misnamed boards, broken or absolute library paths, renamed-project annotations, stale fab files, a missing, stale or failing enclosure check | nothing |
+| `project_check` | Everything out of place: stray versions and backups, wrong depth, misnamed boards, broken or absolute library paths, renamed-project annotations, stale fab files, a missing, stale or failing enclosure check, a loose board or part beside folders | nothing |
 | `check_enclosure` | Checks a case assembly: parts that collide, openings in each shell that aren't declared, joints between case parts with a gap or a step, part heights against the brief | FreeCAD |
 | `kicad_pcb_snapshot` | A picture of the open board, unsaved edits included | KiCad API on, and an SVG converter |
 
@@ -278,18 +280,30 @@ Stripboard (copper strips you cut) isn't supported yet.
 A design is one folder, the active project. Everything changes in place; history is a folder of snapshots, not
 `-v2` copies beside the files.
 
+No folder holds just one thing. A design with one kind of file (KiCad, FreeCAD or protoboards) keeps it at the root;
+with several, each gets its folder: `kicad/`, `freecad/`, `protoboard/`. In each, one board, part or protoboard sits directly there, and two or
+more get a folder each, named for what they are: `main/`, `sensor/`; `enclosure/`, `bracket/`, `knob/`.
+
 ```
 <project>/
   cadmate-project.json  README.md  CLAUDE.md
-  kicad/<board>/<board>.kicad_pro|.kicad_sch|.kicad_pcb|.kicad_dru, fp-lib-table, sym-lib-table
-  kicad/lib/            project footprints, symbols and 3D models (${KIPRJMOD}/../lib/...)
-  case/                 FreeCAD sources, <part>.step, assembly.step, renders/, pcb-models/
+  kicad/                main.kicad_pro|.kicad_sch|.kicad_pcb|.kicad_dru, fp-lib-table, sym-lib-table
+                        (or main/, sensor/ ... with two or more boards)
+  kicad/lib/            project footprints, symbols and 3D models (${KIPRJMOD}/lib/..., or ../lib/ from a board folder)
+  freecad/              enclosure.FCStd, <piece>.step, assembly.step, enclosure.json, renders/, pcb-models/
+                        (or enclosure/, knob/ ... with two or more parts)
+  protoboard/           <name>.json with render_protoboard's .png, .svg and -build.md beside it
   fab/<board>/          generated fab files
   tools/                generator scripts: the design's source
-  docs/                 datasheets, drawings, notes
+  docs/                 datasheets, drawings, notes, brief.md
   history/HISTORY.md    and 20261031-1213_before-rework/ ... (same paths as the project)
   .cadmate/work/        scratch
 ```
+
+A KiCad-only design with one board is just `main.kicad_pro` and friends, `lib/` and `fab/` at the root.
+`cadmate-project.json` records the tools; pass `tools` (and `boards`, `parts`) to `project_init`. Going from one to
+two is a tool call, never a hand move: `project_add_tool`, `project_add_board`, `project_add_part` and `project_add_protoboard` snapshot first,
+move the files and fix the `${KIPRJMOD}` paths a moved board needs.
 
 Inside a project, `route_critical_nets`, `autoroute_rest` and `finish_routing` change the board itself after
 snapshotting it (`in_place=False` sends the result to `.cadmate/work/` instead), `export_fab` writes to `fab/<board>/`

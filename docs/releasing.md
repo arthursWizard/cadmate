@@ -1,9 +1,13 @@
 # Releasing cadmate
 
+**Not in use.** cadmate ships as a Claude Code plugin from this repo; plugin users get a release when the plugin
+version changes (step 1 below). Publishing to PyPI is an option for later, for clients that would run
+`uvx cadmate`. Nothing here needs doing until then, and the release workflow only runs when a `v*` tag is pushed.
+
 A release is one git tag. The `release` workflow builds cadmate, runs the tests, checks the wheel runs from a clean
 environment, publishes it to PyPI and makes a GitHub release with the files attached.
 
-## Each release
+## Each release (plugin version bump)
 
 1. Bump the version in three places, to the same number:
    - `src/cadmate/__init__.py` (`__version__`; the package version is read from here)
@@ -12,13 +16,13 @@ environment, publishes it to PyPI and makes a GitHub release with the files atta
 
    `tests/test_packaging.py` fails if they disagree. The plugin version matters on its own: Claude Code offers plugin
    users an update only when it changes.
-2. Merge that to `main`.
-3. Tag and push: `git tag v0.2.0 && git push origin v0.2.0`. The tag must be `v` plus the version, or the workflow
+2. Merge that to `main`. That alone releases the plugin.
+3. Only once PyPI is set up (below): tag and push `git tag v0.2.0 && git push origin v0.2.0`. The tag must be `v` plus the version, or the workflow
    stops before publishing.
 
 PyPI never accepts the same version twice. If a release goes wrong, fix it and release the next version.
 
-## One-time setup (before the first release)
+## One-time PyPI setup (only if PyPI publishing is wanted)
 
 1. Make an account on [pypi.org](https://pypi.org) and turn on two-factor authentication.
 2. Add a pending trusted publisher: on PyPI, Your projects > Publishing > Add a new pending publisher, GitHub tab:

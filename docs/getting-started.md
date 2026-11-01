@@ -6,7 +6,7 @@ tool; this is the order to do things in.
 ## What cadmate is
 
 cadmate isn't an app you open. It's an [MCP](https://modelcontextprotocol.io) server: a small program that Claude
-(Claude Code or Claude Desktop) starts in the background and calls as a set of tools. You talk to Claude in plain
+(Claude Code) starts in the background and calls as a set of tools. You talk to Claude in plain
 language ("make a footprint for this SOIC-8 from the datasheet", "route this board", "check the case"). Claude reads your
 files, calls cadmate's tools to generate, check and review KiCad and FreeCAD work, and shows you the result. You keep
 KiCad and FreeCAD open beside it and look at, edit and approve what Claude did.
@@ -32,7 +32,7 @@ Claude works on your design in three ways:
 | [uv](https://docs.astral.sh/uv/) | installs, runs and updates cadmate | also fetches Python 3.11+ if you don't have it; CI tests 3.11 and 3.13 |
 | KiCad 10 | DRC, ERC, pictures, fab files, live PCB editing | older versions are reported as unsupported |
 | FreeCAD 1.1 | 3D models, enclosure checks | only needed for 3D work |
-| Claude Code or Claude Desktop | what you talk to | Claude Code is the tested path |
+| Claude Code | what you talk to | cadmate installs as a Claude Code plugin |
 | Freerouting 2.5 or later, and Java | autorouting the non-critical nets | easiest through KiCad's Plugin and Content Manager; 2.2.4 fails on boards with locked tracks |
 | PDF tools | so Claude can read datasheets | `pip install pypdf cryptography pypdfium2 pillow`, or poppler's `pdftotext` and `pdftoppm` |
 
@@ -45,15 +45,12 @@ What each OS has been tested with:
   installs need a one-line wrapper script (see the README's Flatpak note).
 - **Windows**: CI runs the test suite without KiCad or FreeCAD installed. Nothing has been used by hand. Known gaps: no
   live FreeCAD bridge (it needs a Unix socket), live KiCad editing reaches only the default KiCad instance, and
-  pictures need the `snapshots` extra (step 2) plus the cairo DLL, for example from the GTK runtime.
+  pictures need `cairosvg`, which the plugin doesn't install yet (step 2).
 
-### 2. Install cadmate
+### 2. Install the cadmate plugin
 
-There's no repo to clone. Pick the route for the Claude you use; each one fetches cadmate for you and has a one-line
-update.
-
-**Claude Code: install the plugin** (recommended). The plugin brings the MCP server and all ten skills together, at
-the same version:
+There's no repo to clone. cadmate installs as a Claude Code plugin, which brings the MCP server and all ten skills
+together, at the same version:
 
 ```sh
 claude plugin marketplace add arthursWizard/cadmate
@@ -68,32 +65,16 @@ takes a minute while uv fetches cadmate's dependencies; after that it's instant.
 To update: `claude plugin marketplace update cadmate`, then `claude plugin update cadmate@cadmate`, and start a new
 session. Or let Claude Code do it: in `/plugin`, open Marketplaces, pick cadmate and choose Enable auto-update.
 
-**Claude Desktop, or any other MCP client: run it with uvx.** `uvx` (it comes with uv) downloads cadmate from PyPI
-into a cached environment and runs it. Open Settings > Developer > Edit Config, add cadmate to
-`claude_desktop_config.json`, and restart Claude Desktop:
+The ten skills are `cadmate-project` (where files go; read first), `kicad-symbols`, `kicad-footprints`,
+`kicad-3d-models`, `kicad-parts`, `kicad-schematics`, `kicad-pcb-live`, `kicad-pcb-route`, `kicad-pcb-review` and
+`protoboard`. They are what make Claude follow IPC, KLC and the routing order rather than improvise.
 
-```json
-{
-  "mcpServers": {
-    "cadmate": {
-      "command": "/full/path/to/uvx",
-      "args": ["cadmate@latest"]
-    }
-  }
-}
-```
+**Pictures on Windows, or on Linux without `rsvg-convert`**, need `cairosvg` (and the cairo library itself), which
+the plugin doesn't install. On Linux, install `rsvg-convert` instead. On Windows, pictures don't work through the
+plugin yet.
 
-Give `uvx`'s full path (`which uvx`, or `where uvx` on Windows): desktop apps often don't see your shell's `PATH`.
-`cadmate@latest` checks PyPI for a newer release each time Desktop starts it, so updating is restarting Desktop. To
-stay on one version, write `cadmate==0.1.0` instead. The `CADMATE_*` variables from step 5 go in an `"env": {}`
-block beside `"args"`. Claude Desktop setup hasn't been tested yet.
-
-The same works in Claude Code if you'd rather not use the plugin:
-`claude mcp add --scope user cadmate -- uvx cadmate@latest`, then the skills with step 3.
-
-**Pictures on Windows, or on Linux without `rsvg-convert`**: they need `cairosvg` (and the cairo library itself).
-Run the server as `uvx --with cairosvg cadmate@latest` instead of `uvx cadmate@latest`. The plugin can't add it, so
-on Windows use the uvx route rather than the plugin.
+**Claude Desktop and other MCP clients** aren't a supported route yet. It should work by pointing the client at
+`uvx --from git+https://github.com/arthursWizard/cadmate cadmate` (full path to `uvx`), but nobody has tried it.
 
 **From source**, to work on cadmate itself:
 
@@ -102,47 +83,29 @@ git clone https://github.com/arthursWizard/cadmate.git
 cd cadmate
 uv sync
 uv run pytest
+claude plugin marketplace add ./
+claude plugin install cadmate@cadmate
 ```
 
-Then register `uv run --directory /full/path/to/cadmate cadmate` as the server, and update with `git pull`. The
-tests pass with or without KiCad and FreeCAD; the ones that need them are skipped.
+The plugin then runs from your checkout. The tests pass with or without KiCad and FreeCAD; the ones that need them
+are skipped.
 
-### 3. Install the skills (if you didn't use the plugin)
-
-The skills are what make Claude follow IPC, KLC and the routing order rather than improvise. The plugin installs
-them. With the uvx route, copy them into Claude Code's skills folder:
-
-```sh
-uvx cadmate@latest install-skills
-```
-
-That writes them to `~/.claude/skills/` (`--dest <project>/.claude/skills` for one project only). Run it again after
-an update; it replaces only the folders it installed, and replaces symlinks left by the old setup.
-
-There are ten. `cadmate-project` (where files go) comes first; the others are `kicad-symbols`, `kicad-footprints`,
-`kicad-3d-models`, `kicad-parts`, `kicad-schematics`, `kicad-pcb-live`, `kicad-pcb-route`, `kicad-pcb-review` and
-`protoboard`.
-
-Claude Desktop has its own way to add skills (uploaded in its settings; `uvx cadmate skills-path` prints where the skill
-folders are) and may not read `~/.claude/skills`; neither has been tried with these. The project rules reach Desktop
-either way, because cadmate sends them to every session that connects.
-
-### 4. Check what cadmate found
+### 3. Check what cadmate found
 
 In a new session, ask Claude to run cadmate's environment check. The `environment` tool reports where it found KiCad,
 kicad-cli, FreeCAD, Freerouting and Java, with their versions, and says what is too old, newer than tested, or missing.
 
-### 5. Only if something wasn't found
+
+### 4. Only if something wasn't found
 
 cadmate looks for each program in this order: an environment variable, your `PATH`, then the usual install folders.
 To point it somewhere else, set one of these in the server's environment:
 
 `CADMATE_KICAD_CLI`, `CADMATE_FREECADCMD`, `CADMATE_FREEROUTING_JAR`, `CADMATE_JAVA`, `CADMATE_KICAD_PYTHON`
 
-For Claude Code with `claude mcp add`, add `-e NAME=value` to that line. With the plugin, set them in the shell
-you start Claude Code from; the server inherits them. The README lists example paths for each OS.
+Set them in the shell you start Claude Code from; the plugin's server inherits them. The README lists example paths for each OS.
 
-### 6. Optional: switch on the live connections
+### 5. Optional: switch on the live connections
 
 - **KiCad's PCB editor**: KiCad > Settings (Preferences on Linux and Windows) > Plugins, tick "Enable KiCad API",
   restart KiCad. Any program running as you can then reach the open board; turn it off the same way when that matters.

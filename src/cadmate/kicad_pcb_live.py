@@ -244,7 +244,7 @@ def _touched(before: dict[str, dict], after: dict[str, dict]) -> set[str]:
 
 def _state_file(board_name: str, project: str = "") -> Path:
     key = hashlib.sha1(f"{project}\0{board_name}".encode()).hexdigest()[:16]
-    return live.socket_path().parent / "kicad_pcb" / f"{key}.json"
+    return live.data_dir() / "kicad_pcb" / f"{key}.json"
 
 
 def _load(f: Path) -> dict:

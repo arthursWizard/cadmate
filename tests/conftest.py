@@ -24,7 +24,7 @@ def short_tmp() -> str:
     return tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None)
 
 
-# Tests that open a real Unix socket. Windows has no AF_UNIX in Python's socket module, and cadmate's FreeCAD bridge
-# says so instead of connecting.
+# Tests that open a real Unix socket. Windows has no AF_UNIX in Python's socket module; the FreeCAD bridge uses a
+# localhost port with a token there, and the TCP versions of these tests run on every OS.
 unix_sockets = pytest.mark.skipif(sys.platform == "win32" or not hasattr(socket, "AF_UNIX"),
-                                  reason="needs Unix sockets (the FreeCAD bridge isn't supported on Windows)")
+                                  reason="needs Unix sockets (Windows uses the bridge's TCP transport)")

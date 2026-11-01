@@ -27,14 +27,16 @@ session that creates or changes design files, whoever asked for the change:
   history/<YYYYMMDD-HHMM>_<label>/ at the same relative paths and logs it in history/HISTORY.md; project_restore puts
   one back. Snapshot when the user has seen or approved the current state, or before a big or risky change. The routing
   tools snapshot the board themselves when they change it in place.
-- Layout: no folder holds just one thing. One tool: its files at the project root; KiCad and FreeCAD: kicad/ and
-  freecad/. In each, one board (<board>.kicad_pro|.kicad_sch|.kicad_pcb|.kicad_dru) or one FreeCAD part (<part>.FCStd,
-  its STEPs, assembly.step, renders/) sits directly there; two or more get a folder each, named for what it is
+- Layout: no folder holds just one thing. One kind of design (KiCad, FreeCAD, protoboard): its files at the project
+  root; several: kicad/, freecad/, protoboard/. In each, one board (<board>.kicad_pro|.kicad_sch|.kicad_pcb|.kicad_dru),
+  one FreeCAD part (<part>.FCStd, its STEPs, assembly.step, renders/) or one protoboard (<name>.json with its .png,
+  .svg and -build.md) sits directly there; two or more get a folder each, named for what it is
   (main/, sensor/; enclosure/, bracket/, knob/: take the part's name from the conversation or the brief, never a
   generic "case"). KiCad's lib/ (project footprints, symbols, 3D models) sits in the KiCad area. Also fab/<board>/
   (generated), tools/ (generator scripts: the design's source, never archived or deleted), docs/, history/,
-  .cadmate/work/ (scratch). Going from one to two, use project_add_tool, project_add_board or project_add_part: they
-  snapshot, move the files and fix the paths. Never move them by hand.
+  .cadmate/work/ (scratch). docs/ is for the user's documents and the brief, never for design outputs. Going from one
+  to two, use project_add_tool, project_add_board, project_add_part or project_add_protoboard: they snapshot, move the
+  files and fix the paths. Never move them by hand.
 - To compare options, build them in .cadmate/work/, show the user, apply the pick to the active project, delete the rest.
 - Never rename a KiCad project: its schematic annotations are tied to the name. Use ${KIPRJMOD}-relative library paths.
 - Keep docs/brief.md: every requirement the user states, as a checklist. Re-read it before each stage and before
@@ -914,24 +916,26 @@ def _project(fn, *a, **kw) -> dict:
 
 @server.tool()
 def project_init(root: str, name: str | None = None, boards: list[str] | None = None,
-                 tools: list[str] | None = None, parts: list[str] | None = None) -> dict:
+                 tools: list[str] | None = None, parts: list[str] | None = None,
+                 protoboards: list[str] | None = None) -> dict:
     """Make a design folder a cadmate project: cadmate-project.json, README.md, CLAUDE.md (the rules, for every session
     working there), tools/, docs/ with brief.md, history/ with HISTORY.md, and .cadmate/work/ for scratch.
 
-    tools: ["kicad"], ["freecad"] or both; pass what the design uses (ask if it isn't clear). One tool keeps its files
-    at the project root (with lib/ and fab/ for KiCad); both make kicad/ and freecad/. Left out, it goes by the files
-    already there, else both. boards and parts: their names, if known. One board or part sits directly in its tool's
-    place, so no folder is made; two or more get a folder each. Name a part for what it is (enclosure, bracket, knob),
+    tools: any of "kicad", "freecad", "protoboard"; pass what the design uses (ask if it isn't clear). One keeps its
+    files at the project root (with lib/ and fab/ for KiCad); several make a folder each (kicad/, freecad/,
+    protoboard/). Left out, it goes by the files already there, else kicad and freecad. boards, parts, protoboards:
+    their names, if known. One board, part or protoboard sits directly in its tool's place, so no folder is made; two or more get a folder each. Name a part for what it is (enclosure, bracket, knob),
     from the conversation or the brief. Safe on an existing folder: it only adds what's missing, never moves or
     overwrites; run project_check after to see what's out of place."""
-    return _project(project.init, root, name, boards, tools, parts)
+    return _project(project.init, root, name, boards, tools, parts, protoboards)
 
 
 @server.tool()
 def project_add_tool(path: str, tool: str) -> dict:
-    """Add KiCad or FreeCAD to a one-tool project. Snapshots the whole project first, then moves the existing tool's
-    files from the root into kicad/ (boards and lib/ together, so ${KIPRJMOD} paths still work) or freecad/, makes the
-    new tool's folders and updates cadmate-project.json. Nothing inside a file is rewritten. Ask the user to save and
+    """Add KiCad, FreeCAD or protoboards to a project. To a one-tool project: snapshots the whole project first, then
+    moves the existing tool's files from the root into kicad/ (boards and lib/ together, so ${KIPRJMOD} paths still
+    work), freecad/ or protoboard/, and the new tool's files lying at the root into its folder. With folders already,
+    it just makes the new one's. Updates cadmate-project.json. Nothing inside a file is rewritten. Ask the user to save and
     close the files in KiCad and FreeCAD first; they reopen them from the new place after."""
     return _project(project.add_tool, path, tool)
 
@@ -952,6 +956,14 @@ def project_add_part(path: str, part: str | None = None, current: str | None = N
     and gets its folder too. current: what the part already there is (enclosure, bracket), from the conversation or the
     brief; left out, it's taken from the part's only .FCStd. Ask the user to save and close the files in FreeCAD first."""
     return _project(project.add_part, path, part, current)
+
+
+@server.tool()
+def project_add_protoboard(path: str, name: str | None = None, current: str | None = None) -> dict:
+    """Add a second protoboard. The one sitting directly in the protoboard area (the root, or protoboard/) moves into a
+    folder named for it with its renders and build list, after a snapshot; name is the new one's, and gets its folder
+    too. current: the name of the one already there; left out, it's taken from its only design JSON."""
+    return _project(project.add_protoboard, path, name, current)
 
 
 @server.tool()
@@ -1050,7 +1062,12 @@ def route_protoboard(design: dict | str, out_path: str | None = None, allow_jump
     lists the holes that need a wire through), and insulated jumper wires (straight, each end in its own free hole)
     where neither side can get through. Wires already in the design are kept as they are. Placement isn't changed: if nets stay open, move parts
     (or draw those wires by hand in "wires") and route again. The routed design (with "wires") is returned and, when
-    out_path is given, written there as JSON. Look at render_protoboard's picture before handing it to the user."""
+    out_path is given, written there as JSON. Look at render_protoboard's picture before handing it to the user.
+
+    In a cadmate project the design is a protoboard design like a board or a part: <name>.json directly in the
+    protoboard area (the root, or protoboard/) when it's the only one, else <name>/<name>.json. Never in docs/.
+    Write the result back over the design's own file (project_snapshot first if the old state matters), not a
+    -routed copy."""
     r = _proto(protoboard.route, design, allow_jumpers=allow_jumpers)
     if out_path and r.get("design"):
         r["written"] = str(protoboard.save(r["design"], out_path))
@@ -1066,7 +1083,11 @@ def place_protoboard(design: dict | str, out_path: str | None = None, tries: int
     short and leaves room between pins of different nets. It places `tries` times with different seeds, routes each
     and keeps the one that routes best (fewest open nets, then jumpers and via wires); placement.tries shows them all.
     Hand-drawn wires are dropped unless every part is fixed. The result goes to out_path as JSON when given. Show
-    the user the picture (render_protoboard) and ask what to move: they can answer with hints and you place again."""
+    the user the picture (render_protoboard) and ask what to move: they can answer with hints and you place again.
+
+    In a cadmate project the design is a protoboard design like a board or a part: <name>.json directly in the
+    protoboard area (the root, or protoboard/) when it's the only one, else <name>/<name>.json. Never in docs/.
+    Write the result back over the design's own file, not a copy beside it."""
     try:
         r = protoboard_place.place_and_route(design, tries=tries, route=route)
     except (protoboard.DesignError, OSError, ValueError) as e:
@@ -1082,7 +1103,11 @@ def render_protoboard(design: dict | str, out: str, width: int = 1800) -> Image:
     the solder side mirrored as it looks when the board is turned over (bridges and bare wire in net colours, each
     lead labelled REF.PIN), with matching row letters and column numbers on both. Writes <out>.svg, <out>.png and
     <out>-build.md (parts with their holes, jumpers, bottom wiring net by net) and returns the PNG. Open connections
-    are drawn as red dashed lines."""
+    are drawn as red dashed lines.
+
+    In a cadmate project the design is a protoboard design like a board or a part: <name>.json directly in the
+    protoboard area (the root, or protoboard/) when it's the only one, else <name>/<name>.json. Never in docs/.
+    Pass out as the design's path without .json, so the picture and build list sit beside it."""
     try:
         r = protoboard_render.render(design, out, width)
     except (protoboard.DesignError, OSError, ValueError) as e:

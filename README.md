@@ -73,7 +73,7 @@ Early. Ten workflows work end to end:
 | `render_protoboard` | Top and mirrored bottom views as PNG and SVG, plus a step-by-step build list | an SVG converter (rsvg-convert or cairosvg; macOS has one) |
 | `project_init` | Makes a design folder a cadmate project with the fixed layout (flat for one tool, one board or one part); adds what's missing, moves nothing | nothing |
 | `project_add_tool` | Adds KiCad or FreeCAD to a one-tool project: snapshots it, then moves the existing files from the root into `kicad/` or `freecad/` | nothing |
-| `project_add_board`, `project_add_part` | Add a second board or FreeCAD part: snapshot, move the first one into a folder named for it (fixing a board's `${KIPRJMOD}` paths), make the new one's folder | nothing |
+| `project_add_board`, `project_add_part`, `project_add_protoboard` | Add a second board, FreeCAD part or protoboard: snapshot, move the first one into a folder named for it (fixing a board's `${KIPRJMOD}` paths), make the new one's folder | nothing |
 | `project_snapshot` | Copies the current state (or part of it) into `history/<YYYYMMDD-HHMM>_<label>/` before a change, with the libraries KiCad needs to open it | nothing |
 | `project_history` | The snapshots, oldest first, with what each holds and why it was taken | nothing |
 | `project_restore` | Puts a snapshot back into the active project, snapshotting the current state first | nothing |
@@ -280,8 +280,8 @@ Stripboard (copper strips you cut) isn't supported yet.
 A design is one folder, the active project. Everything changes in place; history is a folder of snapshots, not
 `-v2` copies beside the files.
 
-No folder holds just one thing. A design with one tool keeps its files at the root; with KiCad and FreeCAD, each
-tool gets its folder, `kicad/` and `freecad/`. In each, one board or one FreeCAD part sits directly there, and two or
+No folder holds just one thing. A design with one kind of file (KiCad, FreeCAD or protoboards) keeps it at the root;
+with several, each gets its folder: `kicad/`, `freecad/`, `protoboard/`. In each, one board, part or protoboard sits directly there, and two or
 more get a folder each, named for what they are: `main/`, `sensor/`; `enclosure/`, `bracket/`, `knob/`.
 
 ```
@@ -292,6 +292,7 @@ more get a folder each, named for what they are: `main/`, `sensor/`; `enclosure/
   kicad/lib/            project footprints, symbols and 3D models (${KIPRJMOD}/lib/..., or ../lib/ from a board folder)
   freecad/              enclosure.FCStd, <piece>.step, assembly.step, enclosure.json, renders/, pcb-models/
                         (or enclosure/, knob/ ... with two or more parts)
+  protoboard/           <name>.json with render_protoboard's .png, .svg and -build.md beside it
   fab/<board>/          generated fab files
   tools/                generator scripts: the design's source
   docs/                 datasheets, drawings, notes, brief.md
@@ -301,7 +302,7 @@ more get a folder each, named for what they are: `main/`, `sensor/`; `enclosure/
 
 A KiCad-only design with one board is just `main.kicad_pro` and friends, `lib/` and `fab/` at the root.
 `cadmate-project.json` records the tools; pass `tools` (and `boards`, `parts`) to `project_init`. Going from one to
-two is a tool call, never a hand move: `project_add_tool`, `project_add_board` and `project_add_part` snapshot first,
+two is a tool call, never a hand move: `project_add_tool`, `project_add_board`, `project_add_part` and `project_add_protoboard` snapshot first,
 move the files and fix the `${KIPRJMOD}` paths a moved board needs.
 
 Inside a project, `route_critical_nets`, `autoroute_rest` and `finish_routing` change the board itself after

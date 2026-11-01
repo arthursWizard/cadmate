@@ -429,3 +429,47 @@ def test_add_tool_to_a_freecad_project_moves_the_part(tmp_path):
     assert (root / "kicad/lib").is_dir() and (root / "fab").is_dir()
     assert (root / "README.md").exists() and (root / "docs/brief.md").exists()
     assert project.check(root)["ok"], project.check(root)["findings"]
+
+
+def protoboard(f, cols=24):
+    f.write_text(json.dumps({"board": {"type": "perfboard", "cols": cols, "rows": 16}, "parts": [], "nets": {}}))
+
+
+def test_a_protoboard_project_keeps_its_board_at_the_root(tmp_path):
+    root = tmp_path / "blinker"
+    root.mkdir()
+    protoboard(root / "blinker.json")
+    out = project.init(root)
+    assert out["tools"] == ["protoboard"] and out["flat"] and not (root / "docs/blinker.json").exists()
+    for f in ("blinker.png", "blinker.svg", "blinker-build.md"):
+        (root / f).write_text("x")
+    assert project.check(root)["ok"], project.check(root)["findings"]
+    (root / "timer").mkdir()
+    protoboard(root / "timer/timer.json")
+    f = next(f for f in project.check(root)["findings"] if "beside protoboard folders" in f["problem"])
+    assert "project_add_protoboard" in f["fix"]
+    out = project.add_protoboard(root, now=T0)  # its name comes from the only design JSON
+    assert out["protoboard"] == "blinker" and (root / "blinker/blinker-build.md").exists()
+    assert project.check(root)["ok"], project.check(root)["findings"]
+
+
+def test_add_tool_brings_a_protoboard_left_at_the_root_into_its_folder(tmp_path):
+    root = make_flat(tmp_path)
+    protoboard(root / "tester.json")
+    (root / "tester.png").write_text("x")
+    f = next(f for f in project.check(root)["findings"] if f["path"] == "tester.json")
+    assert "protoboard files in a kicad-only project" in f["problem"] and "project_add_tool protoboard" in f["fix"]
+    out = project.add_tool(root, "protoboard", now=T0)
+    assert out["tools"] == ["kicad", "protoboard"]
+    assert (root / "protoboard/tester.json").exists() and (root / "protoboard/tester.png").exists()
+    assert (root / "kicad/main.kicad_pcb").exists()
+    assert project.check(root)["ok"], project.check(root)["findings"]
+    # with folders already, adding a tool just makes its folder
+    assert project.add_tool(root, "freecad")["made"] == ["freecad"]
+
+
+def test_check_flags_a_protoboard_left_in_docs(tmp_path):
+    root = make_flat(tmp_path)
+    protoboard(root / "docs/tester.json")
+    f = next(f for f in project.check(root)["findings"] if f["path"] == "docs/tester.json")
+    assert "docs/" in f["problem"] and "project_add_tool protoboard" in f["fix"]

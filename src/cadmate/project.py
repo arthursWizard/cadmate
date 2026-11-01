@@ -4,7 +4,14 @@ The rules (skills/cadmate-project/SKILL.md has the why):
 
 - Every change goes into the active project, in place. There are no side-by-side versions (-v2, -routed, variant-x).
 - Before a change worth going back to, snapshot what's there into history/<YYYYMMDD-HHMM>_<label>/, same relative paths.
-- The layout is fixed, so every file has one obvious place and depth.
+- The layout is fixed, so every file has one obvious place and depth. No folder holds just one thing:
+  - A project with one kind of design (KiCad, FreeCAD or cadmate's protoboards) keeps its files at the root. With two or
+    more, each has its folder: kicad/, freecad/, protoboard/. cadmate-project.json says which ("tools"); add_tool adds
+    one, after a snapshot.
+  - In a tool's area (the root, or its folder), one design sits directly there: one board's <board>.kicad_pro, one
+    FreeCAD part's <part>.FCStd and STEPs. Two or more each get a folder named after what they are: <board>/, <part>/
+    (enclosure/, bracket/, knob/). add_unit moves the first one into its folder, after a snapshot.
+  - KiCad's project libraries sit in lib/ in the KiCad area, shared by its boards.
 
 A project is a folder with a cadmate-project.json marker. Nothing here needs KiCad or FreeCAD.
 """
@@ -15,22 +22,27 @@ import json
 import os
 import re
 import shutil
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 MARKER = "cadmate-project.json"
-LAYOUT_VERSION = 1
+# 1: no "tools" in the marker, always kicad/ + case/; 2: "tools" says which, one tool is flat, both use kicad/ + freecad/
+LAYOUT_VERSION = 2
 HISTORY = "history"
 INDEX = "HISTORY.md"
 WORK = ".cadmate/work"
 
-# top-level entries and what each is for; anything else is flagged
-LAYOUT = {
-    MARKER: "marks the project root; name and layout version",
-    "README.md": "what the project is, the boards, what to order where, open items, decisions",
+TOOLS = ("kicad", "freecad", "protoboard")
+DEFAULT_TOOLS = ("kicad", "freecad")  # a new folder with nothing to go by
+UNIT = {"kicad": "board", "freecad": "part", "protoboard": "protoboard"}  # what one design of each tool is called
+KICAD_LIB = "lib"
+PART_DIRS = ("renders", "pcb-models")  # inside a FreeCAD part, beside its files
+# top-level entries every shape has, whatever the tools
+COMMON = {
+    MARKER: "marks the project root; name, layout version and tools",
+    "README.md": "what the project is, the boards and parts, what to order where, open items, decisions",
     "CLAUDE.md": "points every Claude session at these rules",
-    "kicad": "kicad/<board>/<board>.kicad_pro|.kicad_sch|.kicad_pcb|.kicad_dru and its lib tables; kicad/lib/ for project libraries",
-    "case": "FreeCAD sources (.FCStd) and exports: <part>.step, assembly.step, renders/, pcb-models/",
     "fab": "fab/<board>/: generated fab files (Gerbers, drill, BOM, CPL); regenerate, don't edit",
     "tools": "generator scripts and their inputs: source code of the design, never archived",
     "docs": "datasheets, drawings, photos and notes from the user",
@@ -38,17 +50,21 @@ LAYOUT = {
     ".cadmate": ".cadmate/work/: scratch (comparisons, routing temp files); safe to delete at any time",
 }
 SKIP_TOP = {HISTORY, ".cadmate", ".git", ".DS_Store"}
-# how deep files may sit under each top-level folder (1 = directly inside it)
-DEPTH = {"kicad": 3, "case": 2, "fab": 3, "docs": 2}  # tools/ is free-form
-KICAD_LIB = "lib"
+# how deep files may sit in each area (1 = directly inside it): a lib part, a part's renders/ in its folder
+DEPTH = {"kicad": 3, "freecad": 3, "protoboard": 2, "fab": 3, "docs": 2}  # tools/ is free-form
+KICAD_FILE = (".kicad_pro", ".kicad_sch", ".kicad_pcb")
 KICAD_DESIGN = (".kicad_pro", ".kicad_sch", ".kicad_pcb", ".kicad_dru", ".kicad_prl")
+BOARD_LOCAL = ("fp-lib-table", "sym-lib-table", "fp-info-cache")  # files KiCad keeps beside a board's .kicad_pro
+LIBS = (".pretty", ".3dshapes", ".kicad_symdir", ".kicad_sym")
+FREECAD_FILE = (".fcstd", ".step", ".stp")
 # names that mean "another version of the same thing": the sprawl this layout replaces
 VERSIONED = re.compile(
     r"(?:[-_ ](?:v\d+|rev\d*[a-z]?|old|new|final|copy|backup|bak|orig|prev|tmp|temp|test|draft|wip|"
     r"routed|unrouted|finished\d*|critical|pass\d*|hand\d*|fixed)|\s\(\d+\))$|^variants?\b",
     re.I)
-NAME_CHECKED = ("kicad", "case", "fab")  # tools/ and docs/ are free-form; kicad/lib holds library part names
+NAME_CHECKED = ("kicad", "freecad", "protoboard", "fab")  # tools/ and docs/ are free-form; lib/ holds library part names
 KIPRJMOD = re.compile(r"\$\{KIPRJMOD\}")
+KIPRJMOD_PATH = re.compile(r"(\$\{KIPRJMOD\}|\$\(KIPRJMOD\))/([^/\"\)\s]*)")
 SNAP_NAME = re.compile(r"^(\d{8}-\d{4}(?:\d{2})?)_([a-z0-9][a-z0-9-]*)$")
 
 CLAUDE_MD = """# {name}: a cadmate project
@@ -56,11 +72,14 @@ CLAUDE_MD = """# {name}: a cadmate project
 Follow cadmate's project rules (the cadmate-project skill). In short:
 
 - This folder is the one active project. Apply every change here, in place. Never make side-by-side copies such as
-  main-v2/, main-routed.kicad_pcb, case/variant-x/ or *.bak.
+  main-v2/, main-routed.kicad_pcb, enclosure-variant-b/ or *.bak.
 - Before a change worth going back to (the user saw or approved the current state, or the change is big or risky),
   run cadmate's `project_snapshot` with a short label. It copies the current state into history/<YYYYMMDD-HHMM>_<label>/.
-- Files go where the layout says: kicad/<board>/<board>.*, kicad/lib/, case/, fab/<board>/, tools/, docs/.
-  Scratch goes in .cadmate/work/ and is deleted when done.
+- No folder holds just one thing. One tool: its files at the root; both: kicad/ and freecad/. One board or FreeCAD
+  part: its files directly in its tool's place; two or more: a folder each, named for what it is (main/, enclosure/,
+  bracket/). Adding the second tool, board or part: `project_add_tool`, `project_add_board`, `project_add_part`.
+  Never move them by hand. This project: {layout}.
+- Scratch goes in .cadmate/work/ and is deleted when done.
 - Never rename a KiCad project; never move tools/ out: the scripts are the design's source.
 - docs/brief.md holds every requirement the user stated. Add to it when they state one; re-read it before each stage
   and before showing a result; tick an item only once checked. `project_check` lists what is still open.
@@ -82,27 +101,204 @@ and you have checked it (render, DRC, measurement). Re-read this before each sta
 - (example) <a choice the user made, and what it was picked over> (<who>, <date>)
 """
 
-README_MD = """# {name}
-
-What this is, in two lines.
-
-## Boards
-
-| Board | Folder | Fab files | Notes |
-| --- | --- | --- | --- |
-
-## Case
-
-## Ordering
-
-## Open items
-
-## Decisions
-"""
-
 
 class ProjectError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class Shape:
+    """Which tools a project uses, and so where each tool's files sit: alone at the root, together in kicad/ and
+    freecad/ (case/ in a layout-1 project)."""
+    tools: tuple[str, ...]
+    freecad_dir: str = "freecad"
+
+    @property
+    def nested(self) -> bool:
+        return len(self.tools) > 1
+
+    def dir(self, tool: str) -> str:
+        """The folder holding a tool's files, relative to the root ("" for the root itself)."""
+        if not self.nested:
+            return ""
+        return self.freecad_dir if tool == "freecad" else tool
+
+    def area_dirs(self) -> set[str]:
+        return {*TOOLS, "case", self.freecad_dir}
+
+    def show(self, tool: str, *parts: str) -> str:
+        """A path in a tool's area as the user should read it: kicad/main or main."""
+        return "/".join(x for x in (self.dir(tool), *parts) if x)
+
+    def here(self, tool: str) -> str:
+        return self.dir(tool) + "/" if self.nested else "the project root"
+
+    def area_of(self, rel: Path) -> tuple[str, tuple[str, ...]]:
+        """The area a project path belongs to ("kicad", "freecad", "fab", "docs", ...) and its parts below that area."""
+        top = rel.parts[0]
+        if top in COMMON:
+            return top, rel.parts[1:]
+        if self.nested:
+            area = next((t for t in self.tools if self.dir(t) == top), top)
+            return area, rel.parts[1:]
+        return self.tools[0], rel.parts
+
+    def layout(self) -> dict[str, str]:
+        """Where things go, by tool, for the result of project_init."""
+        out = {k: v for k, v in COMMON.items() if k != "fab" or "kicad" in self.tools}
+        if "kicad" in self.tools:
+            k = lambda *p: self.show("kicad", *p)  # noqa: E731
+            out[k("<board>.kicad_pro")] = (f"one board: its .kicad_pro, .kicad_sch, .kicad_pcb, .kicad_dru and lib tables "
+                                           f"directly in {self.here('kicad')}; two or more: {k('<board>', '<board>')}.* each")
+            out[k(KICAD_LIB) + "/"] = ("project footprints, symbols and 3D models, at ${KIPRJMOD}/lib/... (one board) "
+                                       "or ${KIPRJMOD}/../lib/... (board folders)")
+        if "freecad" in self.tools:
+            c = lambda *p: self.show("freecad", *p)  # noqa: E731
+            out[c("<part>.FCStd")] = (f"one FreeCAD part (what's being made: enclosure, bracket, knob): its .FCStd, "
+                                      f"<piece>.step, assembly.step, enclosure.json, renders/, pcb-models/ directly in "
+                                      f"{self.here('freecad')}; two or more: {c('<part>')}/ each")
+        if "protoboard" in self.tools:
+            b = lambda *p: self.show("protoboard", *p)  # noqa: E731
+            out[b("<name>.json")] = (f"one protoboard: its design JSON and render_protoboard's <name>.png, .svg and "
+                                     f"<name>-build.md directly in {self.here('protoboard')}; two or more: "
+                                     f"{b('<name>')}/ each")
+        return out
+
+    def summary(self) -> str:
+        """The layout in one line, for CLAUDE.md and next steps."""
+        parts = []
+        if "kicad" in self.tools:
+            parts.append(f"KiCad in {self.here('kicad')} with lib/, fab/<board>/")
+        if "freecad" in self.tools:
+            parts.append(f"FreeCAD in {self.here('freecad')}")
+        if "protoboard" in self.tools:
+            parts.append(f"protoboards in {self.here('protoboard')}")
+        return "; ".join(parts) + "; tools/, docs/"
+
+
+BOTH = Shape(DEFAULT_TOOLS)
+
+
+def readme_md(name: str, sh: Shape) -> str:
+    out = f"# {name}\n\nWhat this is, in two lines.\n\n"
+    if "kicad" in sh.tools:
+        out += "## Boards\n\n| Board | Folder | Fab files | Notes |\n| --- | --- | --- | --- |\n\n"
+    if "freecad" in sh.tools:
+        out += "## Parts\n\n| Part | Folder | Made how | Notes |\n| --- | --- | --- | --- |\n\n"
+    if "protoboard" in sh.tools:
+        out += "## Protoboards\n\n| Board | Design | Build list | Notes |\n| --- | --- | --- | --- |\n\n"
+    return out + "## Ordering\n\n## Open items\n\n## Decisions\n"
+
+
+def _tools(tools) -> tuple[str, ...]:
+    tools = [t.lower() for t in ([tools] if isinstance(tools, str) else tools or [])]
+    bad = [t for t in tools if t not in TOOLS]
+    if bad or not tools:
+        raise ProjectError(f"tools {bad or tools!r}: one or more of {', '.join(TOOLS)}")
+    return tuple(t for t in TOOLS if t in tools)
+
+
+def _marker(root: Path) -> dict:
+    try:
+        return json.loads((root / MARKER).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def shape(root: str | Path) -> Shape:
+    """The project's shape from its marker. A marker without "tools" (layout 1) is kicad/ + case/, as it was made."""
+    tools = _marker(Path(root)).get("tools")
+    if not tools:
+        return Shape(DEFAULT_TOOLS, "case")
+    try:
+        return Shape(_tools(tools))
+    except ProjectError:
+        return BOTH
+
+
+def is_protoboard(f: Path) -> bool:
+    """A protoboard design: a JSON file with a perfboard "board" and "parts" (protoboard.py has the format)."""
+    if f.suffix.lower() != ".json" or not f.is_file() or f.stat().st_size > 2_000_000:
+        return False
+    try:
+        d = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(d, dict) and isinstance(d.get("board"), dict) and "cols" in d["board"] and "parts" in d
+
+
+def _detect(root: Path) -> tuple[str, ...]:
+    """The tools a folder's files say it uses (library 3D models aren't a FreeCAD part)."""
+    found = set()
+    for f in root.rglob("*"):
+        rel = f.relative_to(root)
+        if rel.parts[0] in SKIP_TOP or not f.is_file():
+            continue
+        suf = f.suffix.lower()
+        if suf in KICAD_FILE:
+            found.add("kicad")
+        elif suf in FREECAD_FILE and not any(p.endswith(".3dshapes") for p in rel.parts):
+            found.add("freecad")
+        elif suf == ".json" and is_protoboard(f):
+            found.add("protoboard")
+    return tuple(t for t in TOOLS if t in found)
+
+
+def _check_name(name: str, what: str) -> str:
+    _check_label(name, f"{what} name")
+    if name in COMMON or name in (KICAD_LIB, *PART_DIRS, "kicad", "freecad", "case"):
+        raise ProjectError(f"{what} name {name!r} is a layout folder; pick another")
+    return name
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# boards and parts: one sits directly in its tool's area, two or more get a folder each
+
+
+def _unit_file(tool: str, p: Path) -> bool:
+    """Part of the one board or part that sits directly in the area (not a folder of its own)."""
+    if p.name.startswith("."):
+        return False
+    if tool == "kicad":
+        if p.is_dir():
+            return p.name.endswith("-backups")
+        return p.suffix in KICAD_DESIGN or p.name in BOARD_LOCAL or p.name.startswith("_autosave-") or p.name.endswith(".lck")
+    if p.is_dir():
+        return p.name in PART_DIRS
+    return p.name not in COMMON
+
+
+def _is_design(tool: str, f: Path) -> bool:
+    """A file that makes a folder a design of this tool: a KiCad project file, a FreeCAD source or STEP, a protoboard."""
+    if not f.is_file():
+        return False
+    if tool == "kicad":
+        return f.suffix in KICAD_DESIGN
+    if tool == "freecad":
+        return f.suffix.lower() in FREECAD_FILE
+    return is_protoboard(f)
+
+
+def _has_design(tool: str, d: Path) -> bool:
+    return any(_is_design(tool, f) for f in d.iterdir())
+
+
+def units(root: Path, sh: Shape, tool: str) -> tuple[list[Path], list[Path]]:
+    """(the files of the one design sitting directly in the tool's area, the design folders in it). For KiCad the first
+    list is the .kicad_pro files there; for FreeCAD, the .FCStd and STEP files; for protoboards, the design JSON."""
+    area = root / sh.dir(tool)
+    if not area.is_dir():
+        return [], []
+    skip = {KICAD_LIB} if tool == "kicad" else set(PART_DIRS)
+    if not sh.nested:
+        skip |= set(COMMON) | SKIP_TOP | sh.area_dirs() | ({KICAD_LIB} if "kicad" in sh.tools else set())
+    folders = [d for d in area.iterdir() if d.is_dir() and d.name not in skip and d.suffix not in LIBS
+               and not d.name.endswith("-backups") and (not any(d.iterdir()) or _has_design(tool, d))]
+    if tool == "kicad":
+        here = sorted(area.glob("*.kicad_pro"))
+    else:
+        here = sorted(f for f in area.iterdir() if _is_design(tool, f))
+    return here, sorted(folders)
 
 
 def find_root(path: str | Path) -> Path | None:
@@ -121,11 +317,33 @@ def _root(path: str | Path) -> Path:
     return root
 
 
-def init(root: str | Path, name: str | None = None, boards: list[str] | None = None) -> dict:
-    """Make the layout in root (new or existing). Creates folders and files that are missing; never moves or overwrites."""
+def init(root: str | Path, name: str | None = None, boards: list[str] | None = None,
+         tools: list[str] | str | None = None, parts: list[str] | None = None,
+         protoboards: list[str] | None = None) -> dict:
+    """Make the layout in root (new or existing). Creates folders and files that are missing; never moves or overwrites.
+
+    tools: "kicad", "freecad", "protoboard", or several. One keeps its files at the root; several make a folder each
+    (kicad/, freecad/, protoboard/). Left out: what the folder's files show, else kicad and freecad. On an existing
+    project, tools must match its marker: add_tool adds one. boards, parts, protoboards: their names. One goes directly in its tool's area, so no folder is made; two or more get a folder each.
+    A part is named for what it is (enclosure, bracket, knob), from the conversation or the brief."""
     root = Path(root).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    name = name or root.name
+    if (root / MARKER).exists():
+        have = shape(root)
+        if tools is not None and _tools(tools) != have.tools:
+            want = [t for t in _tools(tools) if t not in have.tools]
+            raise ProjectError(f"this project is {' + '.join(have.tools)}; " + (
+                f"project_add_tool {want[0]} adds {want[0]} (it moves the files into subfolders, after a snapshot)" if want
+                else "cadmate doesn't drop a tool from a project"))
+        sh = have
+    else:
+        sh = Shape(_tools(tools) if tools is not None else _detect(root) or DEFAULT_TOOLS)
+    for tool, names in (("kicad", boards), ("freecad", parts), ("protoboard", protoboards)):
+        if names and tool not in sh.tools:
+            raise ProjectError(f"{UNIT[tool]}s need {tool}: pass tools including {tool}")
+        for n in names or []:
+            _check_name(n, UNIT[tool])
+    name = name or _marker(root).get("name") or root.name
     made = []
 
     def mk(rel: str, text: str | None = None):
@@ -139,18 +357,178 @@ def init(root: str | Path, name: str | None = None, boards: list[str] | None = N
             p.write_text(text, encoding="utf-8", newline="\n")
         made.append(rel)
 
-    mk(MARKER, json.dumps({"name": name, "layout": LAYOUT_VERSION, "created": datetime.now().isoformat(timespec="seconds")}, indent=2) + "\n")
-    mk("README.md", README_MD.format(name=name))
-    mk("CLAUDE.md", CLAUDE_MD.format(name=name))
+    marker = {"name": name, "layout": LAYOUT_VERSION, "tools": list(sh.tools),
+              "created": datetime.now().isoformat(timespec="seconds")}
+    mk(MARKER, json.dumps(marker, indent=2) + "\n")
+    mk("README.md", readme_md(name, sh))
+    mk("CLAUDE.md", CLAUDE_MD.format(name=name, layout=sh.summary()))
     mk(BRIEF, BRIEF_MD.format(name=name))
-    for d in ("kicad", f"kicad/{KICAD_LIB}", "case", "fab", "tools", "docs", HISTORY, WORK):
+    dirs = ["tools", "docs", HISTORY, WORK]
+    if "kicad" in sh.tools:
+        dirs += [sh.show("kicad", KICAD_LIB), "fab"]
+    if sh.nested:
+        dirs += [sh.dir(t) for t in sh.tools]
+    for d in dirs:
         mk(d)
     mk(f"{HISTORY}/{INDEX}", _index_header(name))
-    for b in boards or []:
-        _check_label(b, "board name")
-        mk(f"kicad/{b}")
-    return {"ok": True, "root": str(root), "name": name, "made": made,
-            "next": "put each board in kicad/<board>/ named <board>.kicad_pro/.kicad_sch/.kicad_pcb; then project_check"}
+    nxt = []
+    for tool, names in (("kicad", boards), ("freecad", parts), ("protoboard", protoboards)):
+        if tool not in sh.tools:
+            continue
+        if len(names or []) > 1:
+            for n in names:
+                mk(sh.show(tool, n))
+        u = UNIT[tool]
+        one = names[0] if len(names or []) == 1 else f"<{u}>"
+        files = {"kicad": f"{one}.kicad_pro/.kicad_sch/.kicad_pcb", "freecad": f"{one}.FCStd and its STEPs",
+                 "protoboard": f"{one}.json and its renders (render_protoboard out={sh.show(tool, one)})"}[tool]
+        nxt.append(f"one {u}: {files} directly in {sh.here(tool)}" if len(names or []) < 2 else
+                   f"each {u} in {sh.show(tool, f'<{u}>')}/")
+    return {"ok": True, "root": str(root), "name": name, "tools": list(sh.tools), "flat": not sh.nested, "made": made,
+            "layout": sh.layout(), "next": "; ".join(nxt) + "; then project_check"}
+
+
+def add_tool(path: str | Path, tool: str, now: datetime | None = None) -> dict:
+    """Add a tool. To a one-tool project: snapshot the whole project, then move the first tool's files from the root into
+    its folder (kicad/, freecad/, protoboard/) and make the new one's. With folders already, just make the new one's. A board moves with lib/, so ${KIPRJMOD} paths still
+    resolve, and a part's files move together; nothing inside a file is rewritten."""
+    root = _root(path)
+    (tool,) = _tools(tool)
+    sh = shape(root)
+    if tool in sh.tools:
+        return {"ok": True, "root": str(root), "tools": list(sh.tools), "moved": [], "snapshot": None,
+                "next": f"the project already has {tool}"}
+    new = Shape(tuple(t for t in TOOLS if t in (*sh.tools, tool)), sh.freecad_dir if sh.nested else "freecad")
+    if sh.nested:  # each tool has its folder already: just add the new one's
+        m = _marker(root) | {"tools": list(new.tools)}
+        (root / MARKER).write_text(json.dumps(m, indent=2) + "\n", encoding="utf-8")
+        return {"ok": True, "root": str(root), "tools": list(new.tools), "moved": [], "snapshot": None,
+                "made": init(root)["made"], "next": f"put the {tool} files in {new.dir(tool)}/; then project_check"}
+    (have,) = sh.tools
+    dest = root / new.dir(have)
+    if dest.exists() and any(dest.iterdir()):
+        raise ProjectError(f"{dest.name}/ already has files; move them out (or into their place at the root) first")
+    here, folders = units(root, sh, have)
+    move = []
+    for p in sorted(root.iterdir()):
+        if p.name in COMMON or p.name in SKIP_TOP or p.name == dest.name or p.name.startswith("."):
+            continue
+        if have == "kicad":
+            ok = _unit_file("kicad", p) or p.name == KICAD_LIB or p in folders
+        else:  # everything at the root that isn't shared is FreeCAD's, or the protoboards'
+            ok = True
+        if ok and not (have != "freecad" and (_is_design(tool, p) or p.is_dir() and _has_design(tool, p))):
+            move.append(p)
+    # the new tool's files already lying at the root go to its folder, with the outputs named after them
+    stems = {p.stem for p in root.iterdir() if p not in move and _is_design(tool, p)}
+    bring = [p for p in sorted(root.iterdir()) if p not in move and p.name not in COMMON and not p.name.startswith(".")
+             and (_is_design(tool, p) or p.is_dir() and _has_design(tool, p)
+                  or p.is_file() and any(p.name.startswith(st + c) for st in stems for c in ".-"))]
+    snap = snapshot(root, f"before-add-{tool}", note=f"automatic, before adding {tool}: the {have} files move into "
+                                                     f"{dest.name}/", now=now)
+    dest.mkdir(exist_ok=True)
+    for p in move:
+        shutil.move(str(p), str(dest / p.name))
+    m = _marker(root) | {"layout": LAYOUT_VERSION, "tools": list(new.tools)}
+    (root / MARKER).write_text(json.dumps(m, indent=2) + "\n", encoding="utf-8")
+    made = init(root)["made"]  # the other tool's folders; the marker now says both
+    there = root / new.dir(tool)
+    for p in bring:
+        shutil.move(str(p), str(there / p.name))
+    return {"ok": True, "root": str(root), "tools": list(new.tools), "snapshot": snap["name"],
+            "moved": [f"{p.name} -> {dest.name}/{p.name}" for p in move] + [f"{p.name} -> {there.name}/{p.name}"
+                                                                            for p in bring], "made": made,
+            "next": (f"files moved: if KiCad or FreeCAD has any of them open, close and reopen them from {dest.name}/. "
+                     "Update the layout line in CLAUDE.md and README.md. Then project_check")}
+
+
+def add_unit(path: str | Path, tool: str, name: str | None = None, current: str | None = None,
+             now: datetime | None = None) -> dict:
+    """Go from one board (or FreeCAD part) to a folder each. The one sitting directly in the tool's area moves into
+    <area>/<current>/ after a snapshot; name, if given, is the new one, and gets its folder too.
+
+    current: the name of the one already there. A board's is its .kicad_pro's; a part's is taken from its only .FCStd,
+    else pass it (what the part is: enclosure, bracket). A moved board's ${KIPRJMOD} paths (lib tables, 3D models) get
+    the extra ../ so they still reach lib/; a part's files move together, so links between them still hold."""
+    root = _root(path)
+    (tool,) = _tools(tool)
+    sh = shape(root)
+    u = UNIT[tool]
+    if tool not in sh.tools:
+        raise ProjectError(f"the project has no {tool}: project_add_tool {tool} first")
+    if name is not None:
+        _check_name(name, u)
+    area = root / sh.dir(tool)
+    here, folders = units(root, sh, tool)
+    if tool == "kicad" and len(here) > 1:
+        raise ProjectError(f"{len(here)} boards sit directly in {sh.here(tool)}; move all but one into folders by hand "
+                           "(project_snapshot first)")
+    if not here:
+        if name is None:
+            return {"ok": True, "moved": [], "snapshot": None, "next": f"no {u} sits directly in {sh.here(tool)}"}
+        if not folders:
+            return {"ok": True, "moved": [], "snapshot": None, "made": [],
+                    "next": f"this is the first {u}: put its files directly in {sh.here(tool)}, no folder"}
+        made = [] if (area / name).exists() else [sh.show(tool, name)]
+        (area / name).mkdir(exist_ok=True)
+        return {"ok": True, "moved": [], "snapshot": None, "made": made,
+                "next": f"put the {u} in {sh.show(tool, name)}/"}
+    if tool == "kicad":
+        current = current or here[0].stem
+    elif current is None:
+        fc = [f for f in here if f.suffix.lower() == (".fcstd" if tool == "freecad" else ".json")]
+        guess = re.sub(r"[^a-z0-9]+", "-", fc[0].stem.lower()).strip("-") if len(fc) == 1 else ""
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", guess):
+            raise ProjectError(f"which {u} is in {sh.here(tool)}? pass current, named for what it is (enclosure, bracket)")
+        current = guess
+    _check_name(current, u)
+    if name == current:
+        raise ProjectError(f"{current} is the {u} already there; name the new one")
+    dest = area / current
+    if dest.exists() and any(dest.iterdir()):
+        raise ProjectError(f"{sh.show(tool, current)}/ already has files; move them out first")
+    skip = set(COMMON) | SKIP_TOP | sh.area_dirs() | {KICAD_LIB} | {d.name for d in folders} if not sh.nested else \
+        {KICAD_LIB} | {d.name for d in folders}
+    move = [p for p in sorted(area.iterdir()) if p.name not in skip and _unit_file(tool, p)]
+    snap = snapshot(root, f"before-{u}-folders-{current}"[:40].rstrip("-"), [sh.dir(tool)] if sh.nested else None,
+                    now=now, note=f"automatic, before moving {current} into its own folder for a second {u}")
+    dest.mkdir(exist_ok=True)
+    moved_names = {p.name for p in move}
+    rewritten = []
+    for p in move:
+        shutil.move(str(p), str(dest / p.name))
+        f = dest / p.name
+        if tool == "kicad" and f.is_file() and (f.suffix in KICAD_DESIGN or f.name in BOARD_LOCAL):
+            text = f.read_text(encoding="utf-8", errors="surrogateescape")
+            new = KIPRJMOD_PATH.sub(lambda m: m[0] if m[2] in moved_names else f"{m[1]}/../{m[2]}", text)
+            if new != text:
+                st = f.stat()
+                f.write_text(new, encoding="utf-8", errors="surrogateescape", newline="")
+                os.utime(f, (st.st_atime, st.st_mtime))  # only paths changed: fab/ isn't stale because of it
+                rewritten.append(sh.show(tool, current, f.name))
+    made = []
+    if name is not None and not (area / name).exists():
+        (area / name).mkdir()
+        made.append(sh.show(tool, name))
+    app = {"kicad": "KiCad", "freecad": "FreeCAD", "protoboard": "the viewer"}[tool]
+    return {"ok": True, "root": str(root), "snapshot": snap["name"], u: current,
+            "moved": [f"{p.name} -> {sh.show(tool, current, p.name)}" for p in move], "rewritten": rewritten,
+            "made": made,
+            "next": (f"{app}: close {current} and reopen it from {sh.show(tool, current)}/. "
+                     + (f"Put the new {u} in {sh.show(tool, name)}/. " if name else "") + "Then project_check")}
+
+
+def add_board(path: str | Path, board: str | None = None, now: datetime | None = None) -> dict:
+    return add_unit(path, "kicad", board, now=now)
+
+
+def add_part(path: str | Path, part: str | None = None, current: str | None = None, now: datetime | None = None) -> dict:
+    return add_unit(path, "freecad", part, current, now=now)
+
+
+def add_protoboard(path: str | Path, name: str | None = None, current: str | None = None,
+                   now: datetime | None = None) -> dict:
+    return add_unit(path, "protoboard", name, current, now=now)
 
 
 def _index_header(name: str) -> str:
@@ -338,29 +716,37 @@ def check(path: str | Path) -> dict:
     except ValueError:
         marker = {}
         found.append(_finding("error", MARKER, "not valid JSON", "fix or delete it and run project_init again"))
-    for p in sorted(root.iterdir()):
-        if p.name in SKIP_TOP or p.name in LAYOUT:
-            continue
-        found.append(_finding("warning", p.name, "not part of the layout at the top level",
-                              "move it to where it belongs (kicad/, case/, fab/, tools/, docs/) or into .cadmate/work/ if scratch"))
+    sh = shape(root)
+    found += _check_top(root, sh)
     for p, rel in _files(root):
-        top = rel.parts[0]
+        top, within = sh.area_of(rel)
         stem = p.name.split(".")[0] if p.is_file() else p.name
-        if p.is_file() and (p.suffix in (".bak", ".orig") or p.name.endswith("~")):
+        in_lib = top == "kicad" and len(within) > 0 and within[0] == KICAD_LIB
+        if top == "docs" and is_protoboard(p):
+            where = (f"move it to {sh.show('protoboard', p.name)}" if "protoboard" in sh.tools else
+                     "project_add_tool protoboard, then move it (and its .png, .svg, -build.md) into its place")
+            found.append(_finding("warning", rel.as_posix(), "a protoboard design in docs/, which is for the user's documents",
+                                  where))
+        elif p.is_file() and (p.suffix in (".bak", ".orig") or p.name.endswith("~")):
             found.append(_finding("warning", rel.as_posix(), "a backup copy beside the original",
                                   "delete it; history/ holds earlier states (project_snapshot before changing)"))
-        elif (top in NAME_CHECKED and VERSIONED.search(stem) and p.parent.name != "renders"
-              and not (top == "kicad" and len(rel.parts) > 1 and rel.parts[1] == KICAD_LIB)):
+        elif top in NAME_CHECKED and VERSIONED.search(stem) and "renders" not in rel.parts and not in_lib:
             found.append(_finding("warning", rel.as_posix(), "the name marks a version or variant of something else",
                                   "apply the change to the original in place (project_snapshot first if the old state matters), "
                                   "then delete this one"))
         limit = DEPTH.get(top)
-        if p.is_file() and limit and len(rel.parts) - 1 > limit:
-            if not (top == "kicad" and len(rel.parts) > 1 and rel.parts[1] == KICAD_LIB):
-                found.append(_finding("warning", rel.as_posix(), f"deeper than the layout allows under {top}/ ({limit} levels)",
-                                      f"flatten it: {LAYOUT[top]}"))
-    found += _check_kicad(root)
-    found += _check_fab(root)
+        if p.is_file() and limit and len(within) > limit and not in_lib:
+            where = f"under {sh.dir(top) or top}/" if sh.nested or top in COMMON else "for this project"
+            rule = COMMON.get(top) or next((f"{k}: {v}" for k, v in sh.layout().items()
+                                            if k.endswith(".kicad_pro" if top == "kicad" else ".FCStd")), "")
+            found.append(_finding("warning", rel.as_posix(), f"deeper than the layout allows {where} ({limit} levels)",
+                                  f"flatten it: {rule}"))
+    if "kicad" in sh.tools:
+        found += _check_kicad(root, sh)
+        found += _check_fab(root, sh)
+    for t in ("freecad", "protoboard"):
+        if t in sh.tools and (root / sh.dir(t)).exists():
+            found += _check_units(root, sh, t)
     from . import enclosure  # it imports this module
     found += enclosure.project_findings(root)
     work = root / WORK
@@ -383,10 +769,93 @@ def check(path: str | Path) -> dict:
     found.sort(key=lambda f: (order[f["severity"]], f["path"]))
     counts = {s: sum(1 for f in found if f["severity"] == s) for s in order}
     out = {"ok": counts["error"] == 0 and counts["warning"] == 0, "root": str(root), "name": marker.get("name", root.name),
-           "counts": counts, "findings": found}
+           "tools": list(sh.tools), "flat": not sh.nested, "counts": counts, "findings": found}
     if brief is not None:
         out["brief"] = brief | {"say": "before calling a stage done, check the result against every open item and tell the "
                                        "user which are met, which aren't yet and why"}
+    return out
+
+
+
+
+def _check_top(root: Path, sh: Shape) -> list[dict]:
+    """Top-level entries outside the layout, and the files of a tool the project doesn't list (it needs add_tool)."""
+    out: list[dict] = []
+    allowed = {k for k in COMMON if k != "fab" or "kicad" in sh.tools or sh.nested}
+    if sh.nested:
+        allowed |= {sh.dir(t) for t in sh.tools}
+    elif "kicad" in sh.tools:
+        allowed.add(KICAD_LIB)
+    (tool,) = sh.tools if not sh.nested else (None,)
+    folders = set(units(root, sh, tool)[1]) if tool else set()
+    hint = "move it to where it belongs (" + sh.summary() + ") or into .cadmate/work/ if scratch"
+    missing = [t for t in TOOLS if t not in sh.tools]
+    for p in sorted(root.iterdir()):
+        if p.name in SKIP_TOP or p.name in allowed or p.name.startswith("."):
+            continue
+        suf = p.suffix.lower()
+        if tool and p.is_dir() and p.name in sh.area_dirs() and p.name not in missing:
+            out.append(_finding("warning", p.name, f"{p.name}/ in a {tool}-only project, whose files sit at the root",
+                                "move its contents to the project root"))
+        elif mt := next((t for t in missing if p.is_dir() and (p.name == t or _has_design(t, p))
+                         or _is_design(t, p) or t == "kicad" and suf in KICAD_FILE), None):
+            kind = f"a {tool}-only project" if tool else f"a project without {mt}"
+            out.append(_finding("warning", p.name, f"{mt} files in {kind}",
+                                f"project_add_tool {mt}: " + (f"it makes {mt}/ for these" if sh.nested else
+                                f"it snapshots the project, moves the {tool} files into {tool}/ and makes {mt}/ for these")))
+        elif tool and (p in folders or _unit_file(tool, p) or tool == "kicad" and p.suffix in LIBS):
+            continue  # a board or part at the root, or its folder; _check_kicad and _check_parts say whether it fits
+        elif tool and p.is_dir():
+            out.append(_finding("warning", p.name, f"a folder at the top level that isn't a {UNIT[tool]}", hint))
+        else:
+            out.append(_finding("warning", p.name, "not part of the layout at the top level", hint))
+    return out
+
+
+def _check_units(root: Path, sh: Shape, tool: str) -> list[dict]:
+    """One board or part directly in the area, or a folder each: never both, never two loose ones."""
+    out: list[dict] = []
+    u, here_ = UNIT[tool], sh.here(tool)
+    here, folders = units(root, sh, tool)
+    full = [d for d in folders if any(d.iterdir())]
+    add = f"project_add_{u}"
+    if tool == "kicad":
+        for extra in here[1:]:
+            out.append(_finding("warning", extra.relative_to(root).as_posix(), f"a second board directly in {here_}",
+                                f"two or more boards get a folder each: move this one into {sh.show(tool, extra.stem)}/, "
+                                f"then {add} moves {here[0].stem} into its own"))
+    if here and full:
+        out.append(_finding("warning", here[0].relative_to(root).as_posix(),
+                            f"a {u} directly in {here_} beside {u} folders ({', '.join(d.name for d in full[:3])})",
+                            f"{add} moves it into a folder of its own (snapshot first"
+                            + (", ${KIPRJMOD} paths fixed)" if tool == "kicad" else "; pass current, what the part is)")))
+    if len(full) == 1 and not here:
+        out.append(_finding("info", full[0].relative_to(root).as_posix(), f"the only {u}, in a folder of its own",
+                            f"one {u} can sit directly in {here_}; leave it if a second {u} is coming"))
+    return out
+
+
+def _check_kicad(root: Path, sh: Shape) -> list[dict]:
+    out: list[dict] = []
+    kicad = root / sh.dir("kicad")
+    if not kicad.exists():
+        return out
+    lib = sh.show("kicad", KICAD_LIB) + "/"
+    for p in sorted(kicad.iterdir()):
+        if p.suffix in LIBS:
+            out.append(_finding("warning", p.relative_to(root).as_posix(), f"project library outside {lib}",
+                                f"move it into {lib} and point the lib tables and model links at it through ${{KIPRJMOD}}"))
+    pros, folders = units(root, sh, "kicad")
+    loose = sorted(f for f in kicad.iterdir() if f.is_file() and f.suffix in (".kicad_pcb", ".kicad_sch"))
+    if not pros and loose:
+        out.append(_finding("error", loose[0].relative_to(root).as_posix(), f"board files in {sh.here('kicad')} with no .kicad_pro",
+                            "KiCad needs <board>.kicad_pro beside the board for its rules and net classes"))
+    out += _check_units(root, sh, "kicad")
+    if pros:
+        out += _check_board(root, kicad, pros[0].stem, in_folder=False)
+    for board in folders:
+        if any(board.iterdir()):
+            out += _check_board(root, board, board.name, in_folder=True)
     return out
 
 
@@ -400,50 +869,41 @@ def read_brief(root: str | Path) -> dict | None:
     return {"open": [t for m, t in items if m == " "], "met": [t for m, t in items if m != " "]}
 
 
-def _check_kicad(root: Path) -> list[dict]:
+
+
+def _check_board(root: Path, board: Path, name: str, in_folder: bool) -> list[dict]:
+    """A board's own files: one board per place, named alike, lib tables, 3D models, schematic annotations."""
     out: list[dict] = []
-    kicad = root / "kicad"
-    if not kicad.exists():
+    rel = board.relative_to(root)
+    pros = sorted(board.glob("*.kicad_pro"))
+    if in_folder and not pros:
+        if any(board.glob("*.kicad_pcb")) or any(board.glob("*.kicad_sch")):
+            out.append(_finding("error", rel.as_posix(), "board files with no .kicad_pro",
+                                f"KiCad needs {name}.kicad_pro beside the board for its rules and net classes"))
         return out
-    for p in sorted(kicad.glob("*.kicad_*")):
-        out.append(_finding("warning", p.relative_to(root).as_posix(), "KiCad file directly in kicad/",
-                            "each board gets its own folder: kicad/<board>/<board>.kicad_pro"))
-    libs = (".pretty", ".3dshapes", ".kicad_symdir", ".kicad_sym")
-    for p in sorted(kicad.iterdir()):
-        if p.suffix in libs:
-            out.append(_finding("warning", p.relative_to(root).as_posix(), "project library outside kicad/lib/",
-                                "move it into kicad/lib/ and point the lib tables and model links at ${KIPRJMOD}/../lib/"))
-    for board in sorted(d for d in kicad.iterdir() if d.is_dir() and d.name != KICAD_LIB and d.suffix not in libs):
-        name = board.name
-        rel = board.relative_to(root)
-        pros = sorted(board.glob("*.kicad_pro"))
-        if not pros:
-            if any(board.glob("*.kicad_pcb")) or any(board.glob("*.kicad_sch")):
-                out.append(_finding("error", rel.as_posix(), "board files with no .kicad_pro",
-                                    f"KiCad needs {name}.kicad_pro beside the board for its rules and net classes"))
-            continue
-        for f in sorted(board.iterdir()):
-            if f.suffix in KICAD_DESIGN and f.stem != name and not (f.suffix == ".kicad_sch" and _is_subsheet(board, f.name)):
-                out.append(_finding("warning", f.relative_to(root).as_posix(),
-                                    f"a second {f.suffix} in the {name} board folder",
-                                    f"one board per folder, named {name}{f.suffix}: apply its changes to that one and delete this"))
-        if not (board / f"{name}.kicad_pro").exists():
-            out.append(_finding("error", rel.as_posix(), f"the project isn't named after its folder ({pros[0].name})",
-                                f"name the folder after the project ({pros[0].stem}) rather than renaming the KiCad project"))
-        for tbl in ("fp-lib-table", "sym-lib-table"):
-            t = board / tbl
-            if t.exists():
-                out += _check_table(root, board, t)
-        pcb = board / f"{name}.kicad_pcb"
-        if pcb.exists():
-            out += _check_models(root, board, pcb)
-        for sch in sorted(board.glob("*.kicad_sch")):
-            names = set(re.findall(r'\(instances\s*\(project\s+"([^"]*)"', sch.read_text(encoding="utf-8", errors="replace")))
-            if names and name not in names:
-                out.append(_finding("error", sch.relative_to(root).as_posix(),
-                                    f"symbol annotations belong to project {', '.join(sorted(names))!s}, not {name}",
-                                    "the project was renamed or copied: KiCad can show the references as R?, U? until "
-                                    "re-annotated. Open it in KiCad and check the references; re-annotate if they're lost"))
+    where = f"in the {name} board folder" if in_folder else f"beside the {name} board"
+    for f in sorted(board.iterdir()):
+        if (f.suffix in KICAD_DESIGN and f.stem != name and not (f.suffix == ".kicad_sch" and _is_subsheet(board, f.name))
+                and not (f.suffix == ".kicad_pro" and not in_folder)):
+            out.append(_finding("warning", f.relative_to(root).as_posix(), f"a second {f.suffix} {where}",
+                                f"one board per place, named {name}{f.suffix}: apply its changes to that one and delete this"))
+    if in_folder and not (board / f"{name}.kicad_pro").exists():
+        out.append(_finding("error", rel.as_posix(), f"the project isn't named after its folder ({pros[0].name})",
+                            f"name the folder after the project ({pros[0].stem}) rather than renaming the KiCad project"))
+    for tbl in ("fp-lib-table", "sym-lib-table"):
+        t = board / tbl
+        if t.exists():
+            out += _check_table(root, board, t)
+    pcb = board / f"{name}.kicad_pcb"
+    if pcb.exists():
+        out += _check_models(root, board, pcb)
+    for sch in sorted(board.glob("*.kicad_sch")):
+        names = set(re.findall(r'\(instances\s*\(project\s+"([^"]*)"', sch.read_text(encoding="utf-8", errors="replace")))
+        if names and name not in names:
+            out.append(_finding("error", sch.relative_to(root).as_posix(),
+                                f"symbol annotations belong to project {', '.join(sorted(names))!s}, not {name}",
+                                "the project was renamed or copied: KiCad can show the references as R?, U? until "
+                                "re-annotated. Open it in KiCad and check the references; re-annotate if they're lost"))
     return out
 
 
@@ -459,7 +919,7 @@ def _check_table(root: Path, board: Path, table: Path) -> list[dict]:
             target = (board / KIPRJMOD.sub("", uri).lstrip("/")).resolve()
             if not target.is_relative_to(root):
                 out.append(_finding("error", rel, f"{uri} points outside the project",
-                                    "copy the library into kicad/lib/ and point at ${KIPRJMOD}/../lib/<name>"))
+                                    "copy the library into the project's lib/ and point at it through ${KIPRJMOD}"))
             elif not target.exists():
                 out.append(_finding("error", rel, f"{uri} doesn't exist", "fix the path or put the library back"))
         elif uri.startswith("/") or re.match(r"[A-Za-z]:[\\/]", uri) or uri.startswith("~"):
@@ -479,25 +939,27 @@ def _check_models(root: Path, board: Path, pcb: Path) -> list[dict]:
             target = (board / KIPRJMOD.sub("", m).lstrip("/")).resolve()
             if not target.is_relative_to(root):
                 out.append(_finding("warning", rel, f"3D model {m} is outside the project",
-                                    "copy it into kicad/lib/<project>.3dshapes/ and relink"))
+                                    "copy it into the project's lib/<project>.3dshapes/ and relink"))
             elif not target.exists():
                 out.append(_finding("warning", rel, f"3D model {m} is missing", "fix the link or put the model back"))
         elif m.startswith("/") or re.match(r"[A-Za-z]:[\\/]", m) or m.startswith("~"):
             out.append(_finding("warning", rel, f"absolute 3D model path {m}",
-                                "use ${KIPRJMOD}/../lib/<project>.3dshapes/... so it survives a move or snapshot"))
+                                "use a ${KIPRJMOD} path into lib/<project>.3dshapes/ so it survives a move or snapshot"))
     return out
 
 
-def _check_fab(root: Path) -> list[dict]:
+def _check_fab(root: Path, sh: Shape) -> list[dict]:
     out = []
     fab = root / "fab"
     if not fab.exists():
         return out
     for d in sorted(x for x in fab.iterdir() if x.is_dir()):
-        pcb = root / "kicad" / d.name / f"{d.name}.kicad_pcb"
+        area = root / sh.dir("kicad")
+        pcb = next((f for f in (area / d.name / f"{d.name}.kicad_pcb", area / f"{d.name}.kicad_pcb") if f.exists()),
+                   area / d.name / f"{d.name}.kicad_pcb")
         rel = d.relative_to(root).as_posix()
         if not pcb.exists():
-            out.append(_finding("warning", rel, f"fab files for a board that isn't in kicad/{d.name}/",
+            out.append(_finding("warning", rel, f"fab files for a board that isn't in the project ({d.name})",
                                 "delete them (history keeps the old ones if a snapshot was taken)"))
             continue
         files = [f for f in d.rglob("*") if f.is_file()]

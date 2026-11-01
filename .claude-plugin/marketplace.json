@@ -1,0 +1,13 @@
+{
+  "name": "cadmate",
+  "owner": { "name": "arthursWizard" },
+  "metadata": { "description": "cadmate, the KiCad and FreeCAD companion for Claude Code" },
+  "plugins": [
+    {
+      "name": "cadmate",
+      "source": "./",
+      "description": "KiCad and FreeCAD companion: footprints, symbols, 3D models, routing, reviews and enclosure checks, with the skills that go with them.",
+      "version": "0.1.0"
+    }
+  ]
+}

@@ -1,10 +1,23 @@
 [project]
 name = "cadmate"
-version = "0.1.0"
+dynamic = ["version"]
 description = "An AI companion that bridges KiCad and FreeCAD through MCP"
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
+authors = [{ name = "arthursWizard" }]
+keywords = ["kicad", "freecad", "mcp", "pcb", "eda", "cad", "claude"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Manufacturing",
+    "Intended Audience :: Science/Research",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
+]
 dependencies = [
     "kicad-python>=0.8,<0.9",
     "mcp>=2,<3",
@@ -14,8 +27,13 @@ dependencies = [
 # PNG snapshots on Windows (and on Linux without rsvg-convert). Also needs the cairo library itself.
 snapshots = ["cairosvg>=2.7"]
 
+[project.urls]
+Homepage = "https://github.com/arthursWizard/cadmate"
+Documentation = "https://github.com/arthursWizard/cadmate/blob/main/docs/getting-started.md"
+Issues = "https://github.com/arthursWizard/cadmate/issues"
+
 [project.scripts]
-cadmate = "cadmate.server:main"
+cadmate = "cadmate.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8"]
@@ -24,8 +42,19 @@ dev = ["pytest>=8"]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.version]
+path = "src/cadmate/__init__.py"  # the one place the version is written; tests/test_packaging.py keeps the plugin manifest in step
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/cadmate"]
+
+# The skills live at the repo root (where the Claude Code plugin finds them) and ship inside the wheel as
+# cadmate/skills, where `cadmate install-skills` finds them when cadmate runs from PyPI.
+[tool.hatch.build.targets.wheel.force-include]
+"skills" = "cadmate/skills"
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "skills", "tests", "docs", "README.md", "LICENSE", "uv.lock"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

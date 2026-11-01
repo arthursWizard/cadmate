@@ -1,7 +1,8 @@
-"""Packaging: one version everywhere, and the skills reachable however cadmate is installed."""
+"""Packaging: the two plugin channels, and the skills reachable however cadmate is installed."""
 
 import json
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -12,12 +13,26 @@ from cadmate import cli
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_versions_in_step():
+def test_plugin_channels():
     plugin = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
     market = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
-    entry = next(p for p in market["plugins"] if p["name"] == "cadmate")
-    # Claude Code only offers a plugin update when this version changes, so a release must bump all three.
-    assert plugin["version"] == entry["version"] == cadmate.__version__
+    entries = {p["name"]: p for p in market["plugins"]}
+    assert set(entries) == {"cadmate", "cadmate-dev"}
+
+    # Claude Code takes a plugin's version from plugin.json first, then the marketplace entry, then the commit.
+    # With no version anywhere, each channel updates when its ref moves: stable at a release, dev at every merge.
+    # A version in plugin.json would freeze cadmate-dev between releases.
+    assert "version" not in plugin
+    assert all("version" not in e for e in entries.values())
+
+    # stable is the release branch (docs/releasing.md); dev is the marketplace's own checkout of main.
+    assert entries["cadmate"]["source"] == {"source": "github", "repo": "arthursWizard/cadmate", "ref": "stable"}
+    assert entries["cadmate-dev"]["source"] == "./"
+
+
+def test_version_is_semver():
+    # The release tag must be v + this version (release.yml checks it).
+    assert re.fullmatch(r"\d+\.\d+\.\d+", cadmate.__version__)
 
 
 def test_skills_found():

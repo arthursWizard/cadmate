@@ -5,9 +5,13 @@
   "plugins": [
     {
       "name": "cadmate",
+      "source": { "source": "github", "repo": "arthursWizard/cadmate", "ref": "stable" },
+      "description": "KiCad and FreeCAD companion: footprints, symbols, 3D models, routing, reviews and enclosure checks, with the skills that go with them."
+    },
+    {
+      "name": "cadmate-dev",
       "source": "./",
-      "description": "KiCad and FreeCAD companion: footprints, symbols, 3D models, routing, reviews and enclosure checks, with the skills that go with them.",
-      "version": "0.1.0"
+      "description": "cadmate as it is on main, before release. For testing changes; enable this or cadmate, not both."
     }
   ]
 }

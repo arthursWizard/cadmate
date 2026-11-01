@@ -63,8 +63,9 @@ Or, inside a Claude Code session (2.1.275 or later), in one step: `/plugin insta
 Start a new session afterwards. `/mcp` shows whether cadmate is connected, `/plugin` lists the skills. The first start
 takes a minute while uv fetches cadmate's dependencies; after that it's instant.
 
-To update: `claude plugin marketplace update cadmate`, then `claude plugin update cadmate@cadmate`, and start a new
-session. Or let Claude Code do it: in `/plugin`, open Marketplaces, pick cadmate and choose Enable auto-update.
+`cadmate@cadmate` is the released version. It only changes at a release, so what you have is something that has been
+tried. To update: `claude plugin marketplace update cadmate`, then `claude plugin update cadmate@cadmate`, and start a
+new session. Or let Claude Code do it: in `/plugin`, open Marketplaces, pick cadmate and choose Enable auto-update.
 
 The ten skills are `cadmate-project` (where files go; read first), `kicad-symbols`, `kicad-footprints`,
 `kicad-3d-models`, `kicad-parts`, `kicad-schematics`, `kicad-pcb-live`, `kicad-pcb-route`, `kicad-pcb-review` and
@@ -85,11 +86,34 @@ cd cadmate
 uv sync
 uv run pytest
 claude plugin marketplace add ./
-claude plugin install cadmate@cadmate
+claude plugin install cadmate-dev@cadmate
+claude plugin disable cadmate@cadmate    # only if you had the released one installed
 ```
 
-The plugin then runs from your checkout. The tests pass with or without KiCad and FreeCAD; the ones that need them
+The dev plugin then runs from your checkout, whichever branch it is on. The tests pass with or without KiCad and FreeCAD; the ones that need them
 are skipped.
+
+### Trying unreleased changes
+
+The same marketplace has a second plugin, `cadmate-dev`, which runs whatever is on `main`: merged, passing CI, not yet
+released. Use it to try a change before it reaches `cadmate@cadmate`.
+
+```sh
+claude plugin marketplace update cadmate
+claude plugin install cadmate-dev@cadmate
+claude plugin disable cadmate@cadmate
+```
+
+Start a new session. To get the newest `main` later, `claude plugin marketplace update cadmate` and
+`claude plugin update cadmate-dev@cadmate`. To go back to the release:
+
+```sh
+claude plugin disable cadmate-dev@cadmate
+claude plugin enable cadmate@cadmate
+```
+
+Keep only one of the two enabled. They have the same tool and skill names, so with both on you can't tell which one
+Claude is using. `/plugin` shows which is enabled. [Releasing](releasing.md) has how the two are kept apart.
 
 ### 3. Check what cadmate found
 

@@ -111,7 +111,7 @@ def test_check_finds_side_by_side_versions_and_backups(tmp_path):
     (root / "freecad/variant-flat/half.step").write_text("x")
     (root / "freecad/a/b/c").mkdir(parents=True)
     (root / "freecad/a/b/c/deep.step").write_text("x")
-    (root / "semi-split-piantor").mkdir()
+    (root / "old-case-try").mkdir()
     (root / "history/mid joint try").mkdir()
     out = project.check(root)
     by_path = {f["path"]: f for f in out["findings"]}
@@ -121,7 +121,7 @@ def test_check_finds_side_by_side_versions_and_backups(tmp_path):
     assert "version" in by_path["kicad/sensor-v2"]["problem"]
     assert "version" in by_path["freecad/variant-flat"]["problem"]
     assert "deeper" in by_path["freecad/a/b/c/deep.step"]["problem"]
-    assert "top level" in by_path["semi-split-piantor"]["problem"]
+    assert "top level" in by_path["old-case-try"]["problem"]
     assert "named" in by_path["history/mid joint try"]["problem"]
     # library part names with dashes and numbers aren't versions
     (root / "kicad/lib/proj.pretty/SOIC-8.kicad_mod").write_text("x")

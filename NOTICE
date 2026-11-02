@@ -1,0 +1,21 @@
+cadmate
+Copyright (c) the cadmate authors. Licensed under the MIT License (see LICENSE),
+except for the third-party files listed below, which keep their own licenses.
+
+KiCad symbol library (test fixtures)
+------------------------------------
+Files: tests/fixtures/Symbols.kicad_symdir/*.kicad_sym
+Source: the official KiCad symbol library, https://gitlab.com/kicad/libraries/kicad-symbols
+Copyright: the KiCad library contributors
+License: Creative Commons Attribution-ShareAlike 4.0 International (CC-BY-SA 4.0),
+         with the KiCad library exception.
+         https://creativecommons.org/licenses/by-sa/4.0/
+         https://www.kicad.org/libraries/license/
+
+These files are copied from that library and used only as test inputs, to check that cadmate
+reads and writes KiCad's own library symbols correctly. They are not part of the
+installed package (the wheel). If you redistribute them, keep this notice and the
+CC-BY-SA 4.0 terms with them; the MIT License does not apply to them.
+
+Everything else under tests/fixtures/ was written for cadmate, by hand or with
+cadmate itself, and is under the MIT License.

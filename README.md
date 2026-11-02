@@ -342,3 +342,7 @@ To read datasheets, Claude needs a way to read PDFs and to look at drawings as i
 ## License
 
 MIT. Tools under other licenses (for example AGPL tools such as KiBot) are only ever called as separate programs, never imported.
+
+The KiCad library symbols under `tests/fixtures/Symbols.kicad_symdir/` are test inputs copied from KiCad's own library
+and stay under its license (CC-BY-SA 4.0 with the KiCad library exception); see [NOTICE](NOTICE). They don't ship in
+the installed package.

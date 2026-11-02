@@ -54,7 +54,7 @@ packages = ["src/cadmate"]
 "skills" = "cadmate/skills"
 
 [tool.hatch.build.targets.sdist]
-include = ["src", "skills", "tests", "docs", "README.md", "LICENSE", "uv.lock"]
+include = ["src", "skills", "tests", "docs", "README.md", "LICENSE", "NOTICE", "uv.lock"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -8,8 +8,8 @@ bridge's change log.
 
 The bridge runs only when the user starts it from FreeCAD's Python console;
 start_command() gives the line. The first start saves a macro in FreeCAD's
-macro folder that runs the same line, so after that the user starts it from
-FreeCAD's Macro menu. The bridge is copied to cadmate's data folder first so
+macro folder that runs the same line, and one that stops it, so after that the
+user starts and stops it from FreeCAD's Macro menu. The bridge is copied to cadmate's data folder first so
 that line keeps working when cadmate is reinstalled somewhere else.
 
 Two transports, chosen by the bridge when it starts. On macOS and Linux it
@@ -34,7 +34,9 @@ TRANSPORT_ENV = "CADMATE_BRIDGE_TRANSPORT"  # "unix" or "tcp"; the platform's de
 BRIDGE_VERSION = 1  # live_bridge.BRIDGE_VERSION this client speaks
 BRIDGE_SOURCE = Path(__file__).parent / "freecad_scripts" / "live_bridge.py"
 LOOPBACK = ("127.0.0.1", "::1")
-MACRO_NAME = "cadmate_bridge.FCMacro"  # live_bridge.MACRO_NAME, the macro the bridge saves in FreeCAD's macro folder
+# The macros the bridge saves in FreeCAD's macro folder (live_bridge.MACRO_NAME and STOP_MACRO_NAME).
+MACRO_NAME = "cadmate_bridge.FCMacro"
+STOP_MACRO_NAME = "cadmate_bridge_stop.FCMacro"
 
 
 class BridgeUnavailable(RuntimeError):
@@ -148,17 +150,35 @@ def call(op: str, timeout: float = 120, **args) -> dict:
     return json.loads(line)
 
 
+def offer(running: bool) -> dict:
+    """What to tell the user once, at the start of FreeCAD work in a session: whether the bridge is on, and how to
+    switch it before the work starts."""
+    if running:
+        say = ("The FreeCAD bridge is on, so I'll work in your open FreeCAD window. Keep it on, or, if you'd rather I "
+               f"only touch saved files, stop it first with Macro > Macros... > {STOP_MACRO_NAME} > Execute.")
+    else:
+        say = ("The FreeCAD bridge is off, so I'll work on saved files and you reload in FreeCAD to see changes. To "
+               "work together in your open FreeCAD window instead, start it first: Macro > Recent macros > "
+               f"cadmate_bridge (or Macro > Macros... > {MACRO_NAME} > Execute). If you've never started it, I'll "
+               "give you the line to paste once.")
+    return {"running": running, "tell_user": say,
+            "note": "Say this to the user once, at the start of FreeCAD work in this session, and wait for their "
+                    "answer before changing anything. Don't repeat it before later edits in this session; check "
+                    "freecad_live_status again only if a live tool reports the bridge isn't running."}
+
+
 def not_running() -> dict:
     return {
         "ok": False,
         "running": False,
         "start": start_command(),
         "macro": MACRO_NAME,
+        "stop_macro": STOP_MACRO_NAME,
         "how": "If the user has started the bridge before, they start it again in FreeCAD with Macro > Recent macros > "
                f"{MACRO_NAME} (or Macro > Macros... > {MACRO_NAME} > Execute); the bridge saved that macro the first "
                "time. Otherwise, or if the macro isn't there: open FreeCAD, then View > Panels > Python console, and "
                "paste the start line. The Report view then shows '[cadmate] bridge listening on ...'. "
-               "It stops with App._cadmate_bridge.stop().",
+               f"It stops with the {STOP_MACRO_NAME} macro or App._cadmate_bridge.stop().",
     }
 
 

@@ -15,6 +15,15 @@ def no_kicad(monkeypatch):
     monkeypatch.setattr(kicad_pcb_live, "connect", refuse)
 
 
+@pytest.fixture(autouse=True)
+def bridge_already_offered(monkeypatch):
+    """Tests don't get the once-per-session FreeCAD bridge check in tool replies (or ping a real bridge for it);
+    the tests of that check turn it back on."""
+    from cadmate import server
+
+    monkeypatch.setattr(server, "_bridge_offered", True)
+
+
 def short_tmp() -> str:
     """A fresh temp folder with a short path: macOS caps Unix socket paths at 104 bytes and pytest's tmp_path is longer.
     /tmp where there is one, the system temp folder elsewhere (Windows)."""

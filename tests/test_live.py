@@ -350,17 +350,37 @@ class MacroApp(FakeApp):
         return str(cls.folder)
 
 
-def test_bridge_saves_a_start_macro_that_runs_the_installed_copy(sock, tmp_path):
+def test_bridge_saves_start_and_stop_macros(sock, tmp_path):
     mod = load_bridge()
     MacroApp.folder = tmp_path / "Macro"
-    installed = live.installed_bridge()
-    path = mod.install_macro(MacroApp)
-    assert path == MacroApp.folder / live.MACRO_NAME == MacroApp.folder / mod.MACRO_NAME
-    text = path.read_text(encoding="utf-8")
-    assert text.startswith(mod.MACRO_MARK) and live.start_command() in text
-    compile(text, str(path), "exec")
-    assert installed.is_file()
-    assert mod.install_macro(MacroApp) == path  # the same again is fine
+    live.installed_bridge()
+    saved = mod.install_macros(MacroApp)
+    assert mod.MACRO_NAME == live.MACRO_NAME and mod.STOP_MACRO_NAME == live.STOP_MACRO_NAME
+    assert saved == {name: MacroApp.folder / name for name in (live.MACRO_NAME, live.STOP_MACRO_NAME)}
+    start = saved[live.MACRO_NAME].read_text(encoding="utf-8")
+    assert start.startswith(mod.MACRO_MARK) and live.start_command() in start
+    stop = saved[live.STOP_MACRO_NAME].read_text(encoding="utf-8")
+    assert stop.startswith(mod.MACRO_MARK) and "_bridge.stop()" in stop
+    for name, path in saved.items():
+        compile(path.read_text(encoding="utf-8"), name, "exec")
+    assert mod.install_macros(MacroApp) == saved  # the same again is fine
+
+
+def test_stop_macro_stops_a_running_bridge_and_says_so_otherwise(sock, tmp_path):
+    mod = load_bridge()
+    stop = mod.macro_texts(None)[mod.STOP_MACRO_NAME]
+    lines = []
+    fake = type("FreeCAD", (), {"Console": type("C", (), {"PrintMessage": staticmethod(lines.append)})})
+    __import__("sys").modules["FreeCAD"] = fake
+    try:
+        exec(stop, {})
+        assert lines == ["[cadmate] the bridge isn't running\n"]
+        bridge = type("B", (), {"running": True, "stop": lambda self: setattr(self, "running", False)})()
+        fake._cadmate_bridge = bridge
+        exec(stop, {})
+        assert not bridge.running and len(lines) == 1
+    finally:
+        del __import__("sys").modules["FreeCAD"]
 
 
 def test_bridge_leaves_a_macro_it_did_not_write_alone(sock, tmp_path):
@@ -369,19 +389,49 @@ def test_bridge_leaves_a_macro_it_did_not_write_alone(sock, tmp_path):
     MacroApp.folder = tmp_path
     theirs = tmp_path / mod.MACRO_NAME
     theirs.write_text("print('mine')\n", encoding="utf-8")
-    assert mod.install_macro(MacroApp) is None
+    assert list(mod.install_macros(MacroApp)) == [mod.STOP_MACRO_NAME]
     assert theirs.read_text(encoding="utf-8") == "print('mine')\n"
 
 
-def test_no_macro_without_an_installed_copy_or_a_macro_folder(sock, tmp_path):
+def test_no_start_macro_without_an_installed_copy_and_none_without_a_macro_folder(sock, tmp_path):
     mod = load_bridge()
     MacroApp.folder = tmp_path
-    assert mod.install_macro(MacroApp) is None  # nothing in cadmate's data folder to point at
+    assert list(mod.install_macros(MacroApp)) == [mod.STOP_MACRO_NAME]  # nothing in cadmate's data folder to start
+    (tmp_path / mod.STOP_MACRO_NAME).unlink()
     live.installed_bridge()
-    assert mod.install_macro(FakeApp) is None  # FreeCAD didn't say where its macros go
-    assert not (tmp_path / mod.MACRO_NAME).exists()
+    assert mod.install_macros(FakeApp) == {}  # FreeCAD didn't say where its macros go
+    assert not list(tmp_path.iterdir())
 
 
-def test_not_running_points_at_the_macro(sock):
+def test_not_running_points_at_the_macros(sock):
     r = live.not_running()
-    assert r["macro"] == live.MACRO_NAME and live.MACRO_NAME in r["how"]
+    assert r["macro"] == live.MACRO_NAME and live.MACRO_NAME in r["how"] and live.STOP_MACRO_NAME in r["how"]
+
+
+# Once per session, before FreeCAD work starts, the user hears whether the bridge is on and how to switch it.
+
+@pytest.fixture
+def fresh_session(monkeypatch):
+    from cadmate import server
+    monkeypatch.setattr(server, "_bridge_offered", False)
+    return server
+
+
+def test_status_tells_the_user_once_per_session(sock, fresh_session):
+    first = fresh_session.freecad_live_status()
+    assert not first["running"] and live.MACRO_NAME in first["tell_user"] and "once" in first["note"]
+    again = fresh_session.freecad_live_status()
+    assert not again["running"] and "tell_user" not in again
+
+
+def test_offer_names_the_stop_macro_when_the_bridge_is_on():
+    on, off = live.offer(True), live.offer(False)
+    assert on["running"] and live.STOP_MACRO_NAME in on["tell_user"]
+    assert not off["running"] and live.MACRO_NAME in off["tell_user"]
+
+
+def test_first_freecad_tool_of_a_session_carries_the_check(sock, fresh_session):
+    r = fresh_session.freecad_live_state()
+    assert r["freecad_bridge"]["running"] is False and "tell_user" in r["freecad_bridge"]
+    assert "freecad_bridge" not in fresh_session.freecad_live_state()
+    assert "tell_user" not in fresh_session.freecad_live_status()  # already told

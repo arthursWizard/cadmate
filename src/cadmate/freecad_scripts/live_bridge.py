@@ -23,12 +23,13 @@
 # whether it came from cadmate (during a request) or from the user, which is
 # how cadmate learns what the user edited by hand between its own edits.
 #
-# Stop it with App._cadmate_bridge.stop(). Running this file again replaces
+# Stop it with App._cadmate_bridge.stop() or the stop macro. Running this file again replaces
 # the running bridge.
 #
-# On start it also saves a one-line macro, cadmate_bridge.FCMacro, in FreeCAD's
-# macro folder, so the user restarts the bridge from Macro > Macros... (and then
-# Macro > Recent macros) instead of pasting this line again. The macro runs the
+# On start it also saves two small macros in FreeCAD's macro folder:
+# cadmate_bridge.FCMacro starts the bridge, so the user restarts it from
+# Macro > Macros... (and then Macro > Recent macros) instead of pasting this
+# line again, and cadmate_bridge_stop.FCMacro stops it. The start macro runs the
 # copy of this file in cadmate's data folder, which cadmate refreshes on update.
 import contextlib
 import hmac
@@ -95,14 +96,26 @@ def transport() -> str:
     return "tcp" if platform.system() == "Windows" or not hasattr(socket, "AF_UNIX") else "unix"
 
 
-MACRO_NAME = "cadmate_bridge.FCMacro"
-MACRO_MARK = "# cadmate: starts cadmate's FreeCAD bridge."
+MACRO_NAME = "cadmate_bridge.FCMacro"  # starts the bridge
+STOP_MACRO_NAME = "cadmate_bridge_stop.FCMacro"  # stops it
+MACRO_MARK = "# cadmate: "  # the first line of every macro cadmate writes; others of the same name are left alone
+_MACRO_NOTE = ("Written by cadmate's bridge, which rewrites it when it starts.\n"
+               "# Delete it and it comes back the next time you paste cadmate's start line.\n")
 
 
-def macro_text(bridge: Path) -> str:
-    return (f"{MACRO_MARK} Written by cadmate's bridge, which rewrites it when it starts.\n"
-            f"# Delete it and it comes back the next time you paste cadmate's start line.\n"
-            f"exec(open({str(bridge)!r}, encoding='utf-8').read())\n")
+def macro_texts(bridge: Path | None) -> dict:
+    """The macros the bridge saves, by file name. The start macro needs the installed bridge copy to point at."""
+    texts = {STOP_MACRO_NAME: (f"{MACRO_MARK}stops cadmate's FreeCAD bridge. {_MACRO_NOTE}"
+                               "import FreeCAD\n"
+                               "_bridge = getattr(FreeCAD, '_cadmate_bridge', None)\n"
+                               "if _bridge is not None and _bridge.running:\n"
+                               "    _bridge.stop()\n"
+                               "else:\n"
+                               "    FreeCAD.Console.PrintMessage(\"[cadmate] the bridge isn't running\\n\")\n")}
+    if bridge is not None:
+        texts[MACRO_NAME] = (f"{MACRO_MARK}starts cadmate's FreeCAD bridge. {_MACRO_NOTE}"
+                             f"exec(open({str(bridge)!r}, encoding='utf-8').read())\n")
+    return texts
 
 
 def macro_dir(app) -> Path | None:
@@ -117,29 +130,32 @@ def macro_dir(app) -> Path | None:
     return None
 
 
-def install_macro(app, folder: Path | None = None, bridge: Path | None = None) -> Path | None:
-    """Save the start macro in FreeCAD's macro folder. Leaves a same-named macro cadmate didn't write alone.
+def install_macros(app, folder: Path | None = None, bridge: Path | None = None) -> dict:
+    """Save the start and stop macros in FreeCAD's macro folder; returns {file name: path} of those in place.
 
-    Returns the macro's path, or None when there is no installed bridge copy to point at (the bridge was run
-    from somewhere else) or the folder can't be written."""
+    Leaves a same-named macro cadmate didn't write alone. The start macro is skipped when there is no installed
+    bridge copy to point at (the bridge was run from somewhere else)."""
     bridge = bridge or data_dir() / "cadmate_bridge.py"
     folder = folder or macro_dir(app)
-    if folder is None or not bridge.is_file():
-        return None
-    target = folder / MACRO_NAME
-    text = macro_text(bridge)
-    try:
-        if target.exists():
-            old = target.read_text(encoding="utf-8")
-            if not old.startswith(MACRO_MARK):
-                return None
-            if old == text:
-                return target
-        folder.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return None
-    return target
+    if folder is None:
+        return {}
+    done = {}
+    for name, text in macro_texts(bridge if bridge.is_file() else None).items():
+        target = folder / name
+        try:
+            if target.exists():
+                old = target.read_text(encoding="utf-8")
+                if not old.startswith(MACRO_MARK):
+                    continue
+                if old != text:
+                    target.write_text(text, encoding="utf-8")
+            else:
+                folder.mkdir(parents=True, exist_ok=True)
+                target.write_text(text, encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        done[name] = target
+    return done
 
 
 def _write_private(path: Path, text: str):
@@ -192,7 +208,7 @@ class Bridge:
         self.running = True
         self.timer = None
         self.observer = _Observer(self)
-        self.macro = None
+        self.macros: dict = {}
 
     # Lifecycle
 
@@ -205,10 +221,10 @@ class Bridge:
         self.timer.start(TICK_MS)
         self.App.addDocumentObserver(self.observer)
         self._say(f"bridge listening on {self.where}; stop it with App._cadmate_bridge.stop()")
-        self.macro = install_macro(self.App)
-        if self.macro is not None:
-            self._say(f"next time, start it from Macro > Macros... > {MACRO_NAME} (then Macro > Recent macros); "
-                      f"saved in {self.macro.parent}")
+        self.macros = install_macros(self.App)
+        if MACRO_NAME in self.macros:
+            self._say(f"next time, start it from Macro > Macros... > {MACRO_NAME} (then Macro > Recent macros), "
+                      f"and stop it with {STOP_MACRO_NAME}; both are in {self.macros[MACRO_NAME].parent}")
 
     def stop(self):
         self.running = False
@@ -373,7 +389,7 @@ class Bridge:
         return {"bridge": BRIDGE_VERSION, "freecad": ".".join(App.Version()[:3]), "seq": self.seq,
                 "documents": [d.Name for d in App.listDocuments().values()],
                 "active": App.ActiveDocument.Name if App.ActiveDocument else None,
-                "macro": str(self.macro) if self.macro else None}
+                "macros": {name: str(path) for name, path in self.macros.items()}}
 
     def op_state(self, doc=None):
         d = self._doc(doc)

@@ -21,7 +21,8 @@ Claude works on your design in three ways:
 - **Live in KiCad's PCB editor.** With KiCad's API switched on, Claude reads and edits the board open in your window,
   each edit one undo step.
 - **Live in FreeCAD.** With cadmate's bridge script running inside FreeCAD, Claude builds and edits models in your
-  FreeCAD window. macOS and Linux only.
+  FreeCAD window, each edit one undo step. You start the bridge once by pasting a line Claude gives you, and from
+  FreeCAD's Macro menu after that; see [step 5](#5-optional-switch-on-the-live-connections).
 
 ## Part 1: one-time setup
 
@@ -134,10 +135,13 @@ Set them in the shell you start Claude Code from; the plugin's server inherits t
 
 - **KiCad's PCB editor**: KiCad > Settings (Preferences on Linux and Windows) > Plugins, tick "Enable KiCad API",
   restart KiCad. Any program running as you can then reach the open board; turn it off the same way when that matters.
-- **FreeCAD's window**: ask Claude for the bridge start line (`freecad_live_status` gives it) and
-  paste it into FreeCAD's Python console (View > Panels > Python console). The Report view shows
+- **FreeCAD's window**: the first time, ask Claude to start the FreeCAD bridge. It gives you a start line (from
+  `freecad_live_status`) to paste into FreeCAD's Python console (View > Panels > Python console). The Report view shows
   `[cadmate] bridge listening on ...`. It runs until you quit FreeCAD or run `App._cadmate_bridge.stop()`, and doesn't
-  start by itself next time.
+  start by itself next time. **Next time, don't paste anything:** that first start saved two macros, so use Macro >
+  Macros... > `cadmate_bridge_start.FCMacro` > Execute (after that it's under Macro > Recent macros) to start it, and
+  `cadmate_bridge_stop.FCMacro` to stop it. When FreeCAD work starts in a session, Claude tells you once whether the
+  bridge is on and waits for you to switch it if you want to.
 
 Without either, everything still works on saved files; you reload in KiCad or FreeCAD to see Claude's changes.
 

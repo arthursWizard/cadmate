@@ -44,7 +44,13 @@ session that creates or changes design files, whoever asked for the change:
 - Report DRC as errors, warnings, unconnected and parity, with the warnings by type, never errors alone.
 - project_init on a new design folder; project_check before telling the user a step is done.
 - check_enclosure before showing the user an enclosure: collisions, openings nobody declared, joints with a gap or a step.
-The cadmate-project skill has the reasons and the edge cases."""
+The cadmate-project skill has the reasons and the edge cases.
+
+FreeCAD work can happen live in the user's open FreeCAD window, not only on saved files. Before the first FreeCAD step
+in a session, call freecad_live_status and pass its tell_user to the user: whether the bridge is on, and how to start
+or stop it (FreeCAD's Macro menu) if they want it the other way. Wait for their answer, then work. Do this once per
+session, not before each change. If a FreeCAD tool's reply carries freecad_bridge, the check hadn't happened yet: pass
+that on before your next step."""
 
 server = MCPServer("cadmate", instructions=INSTRUCTIONS)
 
@@ -137,7 +143,7 @@ def check_model_vs_footprint(
         model_path = placement.path
     resolved = model.resolve(model_path, fp_path.parent)
     expected = {k: v for k, v in (("length", body_length), ("width", body_width), ("height", body_height)) if v is not None}
-    return model.check_file(fp, resolved, placement, expected or None)
+    return _with_offer(model.check_file(fp, resolved, placement, expected or None))
 
 
 @server.tool()
@@ -445,7 +451,8 @@ def generate_part(
     pads; nothing is written when any check finds errors. Existing files are only replaced with overwrite=True,
     keeping the old files (history/ in a cadmate project, else .bak). The model needs FreeCAD; without it, symbol and footprint are written without a model.
     """
-    return part.generate_part(project_dir, library, symbol, footprint, model, datasheet=datasheet, overwrite=overwrite)
+    r = part.generate_part(project_dir, library, symbol, footprint, model, datasheet=datasheet, overwrite=overwrite)
+    return r if model and model.get("skip") else _with_offer(r)
 
 
 @server.tool()
@@ -483,6 +490,22 @@ def check_part(
 # The interactive loop in the user's FreeCAD window, through the bridge they start (live.py).
 
 _live_session = live.Session()
+_bridge_offered = False  # the user was told at the start of FreeCAD work whether the bridge is on; once per session
+
+
+def _bridge_offer(running: bool | None = None) -> dict | None:
+    """live.offer() the first time it's asked for in this server (one per Claude session), None after."""
+    global _bridge_offered
+    if _bridge_offered:
+        return None
+    _bridge_offered = True
+    return live.offer(_live_running() if running is None else running)
+
+
+def _with_offer(reply: dict) -> dict:
+    """A FreeCAD tool's reply, with the start-of-work bridge check added when it is the session's first."""
+    offer = _bridge_offer()
+    return reply | {"freecad_bridge": offer} if offer and isinstance(reply, dict) else reply
 
 
 def _live_running() -> bool:
@@ -492,23 +515,28 @@ def _live_running() -> bool:
         return False
 
 
-def _live(op: str, **args) -> dict:
+def _live(op: str, offer: bool = True, **args) -> dict:
     """Call the bridge, reporting the user's edits since the last call alongside the reply."""
+    add = _with_offer if offer else (lambda r: r)
     try:
         changes = _live_session.user_changes()
         reply = live.call(op, **args)
     except live.BridgeUnavailable as e:
-        return live.not_running() | {"error": str(e)}
-    return reply | {"user_changes": changes}
+        return add(live.not_running() | {"error": str(e)})
+    return add(reply | {"user_changes": changes})
 
 
 @server.tool()
 def freecad_live_status() -> dict:
     """Check whether the user's FreeCAD window is reachable for live editing, and how to start the bridge if not.
 
+    The first call in a session adds tell_user: what to say to the user before
+    FreeCAD work starts (the bridge is on or off, and how to switch it).
+
     The live tools work on the FreeCAD window the user has open, through a
     bridge script the user starts from FreeCAD's Python console (the returned
-    "start" line); cadmate never starts it on its own. Every command shows in
+    "start" line) the first time, and after that from FreeCAD's Macro menu
+    (the cadmate_bridge_start macro the bridge saves); cadmate never starts it on its own. Every command shows in
     FreeCAD's Report view and every edit is one undo step named "cadmate: ...".
     """
     try:
@@ -517,8 +545,11 @@ def freecad_live_status() -> dict:
             raise live.BridgeUnavailable(f"the bridge running in FreeCAD is version {reply.get('bridge')}, cadmate needs {live.BRIDGE_VERSION}; "
                                          "paste the start line again to replace it")
     except live.BridgeUnavailable as e:
-        return live.not_running() | {"error": str(e)}
-    return reply | {"running": True}
+        reply = live.not_running() | {"error": str(e)}
+    else:
+        reply = reply | {"running": True}
+    offer = _bridge_offer(reply["running"])
+    return reply | {k: v for k, v in offer.items() if k != "running"} if offer else reply
 
 
 @server.tool()
@@ -570,7 +601,7 @@ def freecad_live_snapshot(doc: str | None = None, view: str = "isometric", width
     user's current view (also skips the fit). The user's view is put back
     after the picture is taken.
     """
-    r = _live("snapshot", doc=doc, view=view, width=width, height=height, fit=bool(view))
+    r = _live("snapshot", offer=False, doc=doc, view=view, width=width, height=height, fit=bool(view))
     if not r.get("ok"):
         raise RuntimeError(r.get("error") or json.dumps(r))
     return Image(path=r["file"])
@@ -1023,7 +1054,7 @@ def check_enclosure(path: str, spec: dict | str | None = None) -> dict:
     errors to fix. The report is saved beside the assembly as enclosure-check.json; project_check flags it when it's
     missing, stale or failing. Takes a minute or two with a few boards; longer with min_clearance."""
     try:
-        return enclosure.check(path, spec)
+        return _with_offer(enclosure.check(path, spec))
     except (enclosure.EnclosureError, RuntimeError, OSError, ValueError) as e:
         return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
 
@@ -1118,6 +1149,12 @@ def render_protoboard(design: dict | str, out: str, width: int = 1800) -> Image:
 
 
 def main() -> None:
+    # Keep the bridge copy that FreeCAD's cadmate_bridge_start macro runs in step with this version of cadmate, so a user
+    # who starts the bridge from the macro without asking Claude first gets the current one.
+    try:
+        live.installed_bridge()
+    except OSError:
+        pass
     server.run()
 
 

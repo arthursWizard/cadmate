@@ -6,6 +6,19 @@ cadmate is an [MCP](https://modelcontextprotocol.io) server. You talk to Claude 
 
 New to cadmate? Start with [docs/getting-started.md](docs/getting-started.md): setup from scratch, the project layout, and a first design step by step.
 
+> **Claude can work in your open FreeCAD window.** Start cadmate's bridge inside FreeCAD and Claude builds and edits
+> the model you're looking at, with every edit one undo step and your hand edits kept.
+>
+> - **First time:** ask Claude to "start the FreeCAD bridge". It gives you one line to paste into FreeCAD's Python
+>   console (View > Panels > Python console).
+> - **Every time after that:** in FreeCAD, Macro > Recent macros > `cadmate_bridge_start` (or Macro > Macros... >
+>   `cadmate_bridge_start.FCMacro` > Execute). `cadmate_bridge_stop.FCMacro` stops it. The first start saved both macros
+>   for you, so there's nothing to remember.
+> - **Claude checks for you:** when FreeCAD work starts in a session, Claude tells you once whether the bridge is on
+>   and how to switch it, and waits for your answer before changing anything.
+>
+> Details in [Live editing in FreeCAD](#live-editing-in-freecad).
+
 ## Status
 
 Early. Ten workflows work end to end:
@@ -46,7 +59,7 @@ Early. Ten workflows work end to end:
 | `compare_symbols` | Pin-by-pin differences between two symbols | nothing |
 | `generate_part` | Writes a linked symbol, footprint and 3D model from one datasheet into a project, checked together first | FreeCAD for the model |
 | `check_part` | Follows a symbol to its footprint and model and checks all three and the links between them | FreeCAD for the model check |
-| `freecad_live_status` | Whether your FreeCAD window is reachable, and the line that starts the bridge if not | FreeCAD bridge |
+| `freecad_live_status` | Whether your FreeCAD window is reachable, and how to start or stop the bridge (the start line the first time, the start and stop macros after that); its first call in a session says what to tell you before FreeCAD work starts | FreeCAD bridge |
 | `freecad_live_state` | Objects in a document as they are now (properties, placement, exact bounding box) and what you edited by hand since Claude last looked | FreeCAD bridge |
 | `freecad_live_edit` | Runs one edit in your window as one undo step named "cadmate: ..." | FreeCAD bridge |
 | `freecad_live_open` | Opens an `.FCStd`, imports a STEP, or runs a model build script in your window | FreeCAD bridge |
@@ -151,9 +164,12 @@ cadmate builds and checks models itself with FreeCAD's command-line `freecadcmd`
 
 FreeCAD has no built-in way for another program to work in a window that's already open, so cadmate ships a small bridge script that runs inside FreeCAD. It only runs when you start it:
 
-1. Ask Claude for the start line (the `freecad_live_status` tool gives it). It looks like `exec(open('~/Library/Application Support/cadmate/cadmate_bridge.py', encoding='utf-8').read())` with your home folder spelled out (on Windows the folder is `%LOCALAPPDATA%\cadmate`).
+1. The first time, ask Claude for the start line (the `freecad_live_status` tool gives it). It looks like `exec(open('~/Library/Application Support/cadmate/cadmate_bridge.py', encoding='utf-8').read())` with your home folder spelled out (on Windows the folder is `%LOCALAPPDATA%\cadmate`).
 2. In FreeCAD, open View > Panels > Python console and paste it. The Report view shows `[cadmate] bridge listening on ...`.
-3. To stop it, run `App._cadmate_bridge.stop()` in the same console, or quit FreeCAD. Running the start line again replaces a running bridge. It doesn't start with FreeCAD; to have it do that, add the start line to a macro of your own that FreeCAD runs at startup.
+3. That first start also saves two macros in FreeCAD's macro folder (the one set in Preferences > Python > Macro), and the Report view says where: `cadmate_bridge_start.FCMacro` starts the bridge and `cadmate_bridge_stop.FCMacro` stops it. From then on, start it with Macro > Macros... > `cadmate_bridge_start.FCMacro` > Execute; after one run it's also under Macro > Recent macros. For one click, add either to a toolbar with Tools > Customize > Macros. The macro runs cadmate's own copy of the bridge, which cadmate keeps up to date, so it doesn't go stale when you update cadmate. cadmate never overwrites a macro of either name it didn't write; delete them and the next pasted start line saves them again.
+4. To stop it, run the stop macro, or `App._cadmate_bridge.stop()` in the Python console, or quit FreeCAD. Starting it again replaces a running bridge. It doesn't start with FreeCAD; to have it do that, run the macro from a macro of your own that FreeCAD runs at startup, keeping in mind the trade-off below.
+
+At the start of FreeCAD work in a session, Claude checks whether the bridge is running and tells you, once: if it's off, how to start it to work live; if it's on, that it will work in your window and how to stop it if you'd rather it only touched saved files. It waits for your answer before the first change and doesn't ask again before each edit.
 
 What it does to your document:
 

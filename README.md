@@ -59,7 +59,7 @@ Early. Ten workflows work end to end:
 | `compare_symbols` | Pin-by-pin differences between two symbols | nothing |
 | `generate_part` | Writes a linked symbol, footprint and 3D model from one datasheet into a project, checked together first | FreeCAD for the model |
 | `check_part` | Follows a symbol to its footprint and model and checks all three and the links between them | FreeCAD for the model check |
-| `freecad_live_status` | Whether your FreeCAD window is reachable, and how to start the bridge if not (the start line, or the macro it saved) | FreeCAD bridge |
+| `freecad_live_status` | Whether your FreeCAD window is reachable, and how to start or stop the bridge (the start line the first time, the start and stop macros after that); its first call in a session says what to tell you before FreeCAD work starts | FreeCAD bridge |
 | `freecad_live_state` | Objects in a document as they are now (properties, placement, exact bounding box) and what you edited by hand since Claude last looked | FreeCAD bridge |
 | `freecad_live_edit` | Runs one edit in your window as one undo step named "cadmate: ..." | FreeCAD bridge |
 | `freecad_live_open` | Opens an `.FCStd`, imports a STEP, or runs a model build script in your window | FreeCAD bridge |

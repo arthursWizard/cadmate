@@ -56,7 +56,7 @@ Uses the cadmate MCP server (KiCad side and checks) and FreeCAD. When the user w
 
 For iterating with the user: they look, comment or edit by hand, you edit on top. Fewer rounds are better, but expect some.
 
-1. `freecad_live_status`. If the bridge isn't running, give the user the `start` line to paste into FreeCAD's Python console (View > Panels > Python console) and wait for them. Never start it any other way.
+1. `freecad_live_status`. If the bridge isn't running, tell the user to start it from FreeCAD's Macro menu (Macro > Recent macros, or Macro > Macros... > `cadmate_bridge.FCMacro` > Execute) if they've used it before, and otherwise give them the `start` line to paste into FreeCAD's Python console (View > Panels > Python console); the first start saves that macro. Wait for them. Never start it any other way.
 2. `freecad_live_open` the model: a build script (it runs in their window and leaves its document open; copy it first if it exports over a STEP that's in use), an `.FCStd`, or a STEP.
 3. `freecad_live_snapshot` and look at it before you say anything about it. Then tell the user it's there.
 4. Each round: `freecad_live_state` first. Read `user_changes`: those are the user's hand edits since you last looked. Keep them; build on them; never revert one unless they ask. If an edit of theirs conflicts with the datasheet or the footprint, say so and ask.

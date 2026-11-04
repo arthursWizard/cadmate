@@ -338,3 +338,50 @@ def test_unix_bridge_removes_a_stale_endpoint_file(sock):
         assert not live.endpoint_path().exists() and sock.is_socket()
     finally:
         bridge.close()
+
+
+# The start macro the bridge saves in FreeCAD's macro folder, so the user doesn't paste the start line again.
+
+class MacroApp(FakeApp):
+    folder = None
+
+    @classmethod
+    def getUserMacroDir(cls, actual=False):
+        return str(cls.folder)
+
+
+def test_bridge_saves_a_start_macro_that_runs_the_installed_copy(sock, tmp_path):
+    mod = load_bridge()
+    MacroApp.folder = tmp_path / "Macro"
+    installed = live.installed_bridge()
+    path = mod.install_macro(MacroApp)
+    assert path == MacroApp.folder / live.MACRO_NAME == MacroApp.folder / mod.MACRO_NAME
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith(mod.MACRO_MARK) and live.start_command() in text
+    compile(text, str(path), "exec")
+    assert installed.is_file()
+    assert mod.install_macro(MacroApp) == path  # the same again is fine
+
+
+def test_bridge_leaves_a_macro_it_did_not_write_alone(sock, tmp_path):
+    mod = load_bridge()
+    live.installed_bridge()
+    MacroApp.folder = tmp_path
+    theirs = tmp_path / mod.MACRO_NAME
+    theirs.write_text("print('mine')\n", encoding="utf-8")
+    assert mod.install_macro(MacroApp) is None
+    assert theirs.read_text(encoding="utf-8") == "print('mine')\n"
+
+
+def test_no_macro_without_an_installed_copy_or_a_macro_folder(sock, tmp_path):
+    mod = load_bridge()
+    MacroApp.folder = tmp_path
+    assert mod.install_macro(MacroApp) is None  # nothing in cadmate's data folder to point at
+    live.installed_bridge()
+    assert mod.install_macro(FakeApp) is None  # FreeCAD didn't say where its macros go
+    assert not (tmp_path / mod.MACRO_NAME).exists()
+
+
+def test_not_running_points_at_the_macro(sock):
+    r = live.not_running()
+    assert r["macro"] == live.MACRO_NAME and live.MACRO_NAME in r["how"]

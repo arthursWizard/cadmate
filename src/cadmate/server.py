@@ -44,7 +44,11 @@ session that creates or changes design files, whoever asked for the change:
 - Report DRC as errors, warnings, unconnected and parity, with the warnings by type, never errors alone.
 - project_init on a new design folder; project_check before telling the user a step is done.
 - check_enclosure before showing the user an enclosure: collisions, openings nobody declared, joints with a gap or a step.
-The cadmate-project skill has the reasons and the edge cases."""
+The cadmate-project skill has the reasons and the edge cases.
+
+FreeCAD work can happen live in the user's open FreeCAD window, not only on saved files: when a session involves a
+FreeCAD model, call freecad_live_status early and, if the bridge isn't running, tell the user how to start it (its
+"how" says: the cadmate_bridge macro from FreeCAD's Macro menu, or the start line the first time)."""
 
 server = MCPServer("cadmate", instructions=INSTRUCTIONS)
 
@@ -508,7 +512,8 @@ def freecad_live_status() -> dict:
 
     The live tools work on the FreeCAD window the user has open, through a
     bridge script the user starts from FreeCAD's Python console (the returned
-    "start" line); cadmate never starts it on its own. Every command shows in
+    "start" line) the first time, and after that from FreeCAD's Macro menu
+    (the cadmate_bridge macro the bridge saves); cadmate never starts it on its own. Every command shows in
     FreeCAD's Report view and every edit is one undo step named "cadmate: ...".
     """
     try:
@@ -1118,6 +1123,12 @@ def render_protoboard(design: dict | str, out: str, width: int = 1800) -> Image:
 
 
 def main() -> None:
+    # Keep the bridge copy that FreeCAD's cadmate_bridge macro runs in step with this version of cadmate, so a user
+    # who starts the bridge from the macro without asking Claude first gets the current one.
+    try:
+        live.installed_bridge()
+    except OSError:
+        pass
     server.run()
 
 

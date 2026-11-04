@@ -7,7 +7,9 @@ each edit it reads what the user changed since its last look, from the
 bridge's change log.
 
 The bridge runs only when the user starts it from FreeCAD's Python console;
-start_command() gives the line. It is copied to cadmate's data folder first so
+start_command() gives the line. The first start saves a macro in FreeCAD's
+macro folder that runs the same line, so after that the user starts it from
+FreeCAD's Macro menu. The bridge is copied to cadmate's data folder first so
 that line keeps working when cadmate is reinstalled somewhere else.
 
 Two transports, chosen by the bridge when it starts. On macOS and Linux it
@@ -32,6 +34,7 @@ TRANSPORT_ENV = "CADMATE_BRIDGE_TRANSPORT"  # "unix" or "tcp"; the platform's de
 BRIDGE_VERSION = 1  # live_bridge.BRIDGE_VERSION this client speaks
 BRIDGE_SOURCE = Path(__file__).parent / "freecad_scripts" / "live_bridge.py"
 LOOPBACK = ("127.0.0.1", "::1")
+MACRO_NAME = "cadmate_bridge.FCMacro"  # live_bridge.MACRO_NAME, the macro the bridge saves in FreeCAD's macro folder
 
 
 class BridgeUnavailable(RuntimeError):
@@ -150,8 +153,12 @@ def not_running() -> dict:
         "ok": False,
         "running": False,
         "start": start_command(),
-        "how": "Ask the user to open FreeCAD, then View > Panels > Python console, and paste the start line. "
-               "The Report view then shows '[cadmate] bridge listening on ...'. It stops with App._cadmate_bridge.stop().",
+        "macro": MACRO_NAME,
+        "how": "If the user has started the bridge before, they start it again in FreeCAD with Macro > Recent macros > "
+               f"{MACRO_NAME} (or Macro > Macros... > {MACRO_NAME} > Execute); the bridge saved that macro the first "
+               "time. Otherwise, or if the macro isn't there: open FreeCAD, then View > Panels > Python console, and "
+               "paste the start line. The Report view then shows '[cadmate] bridge listening on ...'. "
+               "It stops with App._cadmate_bridge.stop().",
     }
 
 

@@ -25,6 +25,11 @@
 #
 # Stop it with App._cadmate_bridge.stop(). Running this file again replaces
 # the running bridge.
+#
+# On start it also saves a one-line macro, cadmate_bridge.FCMacro, in FreeCAD's
+# macro folder, so the user restarts the bridge from Macro > Macros... (and then
+# Macro > Recent macros) instead of pasting this line again. The macro runs the
+# copy of this file in cadmate's data folder, which cadmate refreshes on update.
 import contextlib
 import hmac
 import io
@@ -90,6 +95,53 @@ def transport() -> str:
     return "tcp" if platform.system() == "Windows" or not hasattr(socket, "AF_UNIX") else "unix"
 
 
+MACRO_NAME = "cadmate_bridge.FCMacro"
+MACRO_MARK = "# cadmate: starts cadmate's FreeCAD bridge."
+
+
+def macro_text(bridge: Path) -> str:
+    return (f"{MACRO_MARK} Written by cadmate's bridge, which rewrites it when it starts.\n"
+            f"# Delete it and it comes back the next time you paste cadmate's start line.\n"
+            f"exec(open({str(bridge)!r}, encoding='utf-8').read())\n")
+
+
+def macro_dir(app) -> Path | None:
+    """FreeCAD's macro folder as the user set it in Preferences > Python > Macro, or None."""
+    for get in (lambda: app.getUserMacroDir(True),
+                lambda: app.ParamGet("User parameter:BaseApp/Preferences/Macro").GetString("MacroPath"),
+                lambda: str(Path(app.getUserAppDataDir()) / "Macro")):
+        with contextlib.suppress(Exception):
+            path = get()
+            if path:
+                return Path(path)
+    return None
+
+
+def install_macro(app, folder: Path | None = None, bridge: Path | None = None) -> Path | None:
+    """Save the start macro in FreeCAD's macro folder. Leaves a same-named macro cadmate didn't write alone.
+
+    Returns the macro's path, or None when there is no installed bridge copy to point at (the bridge was run
+    from somewhere else) or the folder can't be written."""
+    bridge = bridge or data_dir() / "cadmate_bridge.py"
+    folder = folder or macro_dir(app)
+    if folder is None or not bridge.is_file():
+        return None
+    target = folder / MACRO_NAME
+    text = macro_text(bridge)
+    try:
+        if target.exists():
+            old = target.read_text(encoding="utf-8")
+            if not old.startswith(MACRO_MARK):
+                return None
+            if old == text:
+                return target
+        folder.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    return target
+
+
 def _write_private(path: Path, text: str):
     """Write a file only the user can read (0600 where the OS has modes), replacing any old one in one step."""
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
@@ -140,6 +192,7 @@ class Bridge:
         self.running = True
         self.timer = None
         self.observer = _Observer(self)
+        self.macro = None
 
     # Lifecycle
 
@@ -152,6 +205,10 @@ class Bridge:
         self.timer.start(TICK_MS)
         self.App.addDocumentObserver(self.observer)
         self._say(f"bridge listening on {self.where}; stop it with App._cadmate_bridge.stop()")
+        self.macro = install_macro(self.App)
+        if self.macro is not None:
+            self._say(f"next time, start it from Macro > Macros... > {MACRO_NAME} (then Macro > Recent macros); "
+                      f"saved in {self.macro.parent}")
 
     def stop(self):
         self.running = False
@@ -315,7 +372,8 @@ class Bridge:
         App = self.App
         return {"bridge": BRIDGE_VERSION, "freecad": ".".join(App.Version()[:3]), "seq": self.seq,
                 "documents": [d.Name for d in App.listDocuments().values()],
-                "active": App.ActiveDocument.Name if App.ActiveDocument else None}
+                "active": App.ActiveDocument.Name if App.ActiveDocument else None,
+                "macro": str(self.macro) if self.macro else None}
 
     def op_state(self, doc=None):
         d = self._doc(doc)

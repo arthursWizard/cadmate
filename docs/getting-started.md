@@ -139,7 +139,7 @@ Set them in the shell you start Claude Code from; the plugin's server inherits t
   `freecad_live_status`) to paste into FreeCAD's Python console (View > Panels > Python console). The Report view shows
   `[cadmate] bridge listening on ...`. It runs until you quit FreeCAD or run `App._cadmate_bridge.stop()`, and doesn't
   start by itself next time. **Next time, don't paste anything:** that first start saved two macros, so use Macro >
-  Macros... > `cadmate_bridge.FCMacro` > Execute (after that it's under Macro > Recent macros) to start it, and
+  Macros... > `cadmate_bridge_start.FCMacro` > Execute (after that it's under Macro > Recent macros) to start it, and
   `cadmate_bridge_stop.FCMacro` to stop it. When FreeCAD work starts in a session, Claude tells you once whether the
   bridge is on and waits for you to switch it if you want to.
 

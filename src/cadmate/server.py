@@ -536,7 +536,7 @@ def freecad_live_status() -> dict:
     The live tools work on the FreeCAD window the user has open, through a
     bridge script the user starts from FreeCAD's Python console (the returned
     "start" line) the first time, and after that from FreeCAD's Macro menu
-    (the cadmate_bridge macro the bridge saves); cadmate never starts it on its own. Every command shows in
+    (the cadmate_bridge_start macro the bridge saves); cadmate never starts it on its own. Every command shows in
     FreeCAD's Report view and every edit is one undo step named "cadmate: ...".
     """
     try:
@@ -1149,7 +1149,7 @@ def render_protoboard(design: dict | str, out: str, width: int = 1800) -> Image:
 
 
 def main() -> None:
-    # Keep the bridge copy that FreeCAD's cadmate_bridge macro runs in step with this version of cadmate, so a user
+    # Keep the bridge copy that FreeCAD's cadmate_bridge_start macro runs in step with this version of cadmate, so a user
     # who starts the bridge from the macro without asking Claude first gets the current one.
     try:
         live.installed_bridge()

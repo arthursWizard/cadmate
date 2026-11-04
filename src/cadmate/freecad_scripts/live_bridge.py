@@ -27,7 +27,7 @@
 # the running bridge.
 #
 # On start it also saves two small macros in FreeCAD's macro folder:
-# cadmate_bridge.FCMacro starts the bridge, so the user restarts it from
+# cadmate_bridge_start.FCMacro starts the bridge, so the user restarts it from
 # Macro > Macros... (and then Macro > Recent macros) instead of pasting this
 # line again, and cadmate_bridge_stop.FCMacro stops it. The start macro runs the
 # copy of this file in cadmate's data folder, which cadmate refreshes on update.
@@ -96,7 +96,7 @@ def transport() -> str:
     return "tcp" if platform.system() == "Windows" or not hasattr(socket, "AF_UNIX") else "unix"
 
 
-MACRO_NAME = "cadmate_bridge.FCMacro"  # starts the bridge
+MACRO_NAME = "cadmate_bridge_start.FCMacro"  # starts the bridge
 STOP_MACRO_NAME = "cadmate_bridge_stop.FCMacro"  # stops it
 MACRO_MARK = "# cadmate: "  # the first line of every macro cadmate writes; others of the same name are left alone
 _MACRO_NOTE = ("Written by cadmate's bridge, which rewrites it when it starts.\n"

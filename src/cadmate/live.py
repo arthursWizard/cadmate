@@ -35,7 +35,7 @@ BRIDGE_VERSION = 1  # live_bridge.BRIDGE_VERSION this client speaks
 BRIDGE_SOURCE = Path(__file__).parent / "freecad_scripts" / "live_bridge.py"
 LOOPBACK = ("127.0.0.1", "::1")
 # The macros the bridge saves in FreeCAD's macro folder (live_bridge.MACRO_NAME and STOP_MACRO_NAME).
-MACRO_NAME = "cadmate_bridge.FCMacro"
+MACRO_NAME = "cadmate_bridge_start.FCMacro"
 STOP_MACRO_NAME = "cadmate_bridge_stop.FCMacro"
 
 
@@ -159,7 +159,7 @@ def offer(running: bool) -> dict:
     else:
         say = ("The FreeCAD bridge is off, so I'll work on saved files and you reload in FreeCAD to see changes. To "
                "work together in your open FreeCAD window instead, start it first: Macro > Recent macros > "
-               f"cadmate_bridge (or Macro > Macros... > {MACRO_NAME} > Execute). If you've never started it, I'll "
+               f"cadmate_bridge_start (or Macro > Macros... > {MACRO_NAME} > Execute). If you've never started it, I'll "
                "give you the line to paste once.")
     return {"running": running, "tell_user": say,
             "note": "Say this to the user once, at the start of FreeCAD work in this session, and wait for their "

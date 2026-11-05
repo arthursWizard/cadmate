@@ -188,6 +188,41 @@ def _jsonable(value):
     return str(value)
 
 
+VIEWS = ("isometric", "front", "rear", "top", "bottom", "left", "right")
+
+
+def origin_objects(doc) -> list:
+    """The origins in a document (one App::Origin per Part or Body) and their axes, planes and point.
+
+    A coordinate system the user added on purpose is not an origin and is left out."""
+    out = []
+    for o in doc.Objects:
+        is_origin = getattr(o, "TypeId", None) == "App::Origin"
+        if not is_origin:
+            with contextlib.suppress(Exception):
+                is_origin = bool(o.isDerivedFrom("App::Origin"))
+        if is_origin:
+            for x in [o, *(getattr(o, "OriginFeatures", None) or [])]:
+                if x not in out:
+                    out.append(x)
+    return out
+
+
+def shown_origins(doc) -> list[str]:
+    """Names of the origin objects in a document that are visible now."""
+    return [o.Name for o in origin_objects(doc)
+            if getattr(o, "ViewObject", None) is not None and o.ViewObject.Visibility]
+
+
+def hide_origins(doc) -> list[str]:
+    """Hide every origin object in a document; returns the names of those that were showing."""
+    shown = shown_origins(doc)
+    for o in origin_objects(doc):
+        if o.Name in shown:
+            o.ViewObject.Visibility = False
+    return shown
+
+
 def _placement(p) -> dict:
     yaw, pitch, roll = p.Rotation.getYawPitchRoll()
     return {"position": _jsonable(p.Base), "ypr": [round(yaw, 6), round(pitch, 6), round(roll, 6)]}
@@ -447,6 +482,7 @@ class Bridge:
 
         d = self._doc(doc) if doc or App.ActiveDocument else None
         before = self.seq
+        origins_before = {x.Name: set(shown_origins(x)) for x in App.listDocuments().values()}
         ns = {"App": App, "FreeCAD": App, "Gui": Gui, "FreeCADGui": Gui, "Part": Part, "V": App.Vector, "doc": d, "result": None}
         out = io.StringIO()
         if d is not None:
@@ -468,8 +504,14 @@ class Bridge:
             d.commitTransaction()
         touched = sorted({e["object"] for e in self.events if e["seq"] > before and e["object"]})
         active = App.ActiveDocument
-        return {"result": _jsonable(ns.get("result")), "stdout": out.getvalue()[-4000:], "touched": touched,
-                "doc": active.Name if active else None, "seq": self.seq}
+        reply = {"result": _jsonable(ns.get("result")), "stdout": out.getvalue()[-4000:], "touched": touched,
+                 "doc": active.Name if active else None, "seq": self.seq}
+        turned_on = {x.Name: sorted(set(shown_origins(x)) - origins_before.get(x.Name, set()))
+                     for x in App.listDocuments().values()}
+        turned_on = {k: v for k, v in turned_on.items() if v}
+        if turned_on:  # the usual way origins end up on: code that shows every object in doc.Objects
+            reply["origins_shown"] = turned_on
+        return reply
 
     def op_open(self, path, doc=None):
         import FreeCAD as App
@@ -497,8 +539,9 @@ class Bridge:
         finally:
             self.in_call = False
         App.setActiveDocument(d.Name)
-        self._fit()
-        return {"doc": d.Name, "seq": self.seq}
+        # A saved .FCStd keeps the origins its owner left on; imports and build scripts are cadmate's to tidy.
+        tidy = self._tidy(d, view="isometric", fit=True, origins=suffix != ".fcstd")
+        return {"doc": d.Name, "seq": self.seq} | tidy
 
     def op_save(self, doc=None, path=None):
         d = self._doc(doc)
@@ -565,12 +608,42 @@ class Bridge:
                 v.setAnimationEnabled(True)
         return {"file": str(p)}
 
-    def _fit(self):
-        if self.App.GuiUp:
-            import FreeCADGui as Gui
+    def op_tidy_view(self, doc=None, view="isometric", fit=True, hide_origins=True):
+        """Leave the document's view presentable: a standard view, the model fitted, origins and axis cross off."""
+        return self._tidy(self._doc(doc), view=view, fit=fit, origins=hide_origins)
 
+    def _tidy(self, d, view="isometric", fit=True, origins=True) -> dict:
+        if view and view not in VIEWS:
+            raise ValueError(f"view {view!r} isn't one of {', '.join(VIEWS)}")
+        out = {"doc": d.Name, "origins_hidden": hide_origins(d) if origins else []}
+        if not self.App.GuiUp:
+            return out
+        import FreeCADGui as Gui
+
+        self.App.setActiveDocument(d.Name)
+        gd = Gui.getDocument(d.Name)
+        Gui.ActiveDocument = gd
+        v = gd.ActiveView
+        with contextlib.suppress(Exception):  # bring this document's view to the front, so the user sees it
+            Gui.getMainWindow().setActiveWindow(v)
+        if origins:
             with contextlib.suppress(Exception):
-                Gui.SendMsgToActiveView("ViewFit")
+                if v.hasAxisCross():
+                    v.setAxisCross(False)
+                    out["axis_cross_hidden"] = True
+        animate = getattr(v, "isAnimationEnabled", lambda: False)()
+        try:
+            if animate:
+                v.setAnimationEnabled(False)  # a turn still under way when fitAll runs fits the wrong side
+            if view:
+                getattr(v, "view" + view[:1].upper() + view[1:])()
+            if fit:
+                v.fitAll()  # after hiding the origins, or their planes count in the fit and the model ends up small
+            Gui.updateGui()
+        finally:
+            if animate:
+                v.setAnimationEnabled(True)
+        return out | {"view": view or None, "fit": bool(fit)}
 
 
 class _Request:

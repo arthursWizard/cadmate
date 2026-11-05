@@ -182,6 +182,16 @@ def not_running() -> dict:
     }
 
 
+def outdated() -> dict:
+    """What to say when the bridge running in FreeCAD doesn't know an operation: it predates this cadmate.
+
+    Refreshes cadmate's copy of the bridge first, so the start macro runs the new one."""
+    installed_bridge()
+    return {"how": f"The bridge running in FreeCAD is older than cadmate. Restart it with Macro > Recent macros > "
+                   f"{MACRO_NAME} (or Macro > Macros... > {MACRO_NAME} > Execute); that replaces the running one. "
+                   "Ask the user to, then try again."}
+
+
 def summarize(events: list[dict], source: str = "user") -> list[dict]:
     """Collapse change-log events from one source into one entry per object, in first-seen order.
 

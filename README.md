@@ -63,6 +63,7 @@ Early. Ten workflows work end to end:
 | `freecad_live_state` | Objects in a document as they are now (properties, placement, exact bounding box) and what you edited by hand since Claude last looked | FreeCAD bridge |
 | `freecad_live_edit` | Runs one edit in your window as one undo step named "cadmate: ..." | FreeCAD bridge |
 | `freecad_live_open` | Opens an `.FCStd`, imports a STEP, or runs a model build script in your window | FreeCAD bridge |
+| `freecad_live_tidy_view` | Leaves your window presentable after a round of edits: a standard view, the model fitted, origins and axis cross off (unless you asked for them) | FreeCAD bridge |
 | `freecad_live_snapshot` | A picture of the model from a standard view | FreeCAD bridge |
 | `freecad_live_save` | Saves the document | FreeCAD bridge |
 | `freecad_live_export_step` | Exports STEP with colours and runs the footprint check on it | FreeCAD bridge |
@@ -175,6 +176,7 @@ What it does to your document:
 
 - Every command cadmate sends is printed in the Report view as `[cadmate] ...`, and errors in red.
 - Every edit is one undo step named `cadmate: <what changed>`, so the undo list shows Claude's edits apart from yours and Ctrl+Z takes one back. An edit that fails is undone as a whole.
+- When a round of edits is done, Claude leaves the window in an isometric view with the model fitted and centred, and origins and the axis cross off, unless you asked for something else. Moving the camera or hiding origins isn't an undo step and changes nothing in the model.
 - Claude edits the objects that are there, it doesn't regenerate the document, so your hand edits stay. Before each edit it reads the bridge's change log, which records every change with whether it came from cadmate or from you.
 
 On macOS and Linux the bridge listens on a Unix socket in a folder only your account can open (`~/Library/Application Support/cadmate/` on macOS, `$XDG_RUNTIME_DIR/cadmate/` on Linux), not on a network port, so a web page or another account can't reach it.

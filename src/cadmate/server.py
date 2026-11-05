@@ -523,6 +523,8 @@ def _live(op: str, offer: bool = True, **args) -> dict:
         reply = live.call(op, **args)
     except live.BridgeUnavailable as e:
         return add(live.not_running() | {"error": str(e)})
+    if not reply.get("ok") and str(reply.get("error", "")).startswith("unknown op"):
+        reply = reply | live.outdated()
     return add(reply | {"user_changes": changes})
 
 
@@ -575,9 +577,12 @@ def freecad_live_edit(code: str, label: str, doc: str | None = None) -> dict:
     of them. Objects the user edited keep their edits that way. The code sees
     App, Gui, Part, V (App.Vector) and doc (the document); set `result` to
     return a value. The document is recomputed afterwards. If the code raises,
-    the whole step is undone and the error comes back. label is short and says
-    what changed ("move USB-C 0.5 mm toward the edge"); the user sees it in the
-    undo list and the Report view.
+    the whole step is undone and the error comes back. origins_shown in the
+    reply lists origins (Part and Body axes and planes) the code made visible,
+    such as by showing every object in doc.Objects; hide them again unless the
+    user asked for them. label is short and says what changed ("move USB-C
+    0.5 mm toward the edge"); the user sees it in the undo list and the Report
+    view.
     """
     return _live("run", code=code, label=label, doc=doc)
 
@@ -591,6 +596,23 @@ def freecad_live_open(path: str, doc: str | None = None) -> dict:
     .py or .FCMacro) is run in the window, leaving the document it builds open.
     """
     return _live("open", path=str(Path(path).expanduser()), doc=doc)
+
+
+@server.tool()
+def freecad_live_tidy_view(doc: str | None = None, view: str = "isometric", fit: bool = True,
+                           hide_origins: bool = True) -> dict:
+    """Leave the user's FreeCAD window presentable once a batch of changes is done.
+
+    Brings the document's view to the front, turns it to a standard view
+    (isometric, front, rear, top, bottom, left, right; "" keeps the user's
+    angle), fits the model in the window, and hides the origins (the axes and
+    planes of every Part and Body) and the axis cross. Call it once at the end
+    of a round of edits, before telling the user it's ready, not after every
+    edit. Pass hide_origins=False, another view, or fit=False when the user
+    asked for origins on or for a particular view. Not an undo step; nothing in
+    the model changes. Returns the origins it hid.
+    """
+    return _live("tidy_view", doc=doc, view=view, fit=fit, hide_origins=hide_origins)
 
 
 @server.tool()

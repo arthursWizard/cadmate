@@ -435,3 +435,68 @@ def test_first_freecad_tool_of_a_session_carries_the_check(sock, fresh_session):
     assert r["freecad_bridge"]["running"] is False and "tell_user" in r["freecad_bridge"]
     assert "freecad_bridge" not in fresh_session.freecad_live_state()
     assert "tell_user" not in fresh_session.freecad_live_status()  # already told
+
+
+# Leaving the window presentable: origins off, a standard view, the model fitted.
+
+class _VO:
+    def __init__(self, visible):
+        self.Visibility = visible
+
+
+class _Obj:
+    def __init__(self, name, type_id="Part::Feature", visible=True, features=()):
+        self.Name, self.TypeId, self.ViewObject = name, type_id, _VO(visible)
+        if features:
+            self.OriginFeatures = list(features)
+
+    def isDerivedFrom(self, t):
+        return self.TypeId == t
+
+
+class _Doc:
+    def __init__(self, name, objects):
+        self.Name, self.Objects = name, objects
+
+
+def _doc_with_origin(origin_on, axis_on, lcs_on=True):
+    x_axis = _Obj("X_Axis", "App::Line", axis_on)
+    xy = _Obj("XY_Plane", "App::Plane", axis_on)
+    origin = _Obj("Origin", "App::Origin", origin_on, [x_axis, xy])
+    lcs = _Obj("LCS", "App::Line", lcs_on)  # the user's own datum line, not part of an origin
+    return _Doc("D", [_Obj("Body", "PartDesign::Body"), origin, x_axis, xy, _Obj("Box"), lcs])
+
+
+def test_origin_objects_are_the_origins_and_their_axes_and_planes_only():
+    b = load_bridge()
+    d = _doc_with_origin(True, True)
+    assert [o.Name for o in b.origin_objects(d)] == ["Origin", "X_Axis", "XY_Plane"]
+    assert b.shown_origins(_doc_with_origin(False, True)) == ["X_Axis", "XY_Plane"]
+
+
+def test_tidy_hides_the_origins_and_leaves_everything_else():
+    b = load_bridge()
+    d = _doc_with_origin(True, True)
+    bridge = b.Bridge(FakeApp, "unix")
+    FakeApp.GuiUp = False
+    try:
+        r = bridge._tidy(d)
+        assert r == {"doc": "D", "origins_hidden": ["Origin", "X_Axis", "XY_Plane"]}
+        assert b.shown_origins(d) == []
+        assert all(o.ViewObject.Visibility for o in d.Objects if o.Name in ("Body", "Box", "LCS"))
+        assert bridge._tidy(d)["origins_hidden"] == []  # nothing left to hide
+        d2 = _doc_with_origin(True, True)
+        assert bridge._tidy(d2, origins=False)["origins_hidden"] == []  # the user asked for them on
+        assert b.shown_origins(d2) == ["Origin", "X_Axis", "XY_Plane"]
+        with pytest.raises(ValueError, match="sideways"):
+            bridge._tidy(d2, view="sideways")
+    finally:
+        del FakeApp.GuiUp
+
+
+def test_tool_against_an_older_bridge_says_to_restart_it(sock, kind, fresh_session):
+    fresh_session._bridge_offered = True
+    fake_bridge(sock, [{"ok": True, "seq": 0, "events": []}, {"ok": False, "error": "unknown op 'tidy_view'"}], kind)
+    r = fresh_session.freecad_live_tidy_view()
+    assert not r["ok"] and live.MACRO_NAME in r["how"]
+    assert (live.data_dir() / "cadmate_bridge.py").read_bytes() == live.BRIDGE_SOURCE.read_bytes()  # the macro runs the new one

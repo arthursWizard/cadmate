@@ -112,6 +112,15 @@ each with a fix. Run it before you tell the user a step is done.
 Names: lowercase, dashes, no version or state words (`v2`, `final`, `new`, `routed`, `fixed`). A board's or part's
 name is what it is (`main`, `sensor`, `power`; `enclosure`, `bracket`), not when it was made.
 
+## Where the board gets made
+
+cadmate assumes no board house. When a KiCad project starts, ask the user once, with the question `project_init` or
+`project_fab` gives: which house, whether it assembles, which distributor, how many layers. Any answer can be "not
+decided yet". Record it with `project_fab`: it goes into `cadmate-project.json` and the brief's Fab section, and
+`review_pcb_layout`, `autoroute_rest` and `export_fab` read it from there. Don't ask again; when the user changes their
+mind, call `project_fab` with the new value. With no house chosen, reviews skip the fab-specific limits and say so,
+and `export_fab` writes the generic BOM and placement files, which any assembler takes.
+
 ## The brief
 
 `docs/brief.md` holds every requirement the user has stated, in their words, with who said it and when: shapes,

@@ -179,9 +179,12 @@ so you mostly say "snapshot this as before-rework" or "go back to yesterday's ve
 ## Part 3: your first session
 
 1. Make an empty folder for the design and start Claude Code in it (`cd my-design && claude`).
-2. Say what you're building, for example: "New design: a USB-C powered RP2040 board, 50 x 30 mm, two M3 holes, made at
-   JLCPCB. Set it up as a cadmate project." Claude runs `project_init` and writes your requirements into
-   `docs/brief.md`. Read that file and correct it now: every later step is checked against it.
+2. Say what you're building, for example: "New design: a USB-C powered RP2040 board, 50 x 30 mm, two M3 holes. Set it
+   up as a cadmate project." Claude runs `project_init` and writes your requirements into `docs/brief.md`. It also asks
+   you once where the board gets made: the board house, whether they assemble it, where you buy parts, how many
+   layers. "Not decided yet" is a fine answer to any of them. The answers go into the brief's Fab section, and the
+   review, routing and export steps use them. Read the brief and correct it now: every later step is checked against
+   it.
 3. Put the datasheets in `docs/` and say which parts you'll use.
 4. Open the KiCad project Claude made, and keep KiCad open while you work.
 
@@ -209,10 +212,13 @@ change. When you say good, Claude snapshots.
    Freerouting, and `finish_routing` cleans up after Freerouting. Inside a project each changes the board in place
    after a snapshot; reload the board in KiCad when Claude says so.
 6. **Review and DRC.** `review_pcb_layout` checks what a reviewer would (decap loops, crystal traces, return paths,
-   track width for the current, JLCPCB limits) and runs KiCad's DRC, reported as errors, warnings, unconnected and
-   parity. Fix, and review again.
-7. **Fab files.** `export_fab` writes the Gerber zip, BOM and CPL for JLCPCB into `fab/<board>/`, and lists the parts
-   that have no LCSC number yet.
+   track width for the current, and your board house's limits when you've chosen one cadmate knows: JLCPCB or PCBWay)
+   and runs KiCad's DRC, reported as errors, warnings, unconnected and parity. Fix, and review again.
+7. **Fab files.** Before ordering, "is it ready to order?": `check_ready_to_order` runs DRC with schematic parity,
+   ERC, the layout review, part numbers, the fab files' age and the brief's open items together, and says what blocks
+   the order. Then `export_fab` writes the Gerber zip, a BOM (manufacturer and part number, plus any LCSC, DigiKey or
+   Mouser numbers) and a placement file into `fab/<board>/`, and lists the parts with no part number yet. With JLCPCB
+   as your board house it also writes JLCPCB's own BOM and CPL.
 8. **Enclosure.** Claude builds the case in FreeCAD, live in your window on macOS and Linux, or headless from a script.
    The openings you want and the heights from the brief go in `enclosure.json` beside the assembly, and `check_enclosure` reports
    collisions with the board and parts, openings nobody declared, and seams with a gap or a step. Fixing the case is a

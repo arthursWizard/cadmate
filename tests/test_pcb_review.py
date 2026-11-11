@@ -268,10 +268,35 @@ def test_feedback_next_to_switch_node():
 
 def test_jlcpcb_smt_spacing():
     b = board(cap("C1", 10, 10), cap("C2", 12.7, 10))  # 0603 pads 0.2 mm apart, JLCPCB asks 0.18: fine
-    assert not [f for f in rules(pr.review_board(b), "assembly") if "apart" in f["what"]]
+    assert not [f for f in rules(pr.review_board(b, fab="jlcpcb"), "assembly") if "apart" in f["what"]]
     b = board(cap("C1", 10, 10), cap("C2", 12.55, 10))  # 0.05 mm: well under
-    a = [f for f in rules(pr.review_board(b), "assembly") if "apart" in f["what"]]
+    a = [f for f in rules(pr.review_board(b, fab="jlcpcb"), "assembly") if "apart" in f["what"]]
     assert a and a[0]["severity"] == "warning" and a[0]["source"] == "jlcpcb_smt"
+
+
+def test_no_board_house_is_assumed():
+    """Without a fab, no vendor's limits are applied: the review says what it skipped instead."""
+    b = board(cap("C1", 10, 10), cap("C2", 12.55, 10), via(30, 30, "SIG", size=0.3, drill=0.1))
+    r = pr.review_board(b)
+    assert not [f for f in r["findings"] if "JLCPCB" in f["what"] or f["rule"] == "fab"]
+    skipped = {s["rule"]: s["why"] for s in r["not_checked"]}
+    assert "no board house chosen" in skipped["fab"] and "no board house chosen" in skipped["assembly_spacing"]
+    # the project says the board house won't assemble it: no spacing check even with JLCPCB
+    r = pr.review_board(b, fab="jlcpcb", assembly=False)
+    assert not [f for f in rules(r, "assembly") if "apart" in f["what"]]
+    assert any(s["rule"] == "assembly_spacing" and "won't assemble" in s["why"] for s in r["not_checked"])
+
+
+def test_pcbway_limits():
+    b = board(seg((10, 10), (20, 10), "SIG", w=0.08), via(30, 30, "SIG", size=0.4, drill=0.15))
+    found = rules(pr.review_board(b, fab="PCBWay"), "fab")
+    whats = " | ".join(f["what"] for f in found)
+    assert "below PCBWay's 0.1 mm minimum" in whats
+    assert "annular ring under PCBWay's 0.15 mm" in whats and "charges extra below 0.2 mm" in whats
+    assert all(f["source"] == "pcbway_pcb" for f in found)
+    # a house cadmate has no profile for: named in what was skipped, nothing invented
+    r = pr.review_board(b, fab=None, house="Aisler")
+    assert not rules(r, "fab") and any("no rule profile for Aisler" in s["why"] for s in r["not_checked"])
 
 
 def test_package_classes():

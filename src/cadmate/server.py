@@ -13,7 +13,7 @@ from pathlib import Path
 
 from mcp.server.mcpserver import Image, MCPServer
 
-from . import (apps, check, enclosure, fab_export, footprint, freerouting, generate, ipc, kicad_live, kicad_pcb_live, live, model, packages, part, pcb_flow, pcb_review,
+from . import (apps, check, enclosure, fab_export, footprint, freerouting, generate, ipc, kicad_live, kicad_pcb_live, live, model, packages, part, pcb_flow, pcb_review, ready,
                pcb_route, project, protoboard, protoboard_place, protoboard_render, review, schematic_review, symbol, symbol_check, symbol_generate)
 from .footprint import read as _read_footprint  # generate_symbol's footprint argument shadows the module
 
@@ -39,10 +39,14 @@ session that creates or changes design files, whoever asked for the change:
   files and fix the paths. Never move them by hand.
 - To compare options, build them in .cadmate/work/, show the user, apply the pick to the active project, delete the rest.
 - Never rename a KiCad project: its schematic annotations are tied to the name. Use ${KIPRJMOD}-relative library paths.
+- Never assume a board house. When a KiCad project starts, ask the user once where the board gets made (project_init
+  and project_fab give the question): house, assembly, distributor, layers. Any of it can stay undecided. Record the
+  answers with project_fab; the review, routing and export tools read them from the project, so don't ask again.
 - Keep docs/brief.md: every requirement the user states, as a checklist. Re-read it before each stage and before
   showing a result; project_check lists the open items, and a stage isn't done until you've said which are met.
 - Report DRC as errors, warnings, unconnected and parity, with the warnings by type, never errors alone.
 - project_init on a new design folder; project_check before telling the user a step is done.
+- check_ready_to_order before telling the user a board can be ordered, and again after any change to it.
 - check_enclosure before showing the user an enclosure: collisions, openings nobody declared, joints with a gap or a step.
 The cadmate-project skill has the reasons and the edge cases.
 
@@ -825,7 +829,7 @@ def review_schematic(path: str, limits: dict[str, float] | None = None, erc: boo
 
 @server.tool()
 def review_pcb_layout(path: str | None = None, currents: dict[str, float] | None = None, roles: dict[str, str] | None = None,
-                      fab: str | None = "jlcpcb", limits: dict[str, float] | None = None, drc: bool = True) -> dict:
+                      fab: str | None = None, limits: dict[str, float] | None = None, drc: bool = True) -> dict:
     """Review a routed board's layout, by hand or by an autorouter: what an experienced reviewer would point out.
 
     path is a .kicad_pcb; leave it out to review the board open in KiCad's PCB editor (unsaved edits included).
@@ -833,7 +837,9 @@ def review_pcb_layout(path: str | None = None, currents: dict[str, float] | None
     and the loop through the ground pin); crystal traces (length, vias, other signals alongside or through its area,
     ground under it); signals near switching nodes; tracks narrower than their net class; current per IPC-2221 for the
     nets in currents ({net: amps}), and the capacity of power nets without one; vias per net; fast signals crossing
-    gaps in the ground pour; JLCPCB's SMD spacing, via and track minimums (fab="jlcpcb", or None to skip); and
+    gaps in the ground pour; the board house's track, via and edge minimums and, for JLCPCB, its SMD spacing (fab:
+    "jlcpcb", "pcbway", or "none"; left out, the project's choice from project_fab, else no house is assumed: the reply's
+    fab says which was used and not_checked what was skipped); and
     KiCad's own DRC (unrouted nets, clearances) when kicad-cli is found; drc gives errors, warnings, unconnected and parity with the types: report all four. Net roles are inferred from names, pin types,
     power symbols and parts; net_roles says what was inferred and why. Correct them with roles ({net: "ground" |
     "power" | "switching" | "crystal" | "fast" | "sensitive" | "signal"}). limits overrides cadmate's own thresholds
@@ -903,7 +909,7 @@ def route_critical_nets(path: str | None = None, out_path: str | None = None, ro
 
 @server.tool()
 def autoroute_rest(path: str | None = None, out_path: str | None = None, currents: dict[str, float] | None = None,
-                   roles: dict[str, str] | None = None, passes: int = 30, timeout: int = 1200, fab: str | None = "jlcpcb",
+                   roles: dict[str, str] | None = None, passes: int = 30, timeout: int = 1200, fab: str | None = None,
                    margin: float = 0.25, neck_rules: bool = True, in_place: bool | None = None) -> dict:
     """Let Freerouting route everything still unrouted, around the locked critical tracks, and bring the result back.
 
@@ -918,7 +924,8 @@ def autoroute_rest(path: str | None = None, out_path: str | None = None, current
     On a board with inner-layer planes, each SMD pad on a plane net first gets a locked via into its plane (plane_fanout
     says how many, and which pads had no room), since Freerouting doesn't route to planes itself.
 
-    fab_check sorts Freerouting's narrow tracks against the fab's minimums ("jlcpcb" or "pcbway"; ask the user which):
+    fab_check sorts Freerouting's narrow tracks against the fab's minimums ("jlcpcb" or "pcbway"; left out, the
+    project's choice from project_fab; with no house chosen it's skipped and KiCad's DRC checks the board's own rules):
     errors are under the fab's own minimum and must be rerouted, warnings are between it and the minimum plus margin
     (25 % by default) and stay only where there's no room. Freerouting necks tracks into small pads and can't be told not to
     from its command line. With neck_rules, the necks into pads the fab can make get a KiCad custom rule (the board's
@@ -944,16 +951,37 @@ def finish_routing(path: str, out_path: str | None = None, outer_only: bool = Tr
 
 
 @server.tool()
-def export_fab(path: str, out_dir: str | None = None) -> dict:
-    """Manufacturing files for JLCPCB from a finished .kicad_pcb: Gerbers and drill files (zipped, ready to upload), the
-    BOM (Comment, Designator, Footprint, LCSC Part #, from the footprints' LCSC field) and the CPL (Designator, Mid X,
-    Mid Y, Layer, Rotation). DNP and excluded parts are left out; no_lcsc_number lists parts the BOM has no part number
-    for (empty, TBD, or with a question mark). Zones are refilled on a copy first. Run DRC first. Goes to out_dir (default <project>/fab/<board name> in a cadmate
+def export_fab(path: str, out_dir: str | None = None, fab: str | None = None) -> dict:
+    """Manufacturing files from a finished .kicad_pcb, for any board house: Gerbers and drill files (zipped, ready to
+    upload), a BOM (Designator, Quantity, Value, Footprint, Manufacturer, MPN, and the LCSC, DigiKey or Mouser numbers
+    the parts have) and a placement file (Designator, Value, Footprint, X, Y in mm, Rotation, Side). With JLCPCB as the
+    house, its own BOM (Comment, Designator, Footprint, LCSC Part #) and CPL come too, and no_lcsc_number lists parts
+    without one. fab: "jlcpcb", another house's name, or "none"; left out, the project's choice from project_fab, else
+    none is assumed. DNP and excluded parts are left out; no_part_number lists parts with no part number of any kind.
+    Zones are refilled on a copy first. Run DRC first. Goes to out_dir (default <project>/fab/<board name> in a cadmate
     project, else <board folder>/fab/<board name>); the Gerbers there are regenerated, not added to.
     """
     try:
-        return fab_export.export(Path(path), Path(out_dir) if out_dir else None)
+        return fab_export.export(Path(path), Path(out_dir) if out_dir else None, fab=fab)
     except (fab_export.ExportError, OSError, ValueError) as e:
+        return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
+
+
+@server.tool()
+def check_ready_to_order(path: str, fab: str | None = None, currents: dict[str, float] | None = None,
+                         roles: dict[str, str] | None = None, fab_dir: str | None = None) -> dict:
+    """Before a board is ordered: every check it needs, in one call, sorted into what blocks the order (blocking), what
+    to decide with the user (to_look_at), what passed, and what couldn't run (not_checked). Runs KiCad's DRC with
+    schematic parity and its ERC, the layout review (with currents and roles as for review_pcb_layout), part numbers in
+    the BOM (blocking when the house assembles it; for JLCPCB assembly, LCSC numbers too; numbers for the project's
+    distributor), the copper layer count against the project's, the fab files the house needs, all newer than the
+    board (fab_dir if they were exported somewhere other than export_fab's default), and, in a cadmate project, the brief's unticked requirements, project errors and the enclosure check. ready
+    is true only when DRC ran and nothing blocks. fab as for review_pcb_layout; with no house chosen it isn't assumed,
+    and ask_user is the question to put to the user. Give the user ready or not first, then every blocking item, and
+    DRC as all four numbers. path is a saved .kicad_pcb."""
+    try:
+        return ready.check(path, fab=fab, currents=currents, roles=roles, fab_dir=fab_dir)
+    except (ready.ReadyError, pcb_review.ReviewError, OSError, ValueError) as e:
         return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
 
 
@@ -979,7 +1007,8 @@ def project_init(root: str, name: str | None = None, boards: list[str] | None = 
     protoboard/). Left out, it goes by the files already there, else kicad and freecad. boards, parts, protoboards:
     their names, if known. One board, part or protoboard sits directly in its tool's place, so no folder is made; two or more get a folder each. Name a part for what it is (enclosure, bracket, knob),
     from the conversation or the brief. Safe on an existing folder: it only adds what's missing, never moves or
-    overwrites; run project_check after to see what's out of place."""
+    overwrites; run project_check after to see what's out of place. For a KiCad project whose fab choices were never
+    asked, ask_user is the question to put to the user once; record the answers with project_fab."""
     return _project(project.init, root, name, boards, tools, parts, protoboards)
 
 
@@ -1029,6 +1058,18 @@ def project_snapshot(path: str, label: str, paths: list[str] | None = None, note
     ["main.kicad_pcb"] for a lone board at the root); leave it out for the whole project. A KiCad board folder brings along the project libraries it references through ${KIPRJMOD}, so
     the copy opens with its footprints and 3D models. note says why, in a sentence: it goes into HISTORY.md."""
     return _project(project.snapshot, path, label, paths, note)
+
+
+@server.tool()
+def project_fab(path: str, house: str | None = None, assembly: bool | str | None = None, distributor: str | None = None,
+                layers: int | str | None = None) -> dict:
+    """Where the project's board gets made, as the user chose it: house (any name; cadmate has rule profiles for JLCPCB
+    and PCBWay), assembly by the house (yes or no), the distributor parts come from, and copper layers. Ask the user once
+    at the start of a KiCad project; with no arguments this only reads the choices, and gives the question (ask_user) if
+    they were never asked. Fields left out keep their value; "undecided" clears one, and undecided is a fine answer.
+    The choices go into cadmate-project.json and the brief's Fab section. review_pcb_layout, autoroute_rest and
+    export_fab use them when not given a fab."""
+    return _project(project.set_fab, path, house=house, assembly=assembly, distributor=distributor, layers=layers)
 
 
 @server.tool()

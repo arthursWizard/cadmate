@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 import re
+from pathlib import Path
 
 from . import versions
 
@@ -42,6 +43,36 @@ PREFERRED = {
     "pcbway": {"track": 0.127, "clearance": 0.152},  # its normal process, 1 oz outer: 5/6 mil
     "*": {"via_drill": 0.30, "via_diameter": 0.60},  # the standard via at both fabs; smaller ones cost more
 }
+
+
+def profile(fab: str | None) -> str | None:
+    """The rule profile cadmate has for a board house ("jlcpcb", "pcbway"), or None for none or one it doesn't know."""
+    key = (fab or "").strip().lower().replace(" ", "")
+    return key if key in SOURCES else None
+
+
+def resolve(fab: str | None, near: str | Path | None = None) -> dict:
+    """Which board house a step should check against. An explicit fab wins ("none" means no fab); otherwise the
+    project's choice (project_fab); otherwise none. cadmate never assumes one.
+
+    {"fab": profile key or None, "house": as the user named it, "assembly": True/False/None, "distributor",
+    "layers", "from": "argument" | "project" | "not asked" | "not in a project"}, plus "ask_user" when the project
+    hasn't asked yet. An explicit fab replaces only the house: whether it's assembled, the distributor and the layer
+    count still come from the project, since they're about the order, not the house."""
+    from . import project  # it imports this module
+
+    root = project.find_root(near) if near else None
+    s = project.fab_settings(root) if root else None
+    rest = {k: (s or {}).get(k) for k in ("assembly", "distributor", "layers")}
+    if fab is not None:
+        house = None if fab.strip().lower() in project.UNDECIDED else fab.strip()
+        return {"fab": profile(house), "house": house, **rest, "from": "argument"}
+    if root is None:
+        return {"fab": None, "house": None, **rest, "from": "not in a project"}
+    if s is None:
+        return {"fab": None, "house": None, **rest, "from": "not asked", "ask_user": project.FAB_QUESTION,
+                "then": "record the answers with project_fab"}
+    return {"fab": profile(s["house"]), "house": s["house"], **rest, "from": "project"}
 
 
 def limits(fab: str, layers: int = 2, margin: float = MARGIN) -> dict:

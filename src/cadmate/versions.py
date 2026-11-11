@@ -44,6 +44,8 @@ KICAD_CLI = {
     "pcb_pos": ["pcb", "export", "pos", "--format", "csv", "--units", "mm", "--side", "both"],
     # the board with its parts' 3D models, for the enclosure: DNP parts left out, VRML-only models swapped for STEP
     "pcb_step": ["pcb", "export", "step", "--force", "--subst-models", "--no-dnp"],
+    # a picture of the board for a release; --side and --output per call
+    "pcb_render": ["pcb", "render", "--width", "1600", "--height", "1200", "--quality", "basic"],
 }
 
 

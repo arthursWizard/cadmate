@@ -88,7 +88,8 @@ def target(path: str, out_path: str | None, step: str, in_place: bool | None) ->
                         "history/ first (project_init); outside one, give out_path")
     label = re.sub(r"[^a-z0-9]+", "-", f"before-{step}-{src.stem}".lower())[:40].strip("-")
     snap = project.snapshot(src, label,
-                            [str(f) for f in project.board_files(src)], note=f"automatic, before {step} on {src.name}")
+                            [str(f) for f in project.board_files(src)], note=f"automatic, before {step} on {src.name}",
+                            automatic=True)
     return dst, {"name": snap["name"], "restore": f"project_restore with name {snap['name']!r} undoes this step"}
 
 

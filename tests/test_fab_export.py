@@ -1,3 +1,6 @@
+import hashlib
+import json
+
 from cadmate import fab_export as fx
 
 BOARD = '''(kicad_pcb (version 20250926)
@@ -92,7 +95,10 @@ def test_export_assumes_no_board_house(tmp_path, monkeypatch):
     r = fx.export(pcb, refill=False)
     names = sorted(p.name for p in (tmp_path / "fab" / "board").iterdir())
     assert names == ["board-assembly-bottom.pdf", "board-assembly-top.pdf", "board-bom.csv", "board-gerbers.zip",
-                     "board-pos.csv", "gerbers"]
+                     "board-pos.csv", "export.json", "gerbers"]
+    # which state of the board the files are, so a release can tell they belong to it
+    rec = json.loads((tmp_path / "fab/board/export.json").read_text())
+    assert rec["board_sha256"] == hashlib.sha256(pcb.read_bytes()).hexdigest()
     assert r["fab"]["fab"] is None and "jlc_bom" not in r
     # C1 has an MPN, R2 and R10 an LCSC number: every part has some number
     assert r["no_part_number"] == []

@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Run by hand to refill main's KiCad cache (see kicad-cli), e.g. after changing KICAD_SERIES or a quiet week.
+  workflow_dispatch:
 
 jobs:
   # The whole suite, without KiCad or FreeCAD, on each OS cadmate claims to support.
@@ -22,24 +24,62 @@ jobs:
       - run: uv sync
       - run: uv run pytest -q -rs
 
-  # The kicad-cli commands cadmate runs, against a real KiCad 10 (Linux). KiCad's own PPA first; when Launchpad can't
-  # be reached, KiCad's Flathub build instead, so an outage there doesn't turn every PR red.
+  # The kicad-cli commands cadmate runs, against a real KiCad 10 (Linux). The install must survive Ubuntu's and
+  # Launchpad's servers being unreachable, which has happened, so KiCad's .debs are kept in GitHub's own Actions cache
+  # (reachable whenever the job can start at all) and installed from there. The cache key changes monthly: on a new
+  # month the job tries KiCad's PPA once to pick up 10.0.x fixes and saves a fresh cache, falling back to last month's
+  # .debs, then to KiCad's Flathub build, when the PPA can't be reached.
   kicad-cli:
     runs-on: ubuntu-24.04
+    env:
+      KICAD_SERIES: "10.0"  # the PPA ppa:kicad/kicad-10.0-releases; change it here to test another KiCad release
     steps:
       - uses: actions/checkout@v4
-      - name: Install KiCad 10
+      - id: month
+        run: echo "month=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+      - name: Restore KiCad's .debs
+        id: debs
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/kicad-debs
+          key: kicad-${{ env.KICAD_SERIES }}-debs-ubuntu-24.04-${{ steps.month.outputs.month }}
+          restore-keys: kicad-${{ env.KICAD_SERIES }}-debs-ubuntu-24.04-
+      - name: Install KiCad ${{ env.KICAD_SERIES }}
+        id: install
+        env:
+          EXACT_HIT: ${{ steps.debs.outputs.cache-hit }}
+          DEBS: ${{ runner.temp }}/kicad-debs
         run: |
-          ppa() {
-            sudo timeout 180 add-apt-repository -y ppa:kicad/kicad-10.0-releases &&
+          drop_ppa() {  # a half-added PPA makes apt-get update fail
+            sudo rm -f /etc/apt/sources.list.d/kicad-ubuntu-kicad-*
+          }
+          from_cache() {  # no network: apt installs the given files, the rest is already on the runner
+            ls "$DEBS"/*.deb >/dev/null 2>&1 &&
+            sudo apt-get install -y --no-install-recommends "$DEBS"/*.deb
+          }
+          series_offered() {  # apt-get update exits 0 when the PPA's index fails, leaving Ubuntu's own (older) kicad
+            local cand
+            cand=$(apt-cache policy kicad | awk '/Candidate:/ {print $2}')
+            case "$cand" in
+              "$KICAD_SERIES".*|[0-9]*:"$KICAD_SERIES".*) ;;
+              *) echo "::warning::apt offers kicad '$cand', not $KICAD_SERIES.x: KiCad's PPA didn't load"; return 1 ;;
+            esac
+          }
+          ppa() {  # download into a fresh folder, install exactly those files, and keep them for the cache
+            local new="$RUNNER_TEMP/kicad-debs-new"
+            sudo rm -rf "$new" && mkdir -p "$new/partial" &&
+            sudo timeout 180 add-apt-repository -y "ppa:kicad/kicad-${KICAD_SERIES}-releases" &&
             sudo apt-get update &&
-            sudo apt-get install -y --no-install-recommends kicad
+            series_offered &&
+            sudo apt-get install -y --no-install-recommends --download-only -o Dir::Cache::archives="$new" kicad &&
+            sudo apt-get install -y --no-install-recommends "$new"/*.deb &&
+            sudo rm -rf "$new/partial" "$new/lock" && sudo chown -R "$(id -u):$(id -g)" "$new" &&
+            rm -rf "$DEBS" && mv "$new" "$DEBS"
           }
           flathub() {
-            echo "::warning::KiCad's PPA couldn't be reached; using KiCad's Flathub build"
-            sudo rm -f /etc/apt/sources.list.d/kicad-ubuntu-kicad-10_0-releases-*  # a half-added PPA fails apt-get update
-            sudo apt-get update || true
-            sudo apt-get install -y --no-install-recommends flatpak
+            local fast=(-o Acquire::Retries=0 -o Acquire::http::Timeout=15)  # no retries: with apt down, give up sooner
+            sudo apt-get "${fast[@]}" update || true
+            sudo apt-get "${fast[@]}" install -y --no-install-recommends flatpak
             flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
             flatpak install --user -y --noninteractive flathub org.kicad.KiCad
             # kicad-cli on PATH, seeing the checkout and /tmp (where the tests write)
@@ -47,8 +87,32 @@ jobs:
               sudo tee /usr/local/bin/kicad-cli >/dev/null
             sudo chmod +x /usr/local/bin/kicad-cli
           }
-          ppa || { sleep 20; ppa; } || flathub
-          kicad-cli version
+          if [ "$EXACT_HIT" = true ] && from_cache; then
+            echo "KiCad installed from this month's cached .debs"
+          elif ppa || { drop_ppa; sleep 20; ppa; }; then
+            echo "KiCad installed from its PPA; saving the .debs for later runs"
+            echo "fresh=true" >> "$GITHUB_OUTPUT"
+          else
+            drop_ppa
+            if from_cache; then
+              echo "::warning::KiCad's PPA couldn't be reached; installed KiCad from an older month's cached .debs"
+            else
+              echo "::warning::KiCad's PPA couldn't be reached and no cached .debs worked; using KiCad's Flathub build"
+              flathub
+            fi
+          fi
+          version=$(kicad-cli version)
+          echo "kicad-cli $version"
+          case "$version" in
+            "$KICAD_SERIES".*) ;;
+            *) echo "::error::expected KiCad $KICAD_SERIES.x, got $version"; exit 1 ;;
+          esac
+      - name: Save KiCad's .debs for later runs
+        if: steps.install.outputs.fresh == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/kicad-debs
+          key: kicad-${{ env.KICAD_SERIES }}-debs-ubuntu-24.04-${{ steps.month.outputs.month }}
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.13"

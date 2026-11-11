@@ -79,7 +79,7 @@ jobs:
         with:
           python-version: "3.13"
       - run: uv sync
-      - run: uv run pytest -q -rs tests/test_enclosure.py tests/test_part.py tests/test_review.py tests/test_apps.py
+      - run: uv run pytest -q -rs tests/test_enclosure.py tests/test_structure.py tests/test_part.py tests/test_review.py tests/test_apps.py
         env:
           CADMATE_REQUIRE_FREECAD: "1"
 

@@ -36,6 +36,7 @@ Early. These workflows work end to end:
 
 - **Keep one active project with its history**: every design lives in one folder with a fixed layout (`kicad/`, `kicad/lib/`, `freecad/`, `fab/<board>/`, `tools/`, `docs/`) where no folder holds just one thing: a one-tool design keeps its files at the root, one board or part sits directly in its tool's place, and two or more get a folder each, named for what they are (`enclosure/`, `bracket/`). Changes go into it in place; when a state is worth keeping, `project_snapshot` copies it into `history/<YYYYMMDD-HHMM>_<label>/` first, and `project_restore` brings it back. The routing tools and the footprint, symbol and part writers follow this by themselves inside a project, and `project_check` points out anything out of place. See "Projects and history" below.
 
+- **Keep a part easy to change**: a model can be right and still be "spaghetti CAD", sketches stuck to faces that break when the geometry changes, sizes typed into one feature after another, fixes stacked on top instead of edits. The `freecad-modelling` skill builds parts as a tree you can edit (one Params sheet, sketches on origin or datum planes, every feature named), and `check_model_structure` checks it, so the rules are enforced, not hoped for.
 - **Check a printed case**: `check_enclosure` reads the case assembly in FreeCAD and reports what you'd otherwise find by eye or after printing: case parts colliding with boards, components or each other, a shell with an opening nobody asked for, and two case parts that don't meet flush (a gap along the seam, or one standing proud of the other). The openings meant to be there (buttons, USB, a display window) and the heights from the brief go in `enclosure.json` beside the assembly.
 
 - **Lay out a circuit on perfboard**: through-hole parts on the 2.54 mm hole grid, each taking the holes its leads go through and covering the holes under its body. cadmate checks the placement, routes the nets with bottom-side solder bridges and bare wire and, where the bottom can't get through, insulated jumpers on top, and draws the board to copy by hand: the component side, the solder side mirrored as it looks turned over, and a build list. See "Perfboard layouts" below.
@@ -103,6 +104,7 @@ Early. These workflows work end to end:
 | `project_prune` | Lists, then deletes the listed ones once the user agrees, the automatic snapshots tools took beyond the newest ten; labelled and released snapshots stay | nothing |
 | `project_check` | Everything out of place: stray versions and backups, wrong depth, misnamed boards, broken or absolute library paths, renamed-project annotations, stale fab files, a released revision changed after release, a missing, stale or failing enclosure check, a loose board or part beside folders | nothing |
 | `check_enclosure` | Checks a case assembly: parts that collide, openings in each shell that aren't declared, joints between case parts with a gap or a step, part heights against the brief | FreeCAD |
+| `check_model_structure` | Checks how a FreeCAD part is built: sketches attached to generated faces, sketches not fully constrained, sizes typed as numbers instead of coming from one Params sheet, default names, broken or leftover features, solids with no history. A saved .FCStd, or the document open in your window | FreeCAD |
 | `kicad_pcb_snapshot` | A picture of the open board, unsaved edits included | KiCad API on, and an SVG converter |
 
 ## Version policy
@@ -351,6 +353,7 @@ To read datasheets, Claude needs a way to read PDFs and to look at drawings as i
 
 - `cadmate-project`: where files go, when to snapshot, how to try alternatives and clean up a sprawled project. Read it first.
 - `kicad-3d-models`: how to build, check and link a 3D model for a KiCad footprint.
+- `freecad-modelling`: how to build and change a printed part in FreeCAD so its tree stays editable (one Params sheet, sketches on planes, named, edit instead of patching), and how to tidy a messy one.
 - `kicad-footprints`: how to read a datasheet into a footprint, and review an existing one.
 - `kicad-symbols`: how to read a datasheet's pin table into a symbol, and review an existing one.
 - `kicad-parts`: how to make a whole part (symbol, footprint, model) in one go, and check an existing one.

@@ -13,7 +13,7 @@ from pathlib import Path
 
 from mcp.server.mcpserver import Image, MCPServer
 
-from . import (apps, check, enclosure, fab_export, footprint, freerouting, generate, ipc, kicad_live, kicad_pcb_live, live, model, packages, part, pcb_flow, pcb_review, ready,
+from . import (apps, check, enclosure, fab_export, footprint, freerouting, generate, ipc, kicad_live, kicad_pcb_live, live, model, packages, part, pcb_flow, pcb_review, pcb_write, ready,
                pcb_route, project, protoboard, release, protoboard_place, protoboard_render, review, schematic_review, schematic_write, symbol, symbol_check, symbol_generate)
 from .footprint import read as _read_footprint  # generate_symbol's footprint argument shadows the module
 
@@ -857,6 +857,29 @@ def write_schematic(path: str, parts: list[dict], nets: dict[str, list[str]], no
                                      libraries=libraries, show_names=show_names, replace=replace, plan_only=plan_only,
                                      erc=erc)
     except (schematic_write.WriteError, OSError) as e:
+        return {"ok": False, "error": str(e)}
+
+
+@server.tool()
+def board_from_schematic(schematic: str, out_path: str | None = None, libraries: dict[str, str] | None = None,
+                         size: list[float] | None = None, layers: int = 2, scale: float = 0.5,
+                         replace: bool = False, drc: bool = True) -> dict:
+    """Start a new board (.kicad_pcb) from a schematic: every part's footprint, its pads on the schematic's nets.
+
+    schematic is the project's root .kicad_sch; the parts and nets come from KiCad's own netlist (needs kicad-cli),
+    so sub-sheets, global labels and power symbols join as KiCad joins them. Footprints come from each symbol's
+    Footprint field, found through the project's fp-lib-table, KiCad's, or its installed libraries (or pass libraries
+    {nickname: .pretty folder}). out_path defaults to the schematic's name with .kicad_pcb, beside it, so KiCad pairs
+    them. Parts start where their symbols sit on the sheet (scale 0.5: 10 mm on the sheet is 5 mm on the board),
+    moved apart until no courtyards overlap, with a board outline around them, or size [w, h] in mm. layers is 2 or
+    4. Each footprint stays linked to its symbol, so Update PCB from Schematic works on it later; the reply has
+    KiCad's schematic parity check and DRC. This starts boards: it won't write over a board someone placed.
+    Placement comes next, critical parts first.
+    """
+    try:
+        return pcb_write.from_schematic(schematic, out_path, libraries=libraries, size=size, layers=layers, scale=scale,
+                                        replace=replace, drc=drc)
+    except (pcb_write.BoardWriteError, OSError) as e:
         return {"ok": False, "error": str(e)}
 
 

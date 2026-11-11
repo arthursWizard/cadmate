@@ -9,7 +9,7 @@ Uses cadmate's `classify_critical_nets`, `route_critical_nets`, `autoroute_rest`
 
 Push back on "autoroute everything". Freerouting doesn't know which connections matter, and fixing its decap and pair routing afterwards takes longer than routing those first.
 
-1. Placement first. If the parts aren't placed, stop: routing can't fix placement.
+1. Placement first. If the parts aren't placed, stop: routing can't fix placement. With no board yet, `board_from_schematic` starts one from the schematic (footprints on their nets, a rough layout from the sheet); its `parity` must be 0 issues, and its placement is only a start.
 2. `classify_critical_nets`. Show the user the `table`, grouped by class, worst placement problems first. Say which items cadmate will route, which are placement problems (`place`), which need a number (`ask`: currents for power nets), and which are left to the review (`check`). Name the classes that found nothing (`not_found`) so the user can say if one is missing, for example a feedback net cadmate didn't recognise. Wait for the user to confirm or change it:
    - an item's action: `overrides` `{item id: "route" | "hand" | "skip" | "place"}`
    - what a net is: `roles` `{net: "fast" | "sensitive" | "switching" | ...}`

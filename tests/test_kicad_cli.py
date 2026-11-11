@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from cadmate import apps, kicad_live, pcb_review, schematic_review, schematic_write, sexpr, versions
+from cadmate import apps, kicad_live, pcb_board, pcb_review, pcb_write, schematic_review, schematic_write, sexpr, versions
 from test_pcb_review import HEAD, footprint, pad
 from test_pictures import png_info
 from test_schematic_write import LIBS, NETS, PARTS, big_symbol_lib, random_circuit
@@ -156,3 +156,21 @@ def test_bigger_written_schematics_have_the_nets_asked_for(tmp_path, seed):
     got = [g for g in kicad_nets(out) if len(g) > 1]
     want = [set(p) for p in nets.values() if len(p) > 1]
     assert sorted(map(sorted, got)) == sorted(map(sorted, want))
+
+
+def test_a_board_from_a_written_schematic_matches_it(tmp_path):
+    """Schematic to board: KiCad loads the board, its schematic parity check finds nothing, and every pad KiCad's
+    netlist puts on a net carries that net."""
+    fp = {"MCU8": "Fix:SOIC-8", "C": "Test:C_0603", "R": "Test:R_0603"}
+    parts = [{**p, "footprint": fp[p["symbol"].split(":")[1]]} for p in PARTS]
+    sch = tmp_path / "demo.kicad_sch"
+    schematic_write.write(str(sch), parts, NETS, no_connect=["U1.3", "U1.4", "U1.6", "U1.8"], libraries=LIBS, erc=False)
+    r = pcb_write.from_schematic(str(sch), libraries={"Test": str(FIXTURES / "pcb" / "Test.pretty"), "Fix": str(FIXTURES)})
+    print(r)
+    assert r["ok"] and r["footprints"] == 5
+    assert r["parity"]["issues"] == 0, r["parity"]
+    b = pcb_board.parse((tmp_path / "demo.kicad_pcb").read_text(encoding="utf-8"))
+    got = {f"{p.ref}.{pad.number}": pad.net for p in b.parts for pad in p.pads}
+    for pins in kicad_nets(sch):
+        if len(pins) > 1:
+            assert len({got[p] for p in pins}) == 1 and None not in {got[p] for p in pins}, (pins, got)

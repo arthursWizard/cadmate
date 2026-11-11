@@ -204,9 +204,11 @@ change. When you say good, Claude snapshots.
    the parts and nets ("draw the power and MCU blocks on a new sheet") and you tidy it in KiCad. KiCad 10 has no
    schematic API, so Claude can't edit a sheet you drew; it writes new ones. Either way `review_schematic` checks
    readability (overlaps, four-way junctions, ground symbols pointing up, sheets wired only by labels) and runs ERC.
-3. **Placement.** Update the PCB from the schematic in KiCad, then place the parts by hand or with Claude in the live
-   PCB editor ("put the decaps next to U1's power pins"). cadmate has no automatic PCB placement; placement is your call,
-   with Claude's help.
+3. **Placement.** For a new board, "start the board from the schematic": `board_from_schematic` writes the
+   `.kicad_pcb` with every footprint on its nets, laid out roughly as the schematic is, inside an outline, and checks
+   it against the schematic with KiCad's parity check. (For a board you've already placed, use Update PCB from
+   Schematic in KiCad instead.) Then place the parts by hand or with Claude in the live PCB editor ("put the decaps
+   next to U1's power pins"). Placement is your call, with Claude's help.
 4. **Critical connections.** "Classify the critical nets." `classify_critical_nets` lists decaps, crystals, USB pairs,
    regulator loops, ESD, analog, strap and high-current nets, each with its rule and source. You confirm, correct, or
    give currents ("VBUS carries 2 A").

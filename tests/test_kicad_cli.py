@@ -7,9 +7,10 @@ import subprocess
 from pathlib import Path
 
 import pytest
-
-from cadmate import apps, pcb_review, versions
 from test_pcb_review import HEAD, footprint, pad
+from test_schematic_write import LIBS, NETS, PARTS
+
+from cadmate import apps, pcb_review, schematic_review, schematic_write, sexpr, versions
 
 CLI = apps.find_kicad_cli()
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -90,3 +91,29 @@ def test_board_step_with_a_model_that_isnt_there(tmp_path, monkeypatch):
     print(p.returncode, p.stdout, p.stderr)  # what kicad-cli says about it, in the CI log
     r = fab_export.export_step(f, out=tmp_path / "t.step")
     assert "R1" in r["model_not_loaded"], r
+
+
+def test_a_written_schematic_loads_and_passes_erc(tmp_path):
+    """KiCad reads the sheet cadmate writes (format, lib_symbols, instances), ERC finds no errors, and KiCad's own
+    netlist joins exactly the pins that were asked for."""
+    out = tmp_path / "demo.kicad_sch"
+    schematic_write.write(str(out), PARTS, NETS, no_connect=["U1.3", "U1.4", "U1.6", "U1.8"], libraries=LIBS, erc=False)
+    rep = schematic_review.run_erc(out)
+    assert rep and "error" not in rep, rep
+    errors = [(v["type"], v["description"]) for s in rep.get("sheets", []) for v in s.get("violations", [])
+              if v.get("severity") == "error"]
+    assert not errors, errors
+
+    net = tmp_path / "demo.net"
+    p = run("sch", "export", "netlist", "--format", "kicadsexpr", "--output", str(net), str(out))
+    assert net.exists(), p.stderr or p.stdout
+    got = {}
+    for n in sexpr.parse(net.read_text(encoding="utf-8")).child("nets").children("net"):
+        name = n.child("name").atoms()[0].lstrip("/")
+        pins = {f"{x.child('ref').atoms()[0]}.{x.child('pin').atoms()[0]}" for x in n.children("node")}
+        if len(pins) > 1 or not name.startswith("unconnected"):
+            got[name] = pins
+    want = {"+3V3": {"U1.1", "C1.1", "R1.1"}, "GND": {"U1.2", "C1.2", "R3.2"}, "RST": {"U1.7", "R1.2"},
+            "LED": {"U1.5", "R2.1"}, "MID": {"R2.2", "R3.1"}}
+    for name, pins in want.items():
+        assert any(v == pins for v in got.values()), (name, got)

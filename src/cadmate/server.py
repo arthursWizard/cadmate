@@ -14,7 +14,7 @@ from pathlib import Path
 from mcp.server.mcpserver import Image, MCPServer
 
 from . import (apps, check, enclosure, fab_export, footprint, freerouting, generate, ipc, kicad_live, kicad_pcb_live, live, model, packages, part, pcb_flow, pcb_review, ready,
-               pcb_route, project, protoboard, protoboard_place, protoboard_render, review, schematic_review, symbol, symbol_check, symbol_generate)
+               pcb_route, project, protoboard, protoboard_place, protoboard_render, review, schematic_review, schematic_write, symbol, symbol_check, symbol_generate)
 from .footprint import read as _read_footprint  # generate_symbol's footprint argument shadows the module
 
 INSTRUCTIONS = """\
@@ -827,6 +827,34 @@ def review_schematic(path: str, limits: dict[str, float] | None = None, erc: boo
     try:
         return schematic_review.review_file(path, limits=limits, erc=erc)
     except schematic_review.ReviewError as e:
+        return {"ok": False, "error": str(e)}
+
+
+@server.tool()
+def write_schematic(path: str, parts: list[dict], nets: dict[str, list[str]], no_connect: list[str] | None = None,
+                    notes: list[dict] | None = None, paper: str = "A4", title: str = "",
+                    libraries: dict[str, str] | None = None, show_names: list[str] | None = None,
+                    replace: bool = False, plan_only: bool = False, erc: bool = True) -> dict:
+    """Draw a new schematic sheet (.kicad_sch) from parts and nets, then review it (review_schematic and ERC).
+
+    parts: [{ref, symbol: "Library:Name", value, footprint, block, at: [x, y], rot, mirror, unit, fields: {name:
+    value}, ref_at, value_at}]; only ref and symbol are needed. Libraries are found as KiCad finds them (the project's
+    sym-lib-table, KiCad's own, its installed symbols), or pass libraries {nickname: .kicad_sym or .kicad_symdir path}.
+    Parts without at get a first layout: the biggest part of each block first, the parts wired to it beside the pins
+    they connect to. Put parts that belong together (an MCU and its decoupling, a regulator and its caps) in one block.
+    nets: {name: ["U1.3", "C1.VDD", ...]} by pin number or unique name. Supply and ground nets (+3V3, VCC, GND...) get
+    a power symbol at each pin and a PWR_FLAG when nothing on the sheet drives them; pins in the same block are wired;
+    nets leaving their block get a label; show_names labels a net even where it's wired. no_connect: unused pins.
+    notes: [{text, at}]. Coordinates are mm, Y down, on the 1.27 mm grid.
+    plan_only returns each part's outline and pin positions without writing, to plan positions first. It writes new
+    sheets only (replace=True writes over one, after a snapshot when it's in a cadmate project); it doesn't edit a
+    sheet someone drew. Fix what the review reports, then write again with replace=True.
+    """
+    try:
+        return schematic_write.write(path, parts, nets, no_connect=no_connect, notes=notes, paper=paper, title=title,
+                                     libraries=libraries, show_names=show_names, replace=replace, plan_only=plan_only,
+                                     erc=erc)
+    except (schematic_write.WriteError, OSError) as e:
         return {"ok": False, "error": str(e)}
 
 

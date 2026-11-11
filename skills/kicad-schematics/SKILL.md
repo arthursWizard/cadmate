@@ -1,11 +1,11 @@
 ---
 name: kicad-schematics
-description: Draw or tidy a KiCad schematic so a person can read it, and review a sheet's readability. Use when drawing a schematic, writing a .kicad_sch by script, or when the user asks to clean up, review or check a schematic.
+description: Draw or tidy a KiCad schematic so a person can read it, and review a sheet's readability. Use when drawing a schematic, writing a new .kicad_sch from parts and nets, or when the user asks to clean up, review or check a schematic.
 ---
 
 # Readable KiCad schematics
 
-Uses the cadmate MCP server (`review_schematic`). A schematic is read far more often than it is drawn; it should show how the circuit works at a glance, not only be electrically correct. ERC proves the connections; this skill and the review are about the reader.
+Uses the cadmate MCP server (`write_schematic`, `review_schematic`). A schematic is read far more often than it is drawn; it should show how the circuit works at a glance, not only be electrically correct. ERC proves the connections; this skill and the review are about the reader.
 
 ## Rules
 
@@ -22,6 +22,15 @@ Uses the cadmate MCP server (`review_schematic`). A schematic is read far more o
 When writing a .kicad_sch by script, escape line breaks in strings as `\n`: KiCad won't open a file with a raw line break inside quotes. The review flags it.
 
 Judgement wins over the rules: if a wire makes a block harder to read, use a label and say why in a note.
+
+## Writing a new sheet
+
+`write_schematic` draws a new `.kicad_sch` from the parts and nets and follows the rules above: wires inside a block, labels where a net leaves it, power symbols the right way up, PWR_FLAGs, no-connects, junctions, block headings. Then it runs the review and ERC.
+
+1. Get the circuit straight first: each part's library symbol (`Device:R`, `power:GND`, a project library), value and footprint, and each net's pins (`U1.3` or `U1.VDD`). Put parts that belong together in one `block`.
+2. Leave `at` out for a first drawing: each block starts with its biggest part, and parts wired to it go beside the pin they connect to. To place by hand, call it with `plan_only` to get each part's outline and pin positions, then give `at` (and `rot`) per part.
+3. Read the reply: `label_instead_of_wire` lists pins it couldn't wire cleanly (move the parts closer or in line), `unconnected_pins` the pins on no net (add them to a net or to `no_connect`), and `review` the findings. Fix and write again with `replace=True`.
+4. It writes new sheets only. To change a sheet someone drew, edit it in KiCad (KiCad 10 has no schematic API to do it live).
 
 ## Workflow
 

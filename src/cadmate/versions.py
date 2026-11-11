@@ -22,6 +22,7 @@ TESTED_VERSIONS = {"kicad": (10, 0), "freecad": (1, 1)}
 
 FOOTPRINT_FORMAT = "20260206"  # (footprint ...) as KiCad 10 writes it
 SYMBOL_FORMAT = "20251024"  # (kicad_symbol_lib ...) as KiCad 10 writes it
+SCHEMATIC_FORMAT = "20250114"  # (kicad_sch ...): KiCad 9's format, which KiCad 10 reads and upgrades when saved
 LIB_TABLE_FORMAT = 7  # sym-lib-table and fp-lib-table
 DRU_FORMAT = 1  # the board's custom rules, .kicad_dru
 

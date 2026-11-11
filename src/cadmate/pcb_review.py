@@ -24,7 +24,7 @@ from .pcb_board import (Board, NetGraph, Pad, Part, Track, convex_hull, dist, lo
                         polygon_area, polygon_gap, seg_seg)
 
 SOURCES = {
-    "pcbway_pcb": fabmod.SOURCES["pcbway"],
+    **{f"{k}_pcb": v for k, v in fabmod.SOURCES.items() if k != "jlcpcb"},  # JLCPCB's has its own, fuller entry below
     "ipc2221": "IPC-2221 §6.2 conductor sizing: I = k·ΔT^0.44·A^0.725, A in mil², k = 0.048 outer / 0.024 inner layers "
                "(as reproduced in KiCad's PCB Calculator docs, pcb_calculator/tracks_width_versus_current_formula.md). "
                "IPC-2152 replaces these charts and finds IPC-2221 conservative, inner layers especially "
@@ -606,6 +606,18 @@ class Review:
                 if v.drill < PCBWAY_VIA["drill_extra_below"] - 1e-6:
                     self.add("fab", "note", f"{n} via(s) with a {v.drill:g} mm hole: PCBWay charges extra below 0.2 mm",
                              "Larger holes are cheaper and more reliable when space allows.", "pcbway_pcb", v.x, v.y, net=v.net)
+        elif fab:
+            rules = {k: v["hard"] for k, v in fabmod.limits(fab, len(self.b.copper_layers))["rules"].items()}
+            name, ring = fabmod.NAMES.get(fab, fab), (rules["via_diameter"] - rules["via_drill"]) / 2
+            for key in sorted({(v.size, v.drill) for v in self.b.vias}):
+                v = next(w for w in self.b.vias if (w.size, w.drill) == key)
+                n = sum(1 for w in self.b.vias if (w.size, w.drill) == key)
+                if v.drill < rules["via_drill"] - 1e-6:
+                    self.add("fab", "problem", f"{n} via(s) with a {v.drill:g} mm hole, below {name}'s {rules['via_drill']:g} mm minimum",
+                             "The fab can't drill them.", f"{fab}_pcb", v.x, v.y, net=v.net)
+                if (v.size - v.drill) / 2 < ring - 1e-6:
+                    self.add("fab", "problem", f"{n} via(s) {v.size:g}/{v.drill:g} mm: annular ring under {name}'s {ring:.3g} mm",
+                             "The fab can't plate a ring that thin reliably.", f"{fab}_pcb", v.x, v.y, net=v.net)
 
     # return path ---------------------------------------------------------------------------------------
 
@@ -754,7 +766,7 @@ class Review:
         self.checked.append("fab")
         if fab != "jlcpcb":
             rules = {k: v["hard"] for k, v in fabmod.limits(fab, len(self.b.copper_layers))["rules"].items()}
-            src, name = f"{fab}_pcb", {"pcbway": "PCBWay"}.get(fab, fab)
+            src, name = f"{fab}_pcb", fabmod.NAMES.get(fab, fab)
             thin = [t for t in self.b.tracks if t.width < rules["track"] - 1e-6]
             if thin:
                 t = min(thin, key=lambda t: t.width)
@@ -976,7 +988,7 @@ _ORDER = {"problem": 0, "warning": 1, "note": 2}
 def review_board(board: Board, currents: dict[str, float] | None = None, roles: dict[str, str] | None = None,
                  fab: str | None = None, limits: dict | None = None, drc: dict | None = None,
                  assembly: bool | None = None, house: str | None = None) -> dict:
-    """fab is a rule profile ("jlcpcb", "pcbway") or None: no board house assumed. house is the name the user gave when
+    """fab is a rule profile (a key of fab.SOURCES) or None: no board house assumed. house is the name the user gave when
     cadmate has no profile for it; assembly False skips the assembly spacing checks."""
     fab = fabmod.profile(fab)
     lim = {**LIMITS, **(limits or {})}

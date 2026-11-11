@@ -64,6 +64,18 @@ def test_pcb_svg_flags(tmp_path):
     assert svg.exists(), p.stderr or p.stdout
 
 
+@pytest.mark.parametrize("side", ["top", "bottom"])
+def test_assembly_drawing_pdf_flags(tmp_path, side):
+    part = footprint("Resistor_SMD:R_0603", "R1", "1k", 20, 20, [pad(1, -0.8, 0, "A"), pad(2, 0.8, 0, "B")])
+    f = tmp_path / "t.kicad_pcb"
+    f.write_text(HEAD + part + ")\n", encoding="utf-8", newline="\n")
+    pdf = tmp_path / f"t-{side}.pdf"
+    layers = "F.Fab,Edge.Cuts" if side == "top" else "B.Fab,Edge.Cuts"
+    mirror = ["--mirror"] if side == "bottom" else []
+    p = run(*versions.kicad_cli_args("pcb_pdf"), *mirror, "--layers", layers, "--output", str(pdf), str(f))
+    assert pdf.exists() and pdf.read_bytes().startswith(b"%PDF"), p.stderr or p.stdout
+
+
 def test_version_output_parses():
     p = run(*versions.kicad_cli_args("version"))
     assert versions.parse(p.stdout) is not None, p.stdout

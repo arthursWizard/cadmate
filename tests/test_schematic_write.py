@@ -89,8 +89,15 @@ def test_mistakes_are_named(tmp_path):
         sw.write(str(out), r1, {"A": ["R1.1"], "B": ["R1.1"]}, libraries=LIBS)
     with pytest.raises(sw.WriteError, match="has no pin '7'"):
         sw.write(str(out), r1, {"A": ["R1.7"]}, libraries=LIBS)
+    with pytest.raises(sw.WriteError, match="bus syntax"):
+        sw.write(str(out), r1, {"D[0..3]": ["R1.1"]}, libraries=LIBS)
+    with pytest.raises(sw.WriteError, match="bus syntax"):
+        sw.write(str(out), r1, {"my net": ["R1.1"]}, libraries=LIBS)
     with pytest.raises(sw.WriteError, match="library 'Nope' not found"):
         sw.write(str(out), [{"ref": "X1", "symbol": "Nope:X"}], {}, libraries=LIBS)
+    two = [{"ref": "R1", "symbol": "Device:R", "at": [50.8, 50.8]}, {"ref": "R2", "symbol": "Device:R", "at": [50.8, 58.42]}]
+    with pytest.raises(sw.WriteError, match="same point"):  # R1.2 lands on R2.1
+        sw.write(str(out), two, {"A": ["R1.2"], "B": ["R2.1"]}, libraries=LIBS)
     out.write_text("x")
     with pytest.raises(sw.WriteError, match="exists"):
         sw.write(str(out), r1, {}, libraries=LIBS)
@@ -100,7 +107,116 @@ def test_writing_over_a_sheet_in_a_project_snapshots_it_first(tmp_path):
     project.init(tmp_path, tools=["kicad"])
     out = tmp_path / "kicad" / "main.kicad_sch"
     out.parent.mkdir(exist_ok=True)
-    out.write_text("(kicad_sch)\n")
+    out.write_text('(kicad_sch (version 20250114) (generator "cadmate"))\n')
     r = sw.write(str(out), [{"ref": "R1", "symbol": "Device:R"}], {"A": ["R1.1", "R1.2"]}, libraries=LIBS,
                  replace=True, erc=False)
     assert r["snapshot"]["paths"] == ["kicad/main.kicad_sch"]
+
+
+def test_a_sheet_someone_drew_is_never_written_over(tmp_path):
+    out = tmp_path / "theirs.kicad_sch"
+    out.write_text('(kicad_sch (version 20250114) (generator "eeschema"))\n')
+    with pytest.raises(sw.WriteError, match="wasn't written by cadmate"):
+        sw.write(str(out), [{"ref": "R1", "symbol": "Device:R"}], {}, libraries=LIBS, replace=True)
+
+
+def test_outside_a_project_the_old_sheet_is_kept_as_bak(tmp_path):
+    out = tmp_path / "s.kicad_sch"
+    sw.write(str(out), [{"ref": "R1", "symbol": "Device:R"}], {}, libraries=LIBS, erc=False)
+    first = out.read_text()
+    r = sw.write(str(out), [{"ref": "R1", "symbol": "Device:R"}], {}, libraries=LIBS, replace=True, erc=False)
+    assert Path(r["backup"]).read_text() == first
+
+
+def test_writing_again_gives_the_same_file(tmp_path):
+    """Symbol UUIDs stay put across rewrites, so KiCad's Update PCB keeps footprints linked."""
+    a, b = tmp_path / "a" / "s.kicad_sch", tmp_path / "b" / "s.kicad_sch"
+    for out in (a, b):
+        sw.write(str(out), PARTS, NETS, no_connect=["U1.8"], libraries=LIBS, erc=False)
+    assert a.read_text() == b.read_text()
+    before = a.read_text()
+    sw.write(str(a), PARTS, NETS, no_connect=["U1.8"], libraries=LIBS, replace=True, erc=False)
+    assert a.read_text() == before
+
+
+def test_a_hidden_power_pin_can_only_go_on_its_own_net(tmp_path):
+    lib = tmp_path / "H.kicad_sym"
+    lib.write_text('(kicad_symbol_lib (version 20241209) (generator "test")\n'
+                   ' (symbol "H" (in_bom yes) (on_board yes)\n'
+                   '  (property "Reference" "U" (at 0 5.08 0) (effects (font (size 1.27 1.27))))\n'
+                   '  (property "Value" "H" (at 0 -5.08 0) (effects (font (size 1.27 1.27))))\n'
+                   '  (symbol "H_1_1" (rectangle (start -2.54 2.54) (end 2.54 -2.54) (stroke (width 0.254) (type default))'
+                   ' (fill (type background)))\n'
+                   '   (pin input line (at -5.08 0 0) (length 2.54) (name "A" (effects (font (size 1.27 1.27))))'
+                   ' (number "1" (effects (font (size 1.27 1.27)))))\n'
+                   '   (pin power_in line (at 0 5.08 270) (length 2.54) hide (name "VCC" (effects (font (size 1.27 1.27))))'
+                   ' (number "2" (effects (font (size 1.27 1.27))))))))\n')
+    parts = [{"ref": "U1", "symbol": "H:H"}]
+    with pytest.raises(sw.WriteError, match="hidden power pin named VCC"):
+        sw.write(str(tmp_path / "h.kicad_sch"), parts, {"+3V3": ["U1.2"]}, libraries={**LIBS, "H": str(lib)})
+    r = sw.write(str(tmp_path / "h.kicad_sch"), parts, {}, libraries={**LIBS, "H": str(lib)}, erc=False)
+    assert r["hidden_power_pins"] == ["U1.2 (VCC)"]
+
+
+def big_symbol_lib(tmp_path) -> str:
+    """A 40-pin chip: 20 pins down each side, 2.54 mm apart, the first at y 24.13."""
+    rows = []
+    for i in range(20):
+        y = 24.13 - i * 2.54
+        for side, x, ang, num in (("L", -15.24, 0, i + 1), ("R", 15.24, 180, i + 21)):
+            rows.append(f'(pin bidirectional line (at {x} {y:.2f} {ang}) (length 2.54) (name "{side}{i + 1}" '
+                        f'(effects (font (size 1.27 1.27)))) (number "{num}" (effects (font (size 1.27 1.27)))))')
+    lib = tmp_path / "Big.kicad_sym"
+    lib.write_text('(kicad_symbol_lib (version 20241209) (generator "test")\n (symbol "BIG40" (in_bom yes) (on_board yes)\n'
+                   '  (property "Reference" "U" (at 0 27.94 0) (effects (font (size 1.27 1.27))))\n'
+                   '  (property "Value" "BIG40" (at 0 -27.94 0) (effects (font (size 1.27 1.27))))\n'
+                   '  (symbol "BIG40_1_1" (rectangle (start -12.7 26.67) (end 12.7 -26.67) (stroke (width 0.254) '
+                   '(type default)) (fill (type background)))\n   ' + "\n   ".join(rows) + ")))\n")
+    return str(lib)
+
+
+def random_circuit(seed: int):
+    """A chip with resistors and caps hung off random pins, their other ends on rails or shared nets."""
+    import random
+    rnd = random.Random(seed)
+    chip = rnd.choice(["Big:BIG40", "Demo:MCU8"])
+    big = chip == "Big:BIG40"
+    parts = [{"ref": "U1", "symbol": chip, "block": "core"}]
+    pool = [str(i) for i in range(1, 41 if big else 8)]
+    rnd.shuffle(pool)
+    nets: dict[str, list[str]] = {}
+    for k in range(rnd.randint(4, 25 if big else 6)):
+        if not pool:
+            break
+        ref = f"R{k + 1}"
+        parts.append({"ref": ref, "symbol": rnd.choice(["Device:R", "Device:C"]),
+                      "block": rnd.choice(["core", "core", "ext", "io"])})
+        nets[f"S{k}"] = [f"U1.{pool.pop()}", f"{ref}.1"]
+        nets.setdefault(rnd.choice(["GND", "+3V3", "SHARED", "SIG2"]), []).append(f"{ref}.2")
+    return parts, nets, [f"U1.{p}" for p in pool] + ([] if big else ["U1.8"])
+
+
+@pytest.mark.parametrize("seed", [0, 2, 6, 49, 53, 58, 82, 104])  # all but 0 and 104 once put two nets on one point
+def test_random_circuits_come_out_with_the_nets_asked_for(tmp_path, seed):
+    """write() rebuilds the netlist from what it drew and refuses to write a sheet that differs; these random
+    circuits (the kind that once shorted two rails) must all pass that check."""
+    parts, nets, nc = random_circuit(seed)
+    libs = {**LIBS, "Big": big_symbol_lib(tmp_path)}
+    r = sw.write(str(tmp_path / "r.kicad_sch"), parts, nets, no_connect=nc, libraries=libs, paper="A3", erc=False)
+    assert r["ok"]
+
+
+def test_the_self_check_sees_a_short_and_a_split():
+    pin_net = {("R1", 1, "1"): "A", ("R2", 1, "1"): "A", ("R3", 1, "1"): "B"}
+    assert sw._self_check([{"R1.1", "R2.1"}, {"R3.1"}], pin_net, {}) == []
+    assert "also joined to ['R3.1']" in sw._self_check([{"R1.1", "R2.1", "R3.1"}], pin_net, {})[0]
+    assert "2 pieces" in sw._self_check([{"R1.1"}, {"R2.1"}, {"R3.1"}], pin_net, {})[0]
+    assert "net(s) ['VCC']" in sw._self_check([{"R1.1", "R2.1", "=A", "=VCC"}, {"R3.1"}], pin_net, {})[0]
+
+
+def test_auto_placed_blocks_keep_clear_of_parts_placed_by_hand(tmp_path):
+    parts = [{"ref": "R9", "symbol": "Device:R", "at": [38.1, 38.1]}, {"ref": "R8", "symbol": "Device:R", "at": [45.72, 38.1]},
+             {"ref": "U1", "symbol": "Demo:MCU8", "block": "A"}, {"ref": "R1", "symbol": "Device:R", "block": "A"}]
+    r = sw.write(str(tmp_path / "m.kicad_sch"), parts, {"P": ["R9.1", "R8.1"], "S": ["U1.3", "R1.1"]},
+                 no_connect=["U1.8"], libraries=LIBS, erc=False)
+    assert not [f for f in r["review"]["findings"] if f["rule"] in ("symbol_overlap", "text_overlap")], r["review"]

@@ -34,6 +34,7 @@ FORMAT = versions.SCHEMATIC_FORMAT
 GROUND = re.compile(r"^(GND\w*|\w*GND|VSS\w*|V-|-\d.*)$", re.IGNORECASE)  # ground or a negative rail: the symbol points down
 SUPPLY = re.compile(r"^(\+.*|-.*|GND\w*|\w*GND|V(CC|DD|SS|BUS|BAT|IN)\w*)$", re.IGNORECASE)  # names drawn as power symbols
 POWER_LIB = "power"
+BAD_NET = re.compile(r"\s|[\[\]]|(?<!~)\{")  # whitespace, bus ranges, bus groups (~{..} is an overbar)
 CLEARANCE = 1.0  # mm a searched wire keeps from parts and text
 
 
@@ -45,8 +46,32 @@ def snap(v: float, g: float = GRID) -> float:
     return round(round(v / g) * g, 4)
 
 
-def _uuid() -> str:
-    return str(uuidlib.uuid4())
+NS = uuidlib.UUID("6f1e3c8a-2b7d-5e40-9c1a-3d5b7f9e2a64")  # cadmate's namespace for the sheet UUIDs it derives
+
+
+def _written_by_cadmate(path: Path) -> bool:
+    try:
+        g = sexpr.parse(path.read_text(encoding="utf-8", errors="replace")).child("generator")
+    except (OSError, sexpr.SexprError):
+        return False
+    return g is not None and g.atoms()[:1] == ["cadmate"]
+
+
+def _sheet_uuid(path: Path) -> str:
+    """The sheet's own UUID: kept from the file being replaced, else derived from its name. Symbol UUIDs derive from
+    it, so writing the sheet again keeps them and KiCad's Update PCB keeps the footprints linked."""
+    if path.exists():
+        try:
+            u = sexpr.parse(path.read_text(encoding="utf-8", errors="replace")).child("uuid")
+            if u is not None and u.atoms():
+                return str(uuidlib.UUID(u.atoms()[0]))
+        except (sexpr.SexprError, ValueError):
+            pass
+    return str(uuidlib.uuid5(NS, "sheet:" + path.stem))
+
+
+def _uuid(root: str, key: str) -> str:
+    return str(uuidlib.uuid5(uuidlib.UUID(root), key))
 
 
 Box = tuple[float, float, float, float]
@@ -429,7 +454,8 @@ def _pin_wants(net: str | None) -> Pt | None:
 def _clear(p: Part, others: list[Part], gap: float = 2.54) -> bool:
     mine = [p.keepout] + p.field_boxes
     theirs = [b for q in others for b in [q.keepout] + q.field_boxes]
-    return not any(a[0] < b[2] + gap and b[0] < a[2] + gap and a[1] < b[3] + gap and b[1] < a[3] + gap
+    g = gap + EPS  # boxes exactly gap apart don't pass either
+    return not any(a[0] < b[2] + g and b[0] < a[2] + g and a[1] < b[3] + g and b[1] < a[3] + g
                    for a in mine for b in theirs)
 
 
@@ -472,6 +498,93 @@ def _beside(p: Part, num: str, anchor: Part, anum: str, pin_net: dict, done: lis
     return False
 
 
+def _check_pins_apart(placed: list[Part], pin_net: dict) -> None:
+    """Pins of different parts, or on different nets, on one point would be joined by KiCad: refuse."""
+    at: dict[tuple[float, float], list[tuple[Part, str, str | None]]] = {}
+    for p in placed:
+        for num, (tip, _, _) in p.pins.items():
+            at.setdefault((round(tip[0], 3), round(tip[1], 3)), []).append((p, num, pin_net.get((p.ref, p.unit, num))))
+    for pt, pins in at.items():
+        nets = {n for _, _, n in pins if n}
+        parts = {id(p) for p, _, _ in pins}
+        if len(nets) > 1 or len(parts) > 1:
+            names = ", ".join(f"{p.ref}.{n}" + (f" ({net})" if net else "") for p, n, net in pins)
+            raise WriteError(f"pins {names} sit on the same point {pt[0]}, {pt[1]}, so KiCad would join them; move a "
+                             f"part (at) or, for stacked pins, put them on one net")
+
+
+def _connectivity(parts: list[Part], power: list[Part], d: Drawing, junctions) -> list[set[str]]:
+    """The sheet's nets as KiCad joins them, rebuilt from what is drawn (not from the router's own records): a pin,
+    wire end, label or power pin on a wire joins it; wires crossing join only at a junction dot; labels with one name
+    and power symbols with one value are one net. Each set holds "REF.PIN" strings, plus "=NAME" for a named net."""
+    parent: dict = {}
+
+    def find(x):
+        while parent.setdefault(x, x) != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        parent[find(a)] = find(b)
+
+    def k(pt):
+        return ("pt", round(pt[0], 3), round(pt[1], 3))
+    points = set()
+    for p in parts:
+        for num, (tip, _, pn) in p.pins.items():
+            union(("pin", f"{p.ref}.{num}"), k(tip))
+            points.add(k(tip))
+            if pn.hidden and pn.etype == "power_in":  # KiCad joins a hidden power input to the net named after it
+                union(("name", pn.name), k(tip))
+    for ps in power:
+        for tip, _, pn in ps.pins.values():
+            points.add(k(tip))
+            if pn.etype == "power_in":  # a power symbol's net is its value; PWR_FLAG's pin is an output, no net
+                union(("name", ps.value), k(tip))
+    for name, at, _ in d.labels:
+        union(("name", name), k(at))
+        points.add(k(at))
+    for a, b, _ in d.wires:
+        points |= {k(a), k(b)}
+        union(k(a), k(b))
+    for j in junctions:
+        points.add(k(j))
+    for a, b, _ in d.wires:
+        for q in points:
+            if _on_seg((q[1], q[2]), a, b):
+                union(q, k(a))
+    groups: dict = {}
+    for x in list(parent):
+        if x[0] == "pin":
+            groups.setdefault(find(x), set()).add(x[1])
+    for x in list(parent):
+        if x[0] == "name" and find(x) in groups:
+            groups[find(x)].add("=" + x[1])
+    return list(groups.values())
+
+
+def _self_check(groups: list[set[str]], pin_net: dict, stacked: dict[str, str]) -> list[str]:
+    """Differences between the nets asked for and the nets drawn; empty when they match. stacked maps a pin that
+    shares its point with another pin of the same part to that pin, which it is joined to by design."""
+    want: dict[str, set[str]] = {}
+    for (ref, _, num), net in pin_net.items():
+        want.setdefault(net, set()).add(f"{ref}.{num}")
+    problems = []
+    for net, pins in want.items():
+        hit = [g for g in groups if g & pins]
+        if len(hit) != 1:
+            problems.append(f"net {net} is drawn in {len(hit)} pieces: {[sorted(g & pins) for g in hit]}")
+            continue
+        extra = sorted(x for x in hit[0] - pins if not x.startswith("=") and stacked.get(x) not in pins)
+        if extra:
+            problems.append(f"net {net} is also joined to {extra}")
+        names = {x[1:] for x in hit[0] if x.startswith("=")} - {net}
+        if names:
+            problems.append(f"net {net} is also joined to the net(s) {sorted(names)}")
+    return problems
+
+
 def _layout(parts: list[Part], auto: set[int], paper: tuple[float, float], pin_net: dict) -> None:
     """A first layout for parts given no position. In each block the part with the most pins goes first; each part
     wired to one already placed goes next to that pin (a pull-up beside the pin it pulls, a resistor in line with
@@ -489,6 +602,7 @@ def _layout(parts: list[Part], auto: set[int], paper: tuple[float, float], pin_n
                 signal.setdefault(net, []).append((p, num))
     margin, gap = 30.48, 20.32
     x, y, row_h = margin, margin, 0.0
+    taken = [b for p in parts if id(p) not in auto for b in [p.keepout] + p.field_boxes]
     for members in blocks.values():
         members.sort(key=lambda p: -len(p.pins))
         done: list[Part] = []
@@ -531,11 +645,20 @@ def _layout(parts: list[Part], auto: set[int], paper: tuple[float, float], pin_n
         by0 = min(b[1] for q in done for b in [q.keepout] + q.field_boxes)
         bw = max(b[2] for q in done for b in [q.keepout] + q.field_boxes) - bx0
         bh = max(b[3] for q in done for b in [q.keepout] + q.field_boxes) - by0
-        if x > margin and x + bw > paper[0] - margin:
-            x, y, row_h = margin, y + row_h + gap, 0.0
+        for _ in range(400):  # next free spot: clear of parts the caller placed and blocks already put down
+            if x > margin and x + bw > paper[0] - margin:
+                x, y, row_h = margin, y + row_h + gap, 0.0
+            spot = (x - gap / 2, y - gap / 2, x + bw + gap / 2, y + bh + gap / 2)
+            if not any(spot[0] < b[2] and b[0] < spot[2] and spot[1] < b[3] and b[1] < spot[3] for b in taken):
+                break
+            x += STEP * 2
+            row_h = max(row_h, STEP)
+        # one offset for the whole block, on the grid, so parts keep exactly the spacing they were placed with
+        ox, oy = snap(x - bx0, STEP), snap(y - by0, STEP)
         for p in done:
-            p.at = (snap(p.at[0] - bx0 + x, STEP), snap(p.at[1] - by0 + y, STEP))
+            p.at = (round(p.at[0] + ox, 4), round(p.at[1] + oy, 4))
             _place(p)
+        taken += [b for q in done for b in [q.keepout] + q.field_boxes]
         x += bw + gap
         row_h = max(row_h, bh)
 
@@ -546,8 +669,12 @@ def write(path: str, parts: list[dict], nets: dict[str, list[str]], no_connect: 
     out_path = Path(path).expanduser()
     if out_path.suffix != ".kicad_sch":
         raise WriteError("path must end in .kicad_sch")
-    if out_path.exists() and not replace and not plan_only:
-        raise WriteError(f"{out_path} exists; this writes new sheets (replace=True to write over it)")
+    if out_path.exists() and not plan_only:
+        if not replace:
+            raise WriteError(f"{out_path} exists; this writes new sheets (replace=True writes over a sheet cadmate wrote)")
+        if not _written_by_cadmate(out_path):
+            raise WriteError(f"{out_path} wasn't written by cadmate, so writing over it would lose someone's drawing; "
+                             f"write to a new file instead")
     if paper not in schematic_review.PAPER:
         raise WriteError(f"paper must be one of {sorted(schematic_review.PAPER)}")
     size = schematic_review.PAPER[paper]
@@ -594,6 +721,10 @@ def write(path: str, parts: list[dict], nets: dict[str, list[str]], no_connect: 
     for net, specs in nets.items():
         if not net or not isinstance(specs, list):
             raise WriteError(f"nets: {net!r} must name a list of pins")
+        if BAD_NET.search(net):
+            raise WriteError(f"net name {net!r}: KiCad reads [..] and {{..}} as bus syntax and spaces are easy to "
+                             f"mistype; use letters, digits and _ + - . ~ / (e.g. D0, SPI_MOSI, ~{{CS}} is KiCad's "
+                             f"overbar and is fine)")
         for s in specs:
             ref = s.partition(".")[0]
             if ref not in by_ref:
@@ -602,6 +733,11 @@ def write(path: str, parts: list[dict], nets: dict[str, list[str]], no_connect: 
             k = (part.ref, part.unit, num)
             if k in pin_net and pin_net[k] != net:
                 raise WriteError(f"{s} is on two nets: {pin_net[k]} and {net}")
+            pn = part.pins[num][2]
+            if pn.hidden and pn.etype == "power_in" and pn.name != net:
+                raise WriteError(f"{s} is a hidden power pin named {pn.name}: KiCad joins it to the net {pn.name} "
+                                 f"whatever is drawn, so it can't go on {net}. Name the net {pn.name}, or use a symbol "
+                                 f"with the pin visible")
             if k not in pin_net:
                 pin_net[k] = net
                 net_pins.setdefault(net, []).append((part, num))
@@ -615,6 +751,7 @@ def write(path: str, parts: list[dict], nets: dict[str, list[str]], no_connect: 
             raise WriteError(f"{s} is in no_connect and on net {pin_net[(part.ref, part.unit, num)]}")
         nc_pins.append((part, num))
     _layout(placed, auto, size, pin_net)
+    _check_pins_apart(placed, pin_net)
 
     geometry = {f"{p.ref}" + (f" unit {p.unit}" if p.sym.unit_count > 1 else ""): {
         "at": list(p.at), "rot": p.rot, "outline": [round(v, 2) for v in p.keepout],
@@ -771,15 +908,37 @@ def write(path: str, parts: list[dict], nets: dict[str, list[str]], no_connect: 
     for n in notes or []:
         d.texts.append((str(n["text"]), (snap(float(n["at"][0])), snap(float(n["at"][1])))))
 
-    unconnected = sorted(f"{p.ref}.{num}" for p in placed for num, (_, _, pn) in p.pins.items()
-                         if (p.ref, p.unit, num) not in pin_net and (p, num) not in nc_pins and not pn.hidden)
+    on_net = {(r, n) for r, _, n in pin_net} | {(p.ref, n) for p, n in nc_pins}
+    unconnected = sorted({f"{p.ref}.{num}" for p in placed for num, (_, _, pn) in p.pins.items()
+                          if (p.ref, num) not in on_net and not pn.hidden})
 
-    text = _render(out_path, placed, power_parts, d, junctions, paper, title)
+    stacked = {}
+    for p in placed:
+        tips: dict = {}
+        for num, (tip, _, _) in p.pins.items():
+            tips.setdefault(d.key(tip), []).append(num)
+        for nums in tips.values():
+            for n in nums[1:]:
+                stacked[f"{p.ref}.{n}"] = f"{p.ref}.{nums[0]}"
+                stacked.setdefault(f"{p.ref}.{nums[0]}", f"{p.ref}.{n}")
+    problems = _self_check(_connectivity(placed, power_parts, d, junctions), pin_net, stacked)
+    if problems:  # never hand back a sheet that joins the wrong pins
+        raise WriteError("the drawing doesn't match the nets, so nothing was written (a cadmate bug: please report "
+                         "it with the parts and nets): " + "; ".join(problems[:5]))
+    hidden_power = sorted(f"{p.ref}.{num} ({pn.name})" for p in placed for num, (_, _, pn) in p.pins.items()
+                          if pn.hidden and pn.etype == "power_in" and (p.ref, p.unit, num) not in pin_net)
+
+    root_uuid = _sheet_uuid(out_path)
+    text = _render(out_path, placed, power_parts, d, junctions, paper, title, root_uuid)
     sexpr.parse(text)
     snapshot = None
     root = project.find_root(out_path)
+    backup = None
     if out_path.exists() and root:
         snapshot = project.snapshot(root, "before-schematic-write", paths=[str(out_path)])
+    elif out_path.exists():
+        backup = out_path.with_name(out_path.name + ".bak")
+        backup.write_bytes(out_path.read_bytes())
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(text, encoding="utf-8", newline="\n")
 
@@ -791,6 +950,19 @@ def write(path: str, parts: list[dict], nets: dict[str, list[str]], no_connect: 
                       "write again with replace=True; ask the user to look at the sheet in KiCad"}
     if snapshot:
         result["snapshot"] = snapshot
+    if backup:
+        result["backup"] = str(backup)
+    if hidden_power:
+        result["hidden_power_pins"] = hidden_power
+        result["hidden_power_note"] = "hidden power pins on no net: KiCad joins each to the net named after the pin " \
+                                      "(in brackets); check that's what the circuit needs"
+    single = sorted(n for n, pins in net_pins.items() if len(pins) == 1 and not SUPPLY.match(n))
+    if single:
+        result["one_pin_nets"] = single
+        result["one_pin_note"] = "nothing drawn for these: a net needs two pins (or use no_connect)"
+    if any(f.get("rule") == "off_sheet" for f in review["findings"]):
+        result["paper_note"] = "parts run off the sheet: use a larger paper (A3) or split the circuit across sheets"
+
     if label_only:
         result["label_instead_of_wire"] = label_only
         result["label_note"] = "no clean wire path for these pins inside their block; a label joins them. Moving the " \
@@ -810,8 +982,13 @@ def _fmt(v: float) -> str:
     return "0" if s in ("-0", "") else s
 
 
-def _render(path: Path, parts: list[Part], power: list[Part], d: Drawing, junctions, paper: str, title: str) -> str:
-    root_uuid = _uuid()
+def _render(path: Path, parts: list[Part], power: list[Part], d: Drawing, junctions, paper: str, title: str,
+            root_uuid: str) -> str:
+    n = [0]
+
+    def _id() -> str:  # drawing items: numbered in drawing order, so the same input gives the same file
+        n[0] += 1
+        return _uuid(root_uuid, f"item:{n[0]}")
     proj = path.stem
     q = sexpr.quote
     lib_texts = list(dict.fromkeys(p.text for p in parts + power))
@@ -821,19 +998,19 @@ def _render(path: Path, parts: list[Part], power: list[Part], d: Drawing, juncti
         out.append(f"\t(title_block\n\t\t(title {q(title)})\n\t)")
     out.append("\t(lib_symbols\n" + "\n".join(lib_texts) + "\n\t)")
     for k in junctions:
-        out.append(f'\t(junction (at {_fmt(k[0])} {_fmt(k[1])}) (diameter 0) (color 0 0 0 0) (uuid {q(_uuid())}))')
+        out.append(f'\t(junction (at {_fmt(k[0])} {_fmt(k[1])}) (diameter 0) (color 0 0 0 0) (uuid {q(_id())}))')
     for pt in d.nc:
-        out.append(f"\t(no_connect (at {_fmt(pt[0])} {_fmt(pt[1])}) (uuid {q(_uuid())}))")
+        out.append(f"\t(no_connect (at {_fmt(pt[0])} {_fmt(pt[1])}) (uuid {q(_id())}))")
     for a, b, _ in d.wires:
         out.append(f"\t(wire (pts (xy {_fmt(a[0])} {_fmt(a[1])}) (xy {_fmt(b[0])} {_fmt(b[1])})) "
-                   f"(stroke (width 0) (type default)) (uuid {q(_uuid())}))")
+                   f"(stroke (width 0) (type default)) (uuid {q(_id())}))")
     for name, (x, y), angle in d.labels:
         just = "left bottom" if angle in (0, 90) else "right bottom"
         out.append(f"\t(label {q(name)} (at {_fmt(x)} {_fmt(y)} {angle}) (fields_autoplaced yes) "
-                   f"(effects (font (size 1.27 1.27)) (justify {just})) (uuid {q(_uuid())}))")
+                   f"(effects (font (size 1.27 1.27)) (justify {just})) (uuid {q(_id())}))")
     for text, (x, y) in d.texts:
         out.append(f"\t(text {q(text)} (exclude_from_sim no) (at {_fmt(x)} {_fmt(y)} 0) "
-                   f"(effects (font (size 1.524 1.524) (bold yes)) (justify left bottom)) (uuid {q(_uuid())}))")
+                   f"(effects (font (size 1.524 1.524) (bold yes)) (justify left bottom)) (uuid {q(_id())}))")
     for p in parts + power:
         out.append(_instance(p, root_uuid, proj))
     out.append('\t(sheet_instances (path "/" (page "1")))\n\t(embedded_fonts no)\n)\n')
@@ -845,7 +1022,7 @@ def _instance(p: Part, root_uuid: str, proj: str) -> str:
     in_bom = "no" if p.power else "yes"
     lines = [f"\t(symbol (lib_id {q(p.lib_id)}) (at {_fmt(p.at[0])} {_fmt(p.at[1])} {p.rot})"
              + (f" (mirror {p.mirror})" if p.mirror else "")
-             + f" (unit {p.unit}) (exclude_from_sim no) (in_bom {in_bom}) (on_board yes) (dnp no) (uuid {q(_uuid())})"]
+             + f" (unit {p.unit}) (exclude_from_sim no) (in_bom {in_bom}) (on_board yes) (dnp no) (uuid {q(_uuid(root_uuid, f'symbol:{p.ref}:{p.unit}'))})"]
 
     def prop(name: str, value: str, at: Pt, just: str = "", hide: bool = False) -> str:
         j = f" (justify {just})" if just else ""
@@ -870,7 +1047,7 @@ def _instance(p: Part, root_uuid: str, proj: str) -> str:
                 continue
             lines.append(prop(str(k), str(v), p.at, hide=True))
     for num in sorted({n for pin in p.sym.pins_of(p.unit) for n in pin.numbers}):
-        lines.append(f"\t\t(pin {q(num)} (uuid {q(_uuid())}))")
+        lines.append(f"\t\t(pin {q(num)} (uuid {q(_uuid(root_uuid, f'pin:{p.ref}:{p.unit}:{num}'))}))")
     lines.append(f"\t\t(instances (project {q(proj)} (path {q('/' + root_uuid)} (reference {q(p.ref)}) (unit {p.unit}))))")
     lines.append("\t)")
     return "\n".join(lines)

@@ -76,6 +76,7 @@ Early. These workflows work end to end:
 | `kicad_pcb_undo` | Takes back Claude's last step, only if nothing happened after it | KiCad API on |
 | `kicad_pcb_save` | Saves the board | KiCad API on |
 | `board_from_schematic` | Starts a new `.kicad_pcb` from a schematic: every footprint on its nets, linked to its symbol, laid out as on the sheet without overlaps, inside an outline; checked with KiCad's schematic parity and DRC | kicad-cli; the footprint libraries the symbols name |
+| `propose_placement`, `apply_placement` | Moves that put each bypass cap at its IC power pin and each crystal with its load caps at the MCU, clear of other courtyards; applied only when you agree, as one undo step on the open board or into a saved board | nothing |
 | `classify_critical_nets` | The connections on a board that need care, by class, each with its rule, source, connections and what to do with it, as a table to confirm or override | nothing |
 | `route_critical_nets` | Routes and locks the confirmed critical connections on the open board (one undo step) or into a copy of a `.kicad_pcb`; lists what it couldn't route and why | nothing |
 | `autoroute_rest` | Freerouting on the rest, around the locked tracks, with IPC-2221 widths for nets with a current; brings the result back, widens tracks below the net class, refills zones | Freerouting's jar, java, KiCad's bundled Python |

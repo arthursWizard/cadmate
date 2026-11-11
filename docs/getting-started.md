@@ -207,8 +207,11 @@ change. When you say good, Claude snapshots.
 3. **Placement.** For a new board, "start the board from the schematic": `board_from_schematic` writes the
    `.kicad_pcb` with every footprint on its nets, laid out roughly as the schematic is, inside an outline, and checks
    it against the schematic with KiCad's parity check. (For a board you've already placed, use Update PCB from
-   Schematic in KiCad instead.) Then place the parts by hand or with Claude in the live PCB editor ("put the decaps
-   next to U1's power pins"). Placement is your call, with Claude's help.
+   Schematic in KiCad instead.) Place connectors, mounting holes and the big parts yourself, then "place the decaps
+   and the crystal": `propose_placement` lists moves that put each bypass cap beside its IC power pin and each crystal
+   and its load caps beside the MCU's XI/XO pins, clear of the other courtyards. Nothing moves until you say which
+   moves to make; `apply_placement` makes them, on the open board as one undo step. Placement is your call, with
+   Claude's help.
 4. **Critical connections.** "Classify the critical nets." `classify_critical_nets` lists decaps, crystals, USB pairs,
    regulator loops, ESD, analog, strap and high-current nets, each with its rule and source. You confirm, correct, or
    give currents ("VBUS carries 2 A").

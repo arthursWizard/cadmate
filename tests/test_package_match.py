@@ -39,6 +39,11 @@ MATCH = [
     ("SC-74A", "SOT-23-5"), ("SOT-753", "SOT-23-5"), ("SC-74", "SOT-23-6"), ("TSOT-23-6", "SOT-23-6"),
     ("VFQFN-20", "QFN-20-1EP_4x4mm_P0.5mm_EP2.5x2.5mm"), ("UFQFPN-48", "QFN-48-1EP_7x7mm_P0.5mm_EP5.6x5.6mm"),
     ("QSOP-16", "SSOP-16_3.9x4.9mm_P0.635mm"),
+    # KiCad names an SO body's width first, even when it's the long side
+    ('8-TSSOP (0.173", 4.40mm Width)', "TSSOP-8_4.4x3mm_P0.65mm"),
+    ("TSSOP-8_173mil", "TSSOP-8_4.4x3mm_P0.65mm"),
+    ("SSOP-16_L4.9-W3.9-P0.64-LS6.0-BL", "SSOP-16_3.9x4.9mm_P0.635mm"),  # 0.64 is 0.635 rounded
+    ("TDFN-8", "DFN-8-1EP_3x3mm_P0.65mm_EP1.55x2.4mm"),
 ]
 
 MISMATCH = [
@@ -61,6 +66,8 @@ MISMATCH = [
     ("QSOP-16", "SSOP-16_5.3x6.2mm_P0.65mm", "pitch is 0.635 mm"),
     ("ESOP-8", "SOIC-8_3.9x4.9mm_P1.27mm", "exposed pad"),
     ("SMAF", "D_SMA", "SMAF but the footprint is SMA"),
+    ('8-TSSOP (0.173", 4.40mm Width)', "TSSOP-8_3x3mm_P0.65mm", "4.40 mm wide but the footprint's is 3"),
+    ("TO-220-3", "TO-220-2_Vertical", "3 pins"),  # TO-220-N counts real leads: no tab allowance
 ]
 
 

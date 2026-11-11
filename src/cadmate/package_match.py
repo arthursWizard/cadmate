@@ -32,7 +32,7 @@ ALIASES = {
     "HVQFN": ("QFN", False), "TQFN": ("QFN", False), "VFQFN": ("QFN", False), "UFQFN": ("QFN", False),
     "UFQFPN": ("QFN", False),
     "DFN": ("DFN", False), "WDFN": ("DFN", False), "UDFN": ("DFN", False), "VDFN": ("DFN", False), "SON": ("DFN", False),
-    "VSON": ("DFN", False), "WSON": ("DFN", False), "USON": ("DFN", False),
+    "VSON": ("DFN", False), "TDFN": ("DFN", False), "POWERTDFN": ("DFN", False), "WSON": ("DFN", False), "USON": ("DFN", False),
     "LQFP": ("QFP", False), "TQFP": ("QFP", False), "QFP": ("QFP", False),
     "SOT-23": ("SOT-23", False), "SOT23": ("SOT-23", False), "TSOT-23": ("SOT-23", False),  # TSOT: same pads, thinner
     "TSOT23": ("SOT-23", False), "SOT-223": ("SOT-223", False), "SOT223": ("SOT-223", False),
@@ -52,11 +52,12 @@ NUMBERED = {"SOT-323": ("SC-70", 3), "SOT-353": ("SC-70", 5), "SOT-363": ("SC-70
 DEFAULT_PINS = {"SOT-23": 3, "SC-70": 3}
 NO_PIN_COUNT = {"SMA", "SMAF", "SMB", "SMC", "SOD-123", "SOD-123F", "SOD-323", "SOD-523", "SOD-923"}  # a number after
 # these names is a variant, not a pin count
-TAB_FAMILIES = {"TO-252", "TO-263", "TO-220", "SOT-223", "SOT-89"}  # sources count the tab as a pin, or don't
+TAB_FAMILIES = {"TO-252", "TO-263", "SOT-223", "SOT-89"}  # SMD tabs: sources count the tab as a pin, or don't
+# (KiCad's TO-220-N counts real leads, as distributors do)
 BODY_FAMILIES = {"QFN", "DFN", "QFP", "SOIC", "TSSOP", "MSOP", "SSOP"}  # where size tells packages apart
 BODY_TOLERANCE = 0.15  # mm
 WIDTH_TOLERANCE = 0.25  # mm, for widths given in mil (150 mil is the 3.9 mm body)
-PITCH_TOLERANCE = 0.005  # mm: pitches are stated exactly, and 0.635 and 0.65 are different parts
+PITCH_TOLERANCE = 0.01  # mm: 0.64 is 0.635 rounded, while 0.635 and 0.65 are different parts
 
 
 def _family(text: str) -> tuple[str | None, int | None, bool]:
@@ -84,9 +85,11 @@ def _size(text: str) -> dict:
             a, b = float(m[2]), float(m[3])
             if 0.5 <= a <= 40 and 0.5 <= b <= 40:
                 out["body"] = tuple(sorted((a, b)))
+                out["named_width"] = a  # KiCad names an SO body width first: TSSOP-8_4.4x3mm
                 break
     if "body" not in out and (m := re.search(r"(?<![A-Za-z])L(\d+(?:\.\d+)?)-W(\d+(?:\.\d+)?)", text, re.I)):
         out["body"] = tuple(sorted((float(m[1]), float(m[2]))))  # LCSC: "L4.9-W3.9"
+        out["named_width"] = float(m[2])
     if "body" not in out:
         if m := re.search(r"(\d+(?:\.\d+)?)\s*mm\s*width", text, re.I):  # DigiKey: "3.90mm Width"
             out["width"], out["width_tol"] = float(m[1]), BODY_TOLERANCE
@@ -170,8 +173,9 @@ def _differences(p: dict, f: dict) -> list[str]:
         why.append("the part has an exposed pad underneath but the footprint has none for it")
     if p.get("body") and f.get("body") and any(abs(a - b) > BODY_TOLERANCE for a, b in zip(p["body"], f["body"])):
         why.append("the part's body is {:g}x{:g} mm but the footprint's is {:g}x{:g} mm".format(*p["body"], *f["body"]))
-    elif p.get("width") and f.get("body") and abs(p["width"] - f["body"][0]) > p["width_tol"]:
-        why.append(f"the part's body is {p['width']:.2f} mm wide but the footprint's is {f['body'][0]:g} mm")
+    elif p.get("width") and f.get("body") and abs(p["width"] - f.get("named_width", f["body"][0])) > p["width_tol"]:
+        why.append(f"the part's body is {p['width']:.2f} mm wide but the footprint's is "
+                   f"{f.get('named_width', f['body'][0]):g} mm")
     if p.get("pitch") and f.get("pitch") and abs(p["pitch"] - f["pitch"]) > PITCH_TOLERANCE:
         why.append(f"the part's pitch is {p['pitch']:g} mm but the footprint's is {f['pitch']:g} mm")
     return why

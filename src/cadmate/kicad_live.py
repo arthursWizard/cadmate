@@ -25,6 +25,7 @@ new Claude session carries on where the last one stopped.
 from __future__ import annotations
 
 import difflib
+import functools
 import hashlib
 import json
 import os
@@ -501,9 +502,24 @@ def _pixel_size(svg: Path, width: int, square: bool = False, margin: float = 0.0
     svg.write_text(text[:root.start()] + tag + text[root.end():], encoding="utf-8")
 
 
+@functools.cache
+def _sans_family() -> str | None:
+    """The system's sans-serif family on Linux, from fontconfig. resvg doesn't use fontconfig: it matches families by
+    exact name and maps generic sans-serif to Arial, so on a Linux box without Arial or DejaVu every label would be
+    left out of the picture without an error. Windows and macOS have Arial, so resvg's default works there."""
+    if platform.system() in ("Windows", "Darwin") or not (fc := shutil.which("fc-match")):
+        return None
+    try:
+        out = subprocess.run([fc, "-f", "%{family[0]}", "sans-serif"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() or None
+
+
 def _svg_to_png(svg: Path, png: Path, width: int) -> None:
     """Draw the SVG as a white-backed PNG, width pixels wide. resvg (a dependency, wheels for every OS cadmate runs on)
-    does it in-process; rsvg-convert and macOS's qlmanage are only there for a platform resvg-py has no wheel for."""
+    does it in-process; rsvg-convert and macOS's qlmanage are only a fallback for an install where resvg-py won't
+    import."""
     try:
         import resvg_py
     except ImportError:
@@ -512,7 +528,8 @@ def _svg_to_png(svg: Path, png: Path, width: int) -> None:
     _pixel_size(svg, width, square=quicklook)
     if resvg_py is not None:
         try:
-            data = resvg_py.svg_to_bytes(svg_path=str(svg), width=width, background="white")
+            fonts = {"sans_serif_family": fam, "font_family": fam} if (fam := _sans_family()) else {}
+            data = resvg_py.svg_to_bytes(svg_path=str(svg), width=width, background="white", **fonts)
         except Exception as e:  # resvg raises its own errors for SVG it can't parse
             raise LiveError(f"couldn't draw {svg.name} as a PNG: {e}") from e
         png.write_bytes(bytes(data))

@@ -1122,12 +1122,13 @@ def project_release(path: str, revision: str | None = None, notes: str = "", boa
 
 
 @server.tool()
-def project_prune(path: str, keep: int = 10, confirm: bool = False) -> dict:
+def project_prune(path: str, keep: int = 10, delete: list[str] | None = None) -> dict:
     """Free space in history/: delete the automatic snapshots tools took before changing something (routing passes,
     restores, moves), keeping the newest keep. Snapshots taken on purpose with project_snapshot and released ones are
-    never touched. Without confirm it only lists what would go and the space freed: show the user, and call again with
-    confirm=True on their yes. Deleted snapshots can't be restored; HISTORY.md marks them pruned."""
-    return _project(project.prune, path, keep, confirm)
+    never touched. Without delete it only lists what would go (would_delete) and the space freed: show the user, and on
+    their yes call again with delete set to those names; only those still beyond the newest keep are deleted. Deleted
+    snapshots can't be restored; HISTORY.md marks them pruned."""
+    return _project(project.prune, path, keep, delete)
 
 
 @server.tool()

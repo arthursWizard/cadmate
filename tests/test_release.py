@@ -98,7 +98,9 @@ def test_a_release_is_never_overwritten_and_revisions_are_checked(tmp_path):
     with pytest.raises(project.ProjectError, match="revision"):
         release.release(root, revision="v2-final", render=False, now=T0.replace(hour=11))
     assert release.release(root, render=False, now=T0.replace(hour=11))["revision"] == "C"
-    assert release._next_rev(["Z"]) == "AA" and release._next_rev(["AZ"]) == "BA"
+    # ASME Y14.35: no I, O, Q, S, X or Z
+    assert release._next_rev(["H"]) == "J" and release._next_rev(["Y"]) == "AA" and release._next_rev(["AY"]) == "BA"
+    assert release._next_rev(["YY"]) == "AAA" and release.REV.match("AAA")
 
 
 def test_release_needs_fab_files(tmp_path):
@@ -156,13 +158,13 @@ def test_prune_keeps_labelled_and_released_snapshots(tmp_path):
     root = make(tmp_path)
     project.snapshot(root, "approved-layout", note="user approved the placement", now=T0)
     for i in range(4):
-        project.snapshot(root, f"before-route-{i}", ["main.kicad_pcb"], note="automatic, before routing",
+        project.snapshot(root, f"before-route-{i}", ["main.kicad_pcb"], note="automatic, before routing", automatic=True,
                          now=T0.replace(hour=10, minute=i))
     rel = release.release(root, render=False, now=T0.replace(hour=12))
     dry = project.prune(root, keep=1)
     assert [s["name"] for s in dry["would_delete"]] == [f"20261102-100{i}_before-route-{i}" for i in range(3)]
     assert dry["deleted"] == [] and len(project.history(root)["snapshots"]) == 6
-    done = project.prune(root, keep=1, confirm=True)
+    done = project.prune(root, keep=1, delete=[x["name"] for x in dry["would_delete"]])
     left = {s["name"]: s["kind"] for s in project.history(root)["snapshots"]}
     assert left == {"20261102-0930_approved-layout": "labelled", "20261102-1003_before-route-3": "automatic",
                     rel["snapshot"]: "release"}
@@ -174,7 +176,101 @@ def test_prune_keeps_labelled_and_released_snapshots(tmp_path):
 def test_check_suggests_pruning_when_automatic_snapshots_pile_up(tmp_path):
     root = make(tmp_path)
     for i in range(project.KEEP_AUTOMATIC + 2):
-        project.snapshot(root, f"before-route-{i}", ["main.kicad_pcb"], note="automatic, before routing",
+        project.snapshot(root, f"before-route-{i}", ["main.kicad_pcb"], note="automatic, before routing", automatic=True,
                          now=T0.replace(minute=i))
     found = [f for f in project.check(root)["findings"] if f["path"] == "history"]
     assert found and "project_prune" in found[0]["fix"]
+
+
+def test_a_deliberate_snapshot_is_never_automatic_whatever_its_note(tmp_path):
+    root = make(tmp_path)
+    project.snapshot(root, "routed", note="Automatically routed, user approved", now=T0)
+    project.snapshot(root, "approved", note="automatic, before routing (said the user)", now=T0.replace(minute=31))
+    assert {s["kind"] for s in project.history(root)["snapshots"]} == {"labelled"}
+    assert project.prune(root, keep=0)["would_delete"] == []
+
+
+def test_legacy_snapshots_go_by_the_tools_note(tmp_path):
+    root = make(tmp_path)
+    for i, note in enumerate(("automatic, before autoroute on main.kicad_pcb", "automatically fine")):
+        d = root / f"history/20261001-120{i}_legacy-{i}"
+        d.mkdir(parents=True)
+        (d / "SNAPSHOT.json").write_text(json.dumps({"label": f"legacy-{i}", "note": note, "paths": []}))
+    kinds = {s["name"]: s["kind"] for s in project.history(root)["snapshots"]}
+    assert kinds == {"20261001-1200_legacy-0": "automatic", "20261001-1201_legacy-1": "labelled"}
+    assert [x["name"] for x in project.prune(root, keep=0)["would_delete"]] == ["20261001-1200_legacy-0"]
+
+
+def test_prune_deletes_only_the_listed_snapshots(tmp_path):
+    root = make(tmp_path)
+    for i in range(2):
+        project.snapshot(root, f"before-route-{i}", ["main.kicad_pcb"], note="automatic, before routing", automatic=True,
+                         now=T0.replace(minute=i))
+    listed = [x["name"] for x in project.prune(root, keep=1)["would_delete"]]
+    assert listed == ["20261102-0900_before-route-0"]
+    # a routing pass after the list was shown: it must not shift what goes
+    project.snapshot(root, "before-route-2", ["main.kicad_pcb"], note="automatic, before routing", automatic=True,
+                     now=T0.replace(minute=2))
+    out = project.prune(root, keep=1, delete=listed + ["20261102-0930_nope"])
+    assert [x["name"] for x in out["deleted"]] == listed and out["not_deleted"] == ["20261102-0930_nope"]
+    assert len(project.history(root)["snapshots"]) == 2
+    with pytest.raises(project.ProjectError, match="names"):
+        project.prune(root, keep=0, delete=[])
+
+
+def test_a_failed_release_leaves_no_snapshot_and_never_deletes_an_existing_release(tmp_path, monkeypatch):
+    root = make(tmp_path)
+    (root / "docs/a").mkdir()
+    (root / "docs/b").mkdir()
+    (root / "docs/a/top.png").write_bytes(b"1")
+    (root / "docs/b/top.png").write_bytes(b"2")
+    with pytest.raises(project.ProjectError, match="two files named top.png"):
+        release.release(root, renders=["docs/a", "docs/b"], render=False, now=T0)
+    assert not (root / "releases/main/A").exists()
+    assert project.history(root)["snapshots"] == []
+    assert "release-main-a" not in (root / "history/HISTORY.md").read_text()
+    # revision A appears between the check and the copy (another session): it is left alone
+    real = project.snapshot
+
+    def racing(*a, **kw):
+        out = real(*a, **kw)
+        (root / "releases/main/A").mkdir(parents=True, exist_ok=True)
+        (root / "releases/main/A/keep.txt").write_text("theirs")
+        return out
+    monkeypatch.setattr(project, "snapshot", racing)
+    with pytest.raises(project.ProjectError, match="meanwhile"):
+        release.release(root, render=False, now=T0)
+    assert (root / "releases/main/A/keep.txt").read_text() == "theirs"
+    assert project.history(root)["snapshots"] == []
+
+
+def test_a_broken_snapshot_record_is_flagged_not_a_crash(tmp_path):
+    root = make(tmp_path)
+    project.snapshot(root, "before-route", ["main.kicad_pcb"], note="automatic, before routing", automatic=True, now=T0)
+    (root / "history/20261102-0930_before-route/SNAPSHOT.json").write_text('{"label": "befo')
+    snaps = project.history(root)["snapshots"]
+    assert snaps[0]["kind"] == "labelled" and snaps[0]["unreadable"]
+    found = [f for f in project.check(root)["findings"] if f["path"].endswith("SNAPSHOT.json")]
+    assert found and "can't be read" in found[0]["problem"]
+    assert project.prune(root, keep=0)["would_delete"] == []
+
+
+def test_fab_files_from_another_state_of_the_board_are_refused(tmp_path):
+    root = make(tmp_path)
+    old = time.time() - 1000
+    os.utime(root / "main.kicad_pcb", (old, old))
+    snap = project.snapshot(root, "approved", ["main.kicad_pcb"], now=T0)["name"]
+    (root / "main.kicad_pcb").write_text(board_text(r1="22k"))
+    (root / "fab/main/export.json").write_text(json.dumps({"board": "main", "board_sha256": release._sha(root / "main.kicad_pcb")}))
+    # back to the approved board: its file time is restored, but the fab files are the 22k board's
+    project.restore(root, snap, ["main.kicad_pcb"], now=T0.replace(hour=11))
+    with pytest.raises(project.ProjectError, match="another state of the board"):
+        release.release(root, render=False, now=T0.replace(hour=12))
+    # without an export record, file times decide: the restore made the board newer than the export, though the
+    # snapshot kept the board's old file time
+    (root / "fab/main/export.json").unlink()
+    earlier = time.time() - 100
+    for f in (root / "fab/main").rglob("*"):
+        os.utime(f, (earlier, earlier))
+    with pytest.raises(project.ProjectError, match="older than the board"):
+        release.release(root, render=False, now=T0.replace(hour=12))

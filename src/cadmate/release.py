@@ -25,9 +25,11 @@ from . import project, sexpr, versions
 
 RELEASES = "releases"
 RECORD = "release.json"
+EXPORT_RECORD = "export.json"  # written by export_fab beside the fab files
 NOTES = "RELEASE.md"
 INDEX = "RELEASES.md"
-REV = re.compile(r"^[A-Z]{1,2}$|^[0-9]+(?:\.[0-9]+){0,2}$")
+REV = re.compile(r"^[A-Z]{1,3}$|^[0-9]+(?:\.[0-9]+){0,2}$")
+SKIP = set("IOQSXZ")  # letters ASME Y14.35 leaves out of revisions: read as digits or each other
 PICTURES = (".png", ".jpg", ".jpeg", ".svg", ".pdf")
 
 
@@ -75,7 +77,8 @@ def releases(root: Path, board: str) -> list[dict]:
 
 
 def _next_rev(previous: list[str]) -> str:
-    letters = [r for r in previous if re.fullmatch(r"[A-Z]{1,2}", r)]
+    """The revision after the last lettered one: A, B, ... Y, AA, AB, ..., skipping I, O, Q, S, X and Z."""
+    letters = [r for r in previous if re.fullmatch(r"[A-Z]{1,3}", r)]
     if not letters:
         if previous:
             raise ReleaseError(f"earlier revisions are {', '.join(previous)}: pass revision, the next one in that scheme")
@@ -84,12 +87,14 @@ def _next_rev(previous: list[str]) -> str:
     n = 0
     for c in last:
         n = n * 26 + ord(c) - 64
-    n += 1
-    out = ""
-    while n:
-        n, r = divmod(n - 1, 26)
-        out = chr(65 + r) + out
-    return out
+    while True:
+        n += 1
+        out, m = "", n
+        while m:
+            m, r = divmod(m - 1, 26)
+            out = chr(65 + r) + out
+        if not SKIP & set(out):
+            return out
 
 
 def _title_rev(text: str) -> str | None:
@@ -208,9 +213,26 @@ def _fab_problem(board: Path, fab_dir: Path) -> str | None:
     files = [f for f in fab_dir.iterdir() if f.is_file()] if fab_dir.is_dir() else []
     if not any(f.name.endswith("-gerbers.zip") for f in files):
         return f"no fab files in {fab_dir.name}/: run export_fab on the board first"
+    try:  # export_fab records which board it exported: that holds even when a copy or restore kept an old file time
+        made_from = json.loads((fab_dir / EXPORT_RECORD).read_text(encoding="utf-8")).get("board_sha256")
+    except (OSError, ValueError, AttributeError):
+        made_from = None
+    if made_from:
+        if made_from != _sha(board):
+            return "the fab files were exported from another state of the board: run export_fab again"
+        return None
     if min(f.stat().st_mtime for f in files) < board.stat().st_mtime:
         return "the fab files are older than the board: run export_fab again, so the release is what the board is now"
     return None
+
+
+def _drop_snapshot(root: Path, snap: str) -> None:
+    """Undo a failed release's snapshot, and its HISTORY.md row, so a retry doesn't leave unprunable release snapshots."""
+    shutil.rmtree(root / project.HISTORY / snap, ignore_errors=True)
+    index = root / project.HISTORY / project.INDEX
+    if index.exists():
+        lines = index.read_text(encoding="utf-8").splitlines(keepends=True)
+        index.write_text("".join(x for x in lines if not x.startswith(f"| [{snap}]")), encoding="utf-8", newline="")
 
 
 def _render(board: Path, dest: Path) -> tuple[list[str], str | None]:
@@ -246,7 +268,7 @@ def release(path: str | Path, revision: str | None = None, notes: str = "", boar
     revision = revision.strip()
     revision = revision.upper() if revision.isalpha() else revision
     if not REV.match(revision):
-        raise ReleaseError(f"revision {revision!r}: a letter or two (A, B, ... AA) or a number (1, 2.1)")
+        raise ReleaseError(f"revision {revision!r}: up to three letters (A, B, ... AA) or a number (1, 2.1)")
     dest = root / RELEASES / name / revision
     if dest.exists():
         raise ReleaseError(f"{name} revision {revision} is already released ({dest.relative_to(root).as_posix()}); "
@@ -269,6 +291,10 @@ def release(path: str | Path, revision: str | None = None, notes: str = "", boar
     board_rel = pcb.relative_to(root).as_posix()
     try:
         dest.mkdir(parents=True)
+    except FileExistsError:
+        _drop_snapshot(root, snap["name"])
+        raise ReleaseError(f"{name} revision {revision} was released meanwhile; a release is never changed") from None
+    try:
         frozen = []
         for f in sorted(fab_dir.iterdir()):  # gerbers/ is in the zip
             if f.is_file():
@@ -317,6 +343,7 @@ def release(path: str | Path, revision: str | None = None, notes: str = "", boar
         (dest / RECORD).write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8", newline="\n")
     except BaseException:
         shutil.rmtree(dest, ignore_errors=True)
+        _drop_snapshot(root, snap["name"])
         raise
     index = root / RELEASES / INDEX
     if not index.exists():

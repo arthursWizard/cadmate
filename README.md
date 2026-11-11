@@ -97,7 +97,7 @@ Early. These workflows work end to end:
 | `project_history` | The snapshots, oldest first, with what each holds and why it was taken | nothing |
 | `project_restore` | Puts a snapshot back into the active project, snapshotting the current state first | nothing |
 | `project_release` | Releases a board revision (A, B, ...): snapshots the project, freezes the fab files, renders and notes in `releases/<board>/<rev>/`, and lists what changed since the last revision | nothing (kicad-cli for the optional renders) |
-| `project_prune` | Lists, then on confirmation deletes, the automatic snapshots tools took beyond the newest ten; labelled and released snapshots stay | nothing |
+| `project_prune` | Lists, then deletes the listed ones once the user agrees, the automatic snapshots tools took beyond the newest ten; labelled and released snapshots stay | nothing |
 | `project_check` | Everything out of place: stray versions and backups, wrong depth, misnamed boards, broken or absolute library paths, renamed-project annotations, stale fab files, a released revision changed after release, a missing, stale or failing enclosure check, a loose board or part beside folders | nothing |
 | `check_enclosure` | Checks a case assembly: parts that collide, openings in each shell that aren't declared, joints between case parts with a gap or a step, part heights against the brief | FreeCAD |
 | `kicad_pcb_snapshot` | A picture of the open board, unsaved edits included | KiCad API on, and an SVG converter |

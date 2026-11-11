@@ -12,7 +12,9 @@ and CPL are written as well.
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
+import json
 import re
 import os
 import shutil
@@ -199,6 +201,7 @@ def export(board: Path, out_dir: Path | None = None, refill: bool = True, fab: s
         raise ExportError(f"no board at {board}")
     root = project.find_root(board)
     chosen = fabmod.resolve(fab, board)
+    source_sha = hashlib.sha256(board.read_bytes()).hexdigest()  # which state of the board these files are, for releases
     out = out_dir.expanduser() if out_dir else (root / "fab" / board.stem if root else board.parent / "fab" / board.stem)
     gerb = out / "gerbers"
     if gerb.exists():
@@ -257,6 +260,8 @@ def export(board: Path, out_dir: Path | None = None, refill: bool = True, fab: s
     elif chosen["from"] == "not asked":
         reply["note"] = "no board house chosen yet: the generic files suit any; ask the user (ask_user) to get its own format too"
     reply["check"] = check + ("; parts on both sides means double-sided assembly, priced higher" if len(sides) > 1 else "")
+    (out / "export.json").write_text(json.dumps({"board": stem, "board_sha256": source_sha}, indent=2) + "\n",
+                                     encoding="utf-8")
     return reply
 
 

@@ -191,10 +191,10 @@ whose files changed, or whose snapshot is gone. To open revision A again, `proje
 ## Pruning history
 
 Routing tools snapshot the board before each pass, so history grows by a board's size every time. `project_prune`
-deletes the automatic snapshots (those whose note starts "automatic") beyond the newest ten (`keep`). Snapshots taken
-on purpose with `project_snapshot` and released ones are never pruned. It only lists what would go until called with
-`confirm=True`: show the user the list and the space it frees, and ask first, since deleted snapshots can't be
-restored. `project_check` suggests it once there are more than ten.
+deletes the automatic snapshots (the ones tools take before changing something) beyond the newest ten (`keep`).
+Snapshots taken with `project_snapshot` and released ones are never pruned. Called without `delete`, it only lists what
+would go: show the user the list and the space it frees, and on their yes call it again with `delete` set to those
+names, since deleted snapshots can't be restored. `project_check` suggests it once there are more than ten.
 
 ## Alternatives
 

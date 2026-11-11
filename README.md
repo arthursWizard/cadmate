@@ -96,7 +96,9 @@ Early. These workflows work end to end:
 | `project_snapshot` | Copies the current state (or part of it) into `history/<YYYYMMDD-HHMM>_<label>/` before a change, with the libraries KiCad needs to open it | nothing |
 | `project_history` | The snapshots, oldest first, with what each holds and why it was taken | nothing |
 | `project_restore` | Puts a snapshot back into the active project, snapshotting the current state first | nothing |
-| `project_check` | Everything out of place: stray versions and backups, wrong depth, misnamed boards, broken or absolute library paths, renamed-project annotations, stale fab files, a missing, stale or failing enclosure check, a loose board or part beside folders | nothing |
+| `project_release` | Releases a board revision (A, B, ...): snapshots the project, freezes the fab files, renders and notes in `releases/<board>/<rev>/`, and lists what changed since the last revision | nothing (kicad-cli for the optional renders) |
+| `project_prune` | Lists, then deletes the listed ones once the user agrees, the automatic snapshots tools took beyond the newest ten; labelled and released snapshots stay | nothing |
+| `project_check` | Everything out of place: stray versions and backups, wrong depth, misnamed boards, broken or absolute library paths, renamed-project annotations, stale fab files, a released revision changed after release, a missing, stale or failing enclosure check, a loose board or part beside folders | nothing |
 | `check_enclosure` | Checks a case assembly: parts that collide, openings in each shell that aren't declared, joints between case parts with a gap or a step, part heights against the brief | FreeCAD |
 | `kicad_pcb_snapshot` | A picture of the open board, unsaved edits included | KiCad API on, and an SVG converter |
 
@@ -318,6 +320,7 @@ more get a folder each, named for what they are: `main/`, `sensor/`; `enclosure/
   tools/                generator scripts: the design's source
   docs/                 datasheets, drawings, notes, brief.md
   history/HISTORY.md    and 20261031-1213_before-rework/ ... (same paths as the project)
+  releases/<board>/A/   a released revision, frozen: fab files, renders, RELEASE.md (project_release)
   .cadmate/work/        scratch
 ```
 
@@ -331,6 +334,11 @@ snapshotting it (`in_place=False` sends the result to `.cadmate/work/` instead),
 and replaces the old Gerbers, and the footprint, symbol and part writers keep replaced files in `history/` rather than
 as `.bak`. Outside a project they behave as before. The server's instructions carry the rules to every session that
 connects, and the `cadmate-project` skill has the reasons and the edge cases (library paths, renaming, open files).
+
+When a board is ordered, `project_release` makes it a revision: a whole-project snapshot that's never pruned, and
+`releases/<board>/<rev>/` with the fab files as sent and RELEASE.md listing what changed since the previous revision
+(parts, nets, layers, outline, routing). Tools snapshot the board before every routing pass, so history grows;
+`project_prune` deletes the older automatic snapshots on confirmation and keeps every labelled and released one.
 
 ## Skills
 

@@ -47,11 +47,12 @@ COMMON = {
     "tools": "generator scripts and their inputs: source code of the design, never archived",
     "docs": "datasheets, drawings, photos and notes from the user",
     HISTORY: "history/<YYYYMMDD-HHMM>_<label>/: snapshots taken before a change, and HISTORY.md, the index",
+    "releases": "releases/<board>/<rev>/: each released revision's fab files, renders and notes, frozen (project_release)",
     ".cadmate": ".cadmate/work/: scratch (comparisons, routing temp files); safe to delete at any time",
 }
 SKIP_TOP = {HISTORY, ".cadmate", ".git", ".DS_Store"}
 # how deep files may sit in each area (1 = directly inside it): a lib part, a part's renders/ in its folder
-DEPTH = {"kicad": 3, "freecad": 3, "protoboard": 2, "fab": 3, "docs": 2}  # tools/ is free-form
+DEPTH = {"kicad": 3, "freecad": 3, "protoboard": 2, "fab": 3, "docs": 2, "releases": 3}  # tools/ is free-form
 KICAD_FILE = (".kicad_pro", ".kicad_sch", ".kicad_pcb")
 KICAD_DESIGN = (".kicad_pro", ".kicad_sch", ".kicad_pcb", ".kicad_dru", ".kicad_prl")
 BOARD_LOCAL = ("fp-lib-table", "sym-lib-table", "fp-info-cache")  # files KiCad keeps beside a board's .kicad_pro
@@ -66,6 +67,8 @@ NAME_CHECKED = ("kicad", "freecad", "protoboard", "fab")  # tools/ and docs/ are
 KIPRJMOD = re.compile(r"\$\{KIPRJMOD\}")
 KIPRJMOD_PATH = re.compile(r"(\$\{KIPRJMOD\}|\$\(KIPRJMOD\))/([^/\"\)\s]*)")
 SNAP_NAME = re.compile(r"^(\d{8}-\d{4}(?:\d{2})?)_([a-z0-9][a-z0-9-]*)$")
+RELEASES = "releases"
+KEEP_AUTOMATIC = 10  # automatic snapshots project_prune keeps by default, newest first
 
 CLAUDE_MD = """# {name}: a cadmate project
 
@@ -84,6 +87,7 @@ Follow cadmate's project rules (the cadmate-project skill). In short:
 - docs/brief.md holds every requirement the user stated. Add to it when they state one; re-read it before each stage
   and before showing a result; tick an item only once checked. `project_check` lists what is still open.
 - Run `project_check` before telling the user a step is done.
+- When a board is ordered, `project_release` freezes it as revision A, B, ... in releases/. Never edit a release.
 """
 
 BRIEF = "docs/brief.md"
@@ -528,7 +532,7 @@ def add_tool(path: str | Path, tool: str, now: datetime | None = None) -> dict:
              and (_is_design(tool, p) or p.is_dir() and _has_design(tool, p)
                   or p.is_file() and any(p.name.startswith(st + c) for st in stems for c in ".-"))]
     snap = snapshot(root, f"before-add-{tool}", note=f"automatic, before adding {tool}: the {have} files move into "
-                                                     f"{dest.name}/", now=now)
+                                                     f"{dest.name}/", now=now, automatic=True)
     dest.mkdir(exist_ok=True)
     for p in move:
         shutil.move(str(p), str(dest / p.name))
@@ -594,7 +598,8 @@ def add_unit(path: str | Path, tool: str, name: str | None = None, current: str 
         {KICAD_LIB} | {d.name for d in folders}
     move = [p for p in sorted(area.iterdir()) if p.name not in skip and _unit_file(tool, p)]
     snap = snapshot(root, f"before-{u}-folders-{current}"[:40].rstrip("-"), [sh.dir(tool)] if sh.nested else None,
-                    now=now, note=f"automatic, before moving {current} into its own folder for a second {u}")
+                    now=now, note=f"automatic, before moving {current} into its own folder for a second {u}",
+                    automatic=True)
     dest.mkdir(exist_ok=True)
     moved_names = {p.name for p in move}
     rewritten = []
@@ -693,12 +698,15 @@ def _expand(root: Path, rels: list[Path]) -> list[Path]:
 
 
 def _top_paths(root: Path) -> list[Path]:
-    return sorted(Path(p.name) for p in root.iterdir() if p.name not in SKIP_TOP)
+    """What a whole-project snapshot copies: everything but history, scratch and the releases (frozen already)."""
+    return sorted(Path(p.name) for p in root.iterdir() if p.name not in SKIP_TOP and p.name != RELEASES)
 
 
 def snapshot(path: str | Path, label: str, paths: list[str] | None = None, note: str = "",
-             now: datetime | None = None) -> dict:
+             now: datetime | None = None, extra: dict | None = None, automatic: bool = False) -> dict:
     """Copy the current state into history/<YYYYMMDD-HHMM>_<label>/ before changing it.
+
+    automatic: taken by a tool before it changes something (never by project_snapshot): project_prune may delete it.
 
     paths (relative to the project, or absolute inside it) limits what is copied, e.g. ["kicad/main"]; leave it out for
     the whole project (history/ and .cadmate/ excepted). A KiCad board folder brings the project libraries it references
@@ -708,8 +716,8 @@ def snapshot(path: str | Path, label: str, paths: list[str] | None = None, note:
     _check_label(label)
     rels = [_rel(root, p) for p in paths] if paths else _top_paths(root)
     for r in rels:
-        if r.parts and r.parts[0] in (HISTORY, ".cadmate"):
-            raise ProjectError(f"{r} is history or scratch; snapshots don't copy those")
+        if r.parts and r.parts[0] in (HISTORY, ".cadmate", RELEASES):
+            raise ProjectError(f"{r} is history, scratch or a release; snapshots don't copy those")
         if not (root / r).exists():
             raise ProjectError(f"nothing at {r} to snapshot")
     rels = _expand(root, rels)
@@ -732,7 +740,8 @@ def snapshot(path: str | Path, label: str, paths: list[str] | None = None, note:
         else:
             shutil.copy2(src, dst)
             files += 1
-    meta = {"label": label, "taken": now.isoformat(timespec="seconds"), "note": note, "paths": [r.as_posix() for r in rels]}
+    meta = {"label": label, "taken": now.isoformat(timespec="seconds"), "note": note, "paths": [r.as_posix() for r in rels],
+            "automatic": bool(automatic), **(extra or {})}
     (dest / "SNAPSHOT.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     index = hist / INDEX
     if not index.exists():
@@ -751,15 +760,109 @@ def history(path: str | Path) -> dict:
     """The snapshots, oldest first, with their labels, notes and paths."""
     root = _root(path)
     out = []
+    released = _released(root)
     for d in sorted((root / HISTORY).glob("*")):
         if not d.is_dir():
             continue
-        meta = {}
-        if (d / "SNAPSHOT.json").exists():
-            meta = json.loads((d / "SNAPSHOT.json").read_text(encoding="utf-8"))
-        out.append({"name": d.name, "label": meta.get("label"), "taken": meta.get("taken"), "note": meta.get("note", ""),
-                    "paths": meta.get("paths", []), "named_right": bool(SNAP_NAME.match(d.name))})
+        meta, readable = _meta(d)
+        item = {"name": d.name, "label": meta.get("label"), "taken": meta.get("taken"), "note": meta.get("note", ""),
+                "paths": meta.get("paths", []), "named_right": bool(SNAP_NAME.match(d.name)),
+                "kind": _kind(meta, d.name, released)}
+        if meta.get("release"):
+            item["release"] = meta["release"]
+        if not readable:
+            item["unreadable"] = True
+        out.append(item)
     return {"ok": True, "root": str(root), "snapshots": out}
+
+
+def _meta(d: Path) -> tuple[dict, bool]:
+    """A snapshot's SNAPSHOT.json, and whether it could be read. A missing one is {} (a hand-made folder); a broken one is
+    {} too, so the snapshot counts as labelled and is never pruned."""
+    f = d / "SNAPSHOT.json"
+    if not f.exists():
+        return {}, True
+    try:
+        meta = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}, False
+    return (meta, True) if isinstance(meta, dict) else ({}, False)
+
+
+def _released(root: Path) -> set[str]:
+    """Snapshots a release points at (releases/<board>/<rev>/release.json)."""
+    out = set()
+    for rec in (root / RELEASES).glob("*/*/release.json"):
+        try:
+            out.add(json.loads(rec.read_text(encoding="utf-8")).get("snapshot") or "")
+        except (OSError, ValueError):
+            continue
+    return out - {""}
+
+
+def _kind(meta: dict, name: str, released: set[str]) -> str:
+    """release: a released revision's design. automatic: taken by a tool before it changed something (routing, a
+    restore, a move). labelled: taken on purpose, with a label that says what the state is. Only automatic ones are
+    ever pruned."""
+    if meta.get("release") or name in released:
+        return "release"
+    if not SNAP_NAME.match(name):
+        return "labelled"  # a folder made by hand: leave it to the user
+    auto = meta.get("automatic")
+    if auto is None:  # taken before snapshots recorded it: the tools' notes all start this way
+        auto = str(meta.get("note", "")).startswith("automatic, before ")
+    return "automatic" if auto is True else "labelled"
+
+
+def _size(d: Path) -> int:
+    return sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+
+
+def prune(path: str | Path, keep: int = KEEP_AUTOMATIC, delete: list[str] | None = None) -> dict:
+    """Delete automatic snapshots (the ones tools take before changing something) beyond the newest keep. Labelled
+    snapshots (taken on purpose) and released ones are never touched.
+
+    Without delete it only lists what would go (would_delete). delete: names from that list, once the user agreed; only
+    those that are still automatic and still beyond the newest keep are deleted, so a snapshot taken since the list was
+    shown can't shift what goes."""
+    root = _root(path)
+    if keep < 0:
+        raise ProjectError("keep: 0 or more")
+    snaps = history(root)["snapshots"]
+    auto = [s for s in snaps if s["kind"] == "automatic"]  # oldest first
+    go = auto[:len(auto) - keep] if keep else auto
+    confirm = delete is not None
+    if confirm:
+        if not delete:
+            raise ProjectError("delete: the names from a listing without delete, after the user agreed")
+        allowed = {s["name"] for s in go}
+        skipped = sorted(set(delete) - allowed)
+        go = [s for s in go if s["name"] in set(delete)]
+    hist = root / HISTORY
+    sizes = {s["name"]: _size(hist / s["name"]) for s in go}
+    listed = [{"name": s["name"], "note": s["note"], "size_mb": round(sizes[s["name"]] / 1e6, 2)} for s in go]
+    kept = {k: sum(1 for s in snaps if s["kind"] == k) for k in ("labelled", "release")}
+    out = {"ok": True, "root": str(root), "kept": kept | {"automatic": len(auto) - len(go)},
+           "frees_mb": round(sum(sizes.values()) / 1e6, 2)}
+    if not confirm:
+        return out | {"would_delete": listed, "deleted": [],
+                      "next": ("nothing to prune" if not go else "show the user this list and the space it frees; on "
+                               "their yes, call again with delete set to these names. Deleted snapshots can't be "
+                               "restored")}
+    for s in go:
+        shutil.rmtree(hist / s["name"])
+    index = hist / INDEX
+    if go and index.exists():
+        text = index.read_text(encoding="utf-8")
+        day = datetime.now().strftime("%Y-%m-%d")
+        for s in go:
+            text = text.replace(f"[{s['name']}]({s['name']}/)", f"~~{s['name']}~~ (pruned {day})")
+        index.write_text(text, encoding="utf-8", newline="\n")
+    out = out | {"deleted": listed, "next": "done; project_history lists what's left"}
+    if skipped:
+        out["not_deleted"] = skipped
+        out["why_not"] = "not automatic, gone already, or now among the newest kept; list again to see the current set"
+    return out
 
 
 def restore(path: str | Path, name: str, paths: list[str] | None = None, now: datetime | None = None) -> dict:
@@ -769,7 +872,7 @@ def restore(path: str | Path, name: str, paths: list[str] | None = None, now: da
     src = root / HISTORY / name
     if not src.is_dir():
         raise ProjectError(f"no snapshot {name}; project_history lists them")
-    meta = json.loads((src / "SNAPSHOT.json").read_text(encoding="utf-8")) if (src / "SNAPSHOT.json").exists() else {}
+    meta = _meta(src)[0]
     rels = [_rel(root, p) for p in paths] if paths else [Path(p) for p in meta.get("paths", [])] or \
         [Path(p.name) for p in src.iterdir() if p.name != "SNAPSHOT.json"]
     missing = [r.as_posix() for r in rels if not (src / r).exists()]
@@ -777,7 +880,8 @@ def restore(path: str | Path, name: str, paths: list[str] | None = None, now: da
         raise ProjectError(f"not in {name}: {', '.join(missing)}")
     present = [r.as_posix() for r in rels if (root / r).exists()]
     label = re.sub(r"[^a-z0-9-]", "", f"before-restore-{SNAP_NAME.match(name)[2] if SNAP_NAME.match(name) else 'snapshot'}")[:40]
-    before = snapshot(root, label, present, note=f"automatic, before restoring {name}", now=now) if present else None
+    before = snapshot(root, label, present, note=f"automatic, before restoring {name}", now=now,
+                      automatic=True) if present else None
     for r in rels:
         s, d = src / r, root / r
         if d.is_dir():
@@ -786,6 +890,9 @@ def restore(path: str | Path, name: str, paths: list[str] | None = None, now: da
             d.unlink()
         d.parent.mkdir(parents=True, exist_ok=True)
         (shutil.copytree if s.is_dir() else shutil.copy2)(s, d)
+        for f in [d, *d.rglob("*")] if d.is_dir() else [d]:
+            if f.is_file():
+                f.touch()  # restored now: fab/ exported earlier must read as older than the board
     return {"ok": True, "restored": [r.as_posix() for r in rels], "from": name,
             "previous_state": before["name"] if before else None,
             "next": "regenerate fab/ for any board restored; fab files aren't restored unless the snapshot had them"}
@@ -850,8 +957,9 @@ def check(path: str | Path) -> dict:
     for t in ("freecad", "protoboard"):
         if t in sh.tools and (root / sh.dir(t)).exists():
             found += _check_units(root, sh, t)
-    from . import enclosure  # it imports this module
+    from . import enclosure, release  # they import this module
     found += enclosure.project_findings(root)
+    found += release.project_findings(root)
     work = root / WORK
     if work.exists() and any(work.iterdir()):
         n = sum(1 for f in work.rglob("*") if f.is_file())
@@ -860,6 +968,20 @@ def check(path: str | Path) -> dict:
         if d.is_dir() and not SNAP_NAME.match(d.name):
             found.append(_finding("warning", f"{HISTORY}/{d.name}", "snapshot folder not named <YYYYMMDD-HHMM>_<label>",
                                   "rename it so history sorts by time, e.g. 20261031-1213_before-rework"))
+    if (root / HISTORY).is_dir():
+        snaps = history(root)["snapshots"]
+        for s in snaps:
+            if s.get("unreadable"):
+                found.append(_finding("warning", f"{HISTORY}/{s['name']}/SNAPSHOT.json", "can't be read (broken JSON)",
+                                      "rewrite it with the label, time, note and paths, or restore it from a backup; "
+                                      "until then the snapshot counts as labelled and is never pruned"))
+        auto = [s for s in snaps if s["kind"] == "automatic"]
+        if len(auto) > KEEP_AUTOMATIC:
+            mb = sum(_size(root / HISTORY / s["name"]) for s in auto[:-KEEP_AUTOMATIC]) / 1e6
+            found.append(_finding("info", HISTORY, f"{len(auto)} automatic snapshots; all but the newest "
+                                                   f"{KEEP_AUTOMATIC} take {mb:.1f} MB",
+                                  "project_prune lists them (labelled and released snapshots stay); delete on the "
+                                  "user's yes"))
     if "kicad" in sh.tools and fab_settings(root) is None:
         found.append(_finding("info", MARKER, "the user hasn't been asked where the board gets made",
                               "ask once (project_fab has the question) and record the answers with project_fab; any can "
@@ -1097,7 +1219,7 @@ def keep(files: list[Path], why: str) -> str | None:
     root = find_root(files[0])
     if root is not None and all(find_root(f) == root for f in files):
         label = re.sub(r"[^a-z0-9]+", "-", f"before-{why}-{files[0].stem}".lower())[:40].strip("-")
-        return snapshot(root, label, [str(f) for f in files], note=f"automatic, before {why}")["snapshot"]
+        return snapshot(root, label, [str(f) for f in files], note=f"automatic, before {why}", automatic=True)["snapshot"]
     for f in files:
         shutil.copy2(f, f.with_suffix(f.suffix + ".bak"))
     return ", ".join(str(f.with_suffix(f.suffix + ".bak")) for f in files)

@@ -75,7 +75,7 @@ class Placed:
 # --- netlist ------------------------------------------------------------------------------------------------------
 
 
-def netlist(sch: Path) -> tuple[list[Comp], dict[str, list[str]]]:
+def netlist(sch: Path, pin_info: dict | None = None) -> tuple[list[Comp], dict[str, list[str]]]:
     """Parts and nets of a schematic (and its sub-sheets) from KiCad's own netlist export."""
     cli = apps.find_kicad_cli()
     if not cli:
@@ -90,14 +90,16 @@ def netlist(sch: Path) -> tuple[list[Comp], dict[str, list[str]]]:
         raise BoardWriteError(f"kicad-cli netlist export failed: {e}") from None
     if not out.exists():
         raise BoardWriteError(f"kicad-cli wrote no netlist (exit {proc.returncode}): {(proc.stderr or proc.stdout)[-800:]}")
-    return parse_netlist(out.read_text(encoding="utf-8", errors="replace"))
+    return parse_netlist(out.read_text(encoding="utf-8", errors="replace"), pin_info)
 
 
 def _val(node: sexpr.Node | None) -> str:
     return node.atoms()[0] if node is not None and node.atoms() else ""
 
 
-def parse_netlist(text: str) -> tuple[list[Comp], dict[str, list[str]]]:
+def parse_netlist(text: str, pin_info: dict[str, tuple[str, str]] | None = None) -> tuple[list[Comp], dict[str, list[str]]]:
+    """Parts and nets from KiCad's netlist text. pin_info, when given, is filled with "REF.PIN" -> (pin function,
+    pin type), which KiCad also writes on each pad so the board knows a power input from a signal."""
     root = sexpr.parse(text)
     comps = []
     for c in (root.child("components") or sexpr.Node()).children("comp"):
@@ -115,6 +117,10 @@ def parse_netlist(text: str) -> tuple[list[Comp], dict[str, list[str]]]:
     nets: dict[str, list[str]] = {}
     for n in (root.child("nets") or sexpr.Node()).children("net"):
         nets[_val(n.child("name"))] = [f"{_val(x.child('ref'))}.{_val(x.child('pin'))}" for x in n.children("node")]
+        if pin_info is not None:
+            for x in n.children("node"):
+                pin_info[f"{_val(x.child('ref'))}.{_val(x.child('pin'))}"] = (_val(x.child("pinfunction")),
+                                                                              _val(x.child("pintype")))
     return comps, nets
 
 
@@ -185,7 +191,8 @@ def _fmt(v: float) -> str:
     return "0" if s in ("-0", "") else s
 
 
-def _instance(p: Placed, pad_nets: dict[str, str], board_uuid: uuidlib.UUID) -> str:
+def _instance(p: Placed, pad_nets: dict[str, str], board_uuid: uuidlib.UUID,
+              pin_info: dict[str, tuple[str, str]] | None = None) -> str:
     """The footprint as it sits on the board: placed, named, linked to its symbol, its pads on their nets."""
     q = sexpr.quote
     text = p.text
@@ -211,11 +218,13 @@ def _instance(p: Placed, pad_nets: dict[str, str], board_uuid: uuidlib.UUID) -> 
                     edits.append((item.start, item.start + m.end(), f"(property {q(name)} {q(new)}"))
         elif item.head == "pad" and item.atoms():
             net = pad_nets.get(item.atoms()[0])
-            old = item.child("net")
-            if old is not None:
-                edits.append((old.start, old.end, ""))
+            for old in (item.child("net"), item.child("pinfunction"), item.child("pintype")):
+                if old is not None:
+                    edits.append((old.start, old.end, ""))
             if net is not None:
-                edits.append((item.end - 1, item.end - 1, f" (net {q(net)})"))
+                fn, kind = (pin_info or {}).get(f"{c.ref}.{item.atoms()[0]}", ("", ""))
+                extra_pin = (f" (pinfunction {q(fn)})" if fn else "") + (f" (pintype {q(kind)})" if kind else "")
+                edits.append((item.end - 1, item.end - 1, f" (net {q(net)}){extra_pin}"))
     edits.sort(key=lambda e: e[0], reverse=True)
     for a, b, r in edits:
         text = text[:a] + r + text[b:]
@@ -293,7 +302,8 @@ def _place(parts: list[Placed], scale: float) -> None:
 
 
 def write(out: str, comps: list[Comp], nets: dict[str, list[str]], libraries: dict[str, str] | None = None,
-          size: list[float] | None = None, layers: int = 2, scale: float = 0.5, replace: bool = False) -> dict:
+          size: list[float] | None = None, layers: int = 2, scale: float = 0.5, replace: bool = False,
+          pin_info: dict[str, tuple[str, str]] | None = None) -> dict:
     """Write a new board with these parts on these nets. See board_from_schematic for the usual way in."""
     out_path = Path(out).expanduser()
     if out_path.suffix != ".kicad_pcb":
@@ -356,7 +366,7 @@ def write(out: str, comps: list[Comp], nets: dict[str, list[str]], libraries: di
              "\t(layers\n\t\t" + "\n\t\t".join(LAYERS[layers] + USER_LAYERS) + "\n\t)",
              "\t(setup (pad_to_mask_clearance 0) (allow_soldermask_bridges_in_footprints no))"]
     for p in placed:
-        lines.append(_instance(p, pad_nets.get(p.comp.ref, {}), board_uuid))
+        lines.append(_instance(p, pad_nets.get(p.comp.ref, {}), board_uuid, pin_info))
     lines.append(f"\t(gr_rect (start {_fmt(ORIGIN[0])} {_fmt(ORIGIN[1])}) (end {_fmt(ORIGIN[0] + w)} {_fmt(ORIGIN[1] + h)}) "
                  f"(stroke (width 0.1) (type default)) (fill no) (layer \"Edge.Cuts\") "
                  f"(uuid {q(str(uuidlib.uuid5(board_uuid, 'outline')))}))")
@@ -432,13 +442,14 @@ def from_schematic(sch: str, out: str | None = None, libraries: dict[str, str] |
     if sch_path.suffix != ".kicad_sch" or not sch_path.is_file():
         raise BoardWriteError(f"{sch_path}: give the project's root .kicad_sch")
     out_path = Path(out).expanduser() if out else sch_path.with_suffix(".kicad_pcb")
-    comps, nets = netlist(sch_path)
+    pin_info: dict[str, tuple[str, str]] = {}
+    comps, nets = netlist(sch_path, pin_info)
     pos = sheet_positions(sch_path)
     for c in comps:
         c.sch_at = pos.get(c.ref)
         c.sheet_file = c.sheet_file or sch_path.name
     result = write(str(out_path), comps, nets, libraries=libraries, size=size, layers=layers, scale=scale,
-                   replace=replace)
+                   replace=replace, pin_info=pin_info)
     if drc:
         from . import pcb_review
         rep = pcb_review.run_drc(out_path)

@@ -23,7 +23,7 @@ def board(path) -> pcb_board.Board:
 
 def test_every_pad_is_on_its_net(tmp_path):
     out = tmp_path / "demo.kicad_pcb"
-    r = pcb_write.write(str(out), COMPS, NETS, libraries=FP)
+    r = pcb_write.write(str(out), COMPS, NETS, libraries=FP, pin_info={"U1.1": ("VDD", "power_in")})
     assert r["ok"] and r["footprints"] == 5
     b = board(out)
     got = {f"{p.ref}.{pad.number}": pad.net for p in b.parts for pad in p.pads}
@@ -31,6 +31,8 @@ def test_every_pad_is_on_its_net(tmp_path):
         for pin in pins:
             assert got[pin] == net, pin
     assert got["U1.3"] is None  # a pin on no net stays off every net
+    vdd = next(pad for p in b.parts if p.ref == "U1" for pad in p.pads if pad.number == "1")
+    assert (vdd.pinfunction, vdd.pintype) == ("VDD", "power_in")  # so the critical-net checks see a power pin
 
 
 def test_footprints_keep_the_link_to_their_symbols_and_have_their_own_uuids(tmp_path):
@@ -97,7 +99,9 @@ def test_kicad_netlist_is_read():
   (nets
     (net (code "1") (name "/A") (class "Default") (node (ref "R1") (pin "1") (pintype "passive")))
     (net (code "2") (name "GND") (class "Default") (node (ref "R1") (pin "2") (pintype "passive")))))'''
-    comps, nets = pcb_write.parse_netlist(text)
+    info = {}
+    comps, nets = pcb_write.parse_netlist(text, info)
+    assert info["R1.1"] == ("", "passive")
     assert [c.ref for c in comps] == ["R1"]
     assert comps[0].symbol_uuid == "/0a1b2c3d-0000-4000-8000-000000000001"
     assert comps[0].sheet_file == "main.kicad_sch"

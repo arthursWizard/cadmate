@@ -13,6 +13,7 @@ Uses cadmate's `review_pcb_layout` tool. It reads the board open in KiCad's PCB 
 4. Present findings by what to do about them, worst first, with the location and the part references. Don't paste the JSON. Group repeats, for example one line for "five USB pairs cross the same pour gap" rather than five.
 5. Say which thresholds are cadmate heuristics, not standards (`source: heuristic`; the numbers are in `limits`). If a finding conflicts with what the datasheet says, the datasheet wins. Tell the user so when it does.
 6. Read `not_checked` too. "No crystal found" on a board that has one means the crystal's reference or footprint wasn't recognised. Pass its nets in `roles` as `crystal`.
+7. Before the user orders, run `check_ready_to_order` on the saved board. It runs DRC with schematic parity, ERC, this review, part numbers, the fab files' age and the brief's open items together. Lead with ready or not, then every `blocking` item, then `to_look_at`. Ready needs DRC to have run: without kicad-cli it can't say yes.
 
 ## What the findings mean in practice
 

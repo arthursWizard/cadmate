@@ -13,7 +13,7 @@ from pathlib import Path
 
 from mcp.server.mcpserver import Image, MCPServer
 
-from . import (apps, check, enclosure, fab_export, footprint, freerouting, generate, ipc, kicad_live, kicad_pcb_live, live, model, packages, part, pcb_flow, pcb_review,
+from . import (apps, check, enclosure, fab_export, footprint, freerouting, generate, ipc, kicad_live, kicad_pcb_live, live, model, packages, part, pcb_flow, pcb_review, ready,
                pcb_route, project, protoboard, protoboard_place, protoboard_render, review, schematic_review, symbol, symbol_check, symbol_generate)
 from .footprint import read as _read_footprint  # generate_symbol's footprint argument shadows the module
 
@@ -46,6 +46,7 @@ session that creates or changes design files, whoever asked for the change:
   showing a result; project_check lists the open items, and a stage isn't done until you've said which are met.
 - Report DRC as errors, warnings, unconnected and parity, with the warnings by type, never errors alone.
 - project_init on a new design folder; project_check before telling the user a step is done.
+- check_ready_to_order before telling the user a board can be ordered, and again after any change to it.
 - check_enclosure before showing the user an enclosure: collisions, openings nobody declared, joints with a gap or a step.
 The cadmate-project skill has the reasons and the edge cases.
 
@@ -963,6 +964,23 @@ def export_fab(path: str, out_dir: str | None = None, fab: str | None = None) ->
     try:
         return fab_export.export(Path(path), Path(out_dir) if out_dir else None, fab=fab)
     except (fab_export.ExportError, OSError, ValueError) as e:
+        return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
+
+
+@server.tool()
+def check_ready_to_order(path: str, fab: str | None = None, currents: dict[str, float] | None = None,
+                         roles: dict[str, str] | None = None) -> dict:
+    """Before a board is ordered: every check it needs, in one call, sorted into what blocks the order (blocking), what
+    to decide with the user (to_look_at), what passed, and what couldn't run (not_checked). Runs KiCad's DRC with
+    schematic parity and its ERC, the layout review (with currents and roles as for review_pcb_layout), part numbers in
+    the BOM (blocking when the house assembles it; for JLCPCB assembly, LCSC numbers too), fab files older than the
+    board, and, in a cadmate project, the brief's unticked requirements, project errors and the enclosure check. ready
+    is true only when DRC ran and nothing blocks. fab as for review_pcb_layout; with no house chosen it isn't assumed,
+    and ask_user is the question to put to the user. Give the user ready or not first, then every blocking item, and
+    DRC as all four numbers. path is a saved .kicad_pcb."""
+    try:
+        return ready.check(path, fab=fab, currents=currents, roles=roles)
+    except (ready.ReadyError, pcb_review.ReviewError, OSError, ValueError) as e:
         return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
 
 

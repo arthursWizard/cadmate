@@ -13,7 +13,7 @@ from pathlib import Path
 
 from mcp.server.mcpserver import Image, MCPServer
 
-from . import (apps, check, enclosure, fab_export, footprint, freerouting, generate, ipc, kicad_live, kicad_pcb_live, live, model, packages, part, pcb_flow, pcb_review, ready,
+from . import (apps, check, enclosure, fab_export, footprint, freerouting, generate, ipc, kicad_live, kicad_pcb_live, live, model, packages, part, pcb_flow, pcb_place, pcb_review, pcb_write, ready,
                pcb_route, project, protoboard, release, protoboard_place, protoboard_render, review, schematic_review, schematic_write, symbol, symbol_check, symbol_generate)
 from .footprint import read as _read_footprint  # generate_symbol's footprint argument shadows the module
 
@@ -861,6 +861,31 @@ def write_schematic(path: str, parts: list[dict], nets: dict[str, list[str]], no
 
 
 @server.tool()
+def board_from_schematic(schematic: str, out_path: str | None = None, libraries: dict[str, str] | None = None,
+                         size: list[float] | None = None, layers: int = 2, scale: float = 0.5,
+                         replace: bool = False, drc: bool = True) -> dict:
+    """Start a new board (.kicad_pcb) from a schematic: every part's footprint, its pads on the schematic's nets.
+
+    schematic is the project's root .kicad_sch; the parts and nets come from KiCad's own netlist (needs kicad-cli),
+    so sub-sheets, global labels and power symbols join as KiCad joins them. Footprints come from each symbol's
+    Footprint field, found through the project's fp-lib-table, KiCad's, or its installed libraries (or pass libraries
+    {nickname: .pretty folder}). out_path defaults to the schematic's name with .kicad_pcb, beside it, so KiCad pairs
+    them. Parts start where their symbols sit on the sheet (scale 0.5: 10 mm on the sheet is 5 mm on the board),
+    moved apart until no courtyards overlap, with a board outline around them, or size [w, h] in mm. Parts on
+    sub-sheets have no position on the top sheet, so they go in rows below the rest; overlapping lists any part that
+    found no free spot. layers is 2 or 4. Each footprint stays linked to its symbol and gets its fields (hidden) and its
+    DNP and exclude-from-BOM/position flags, as Update PCB from Schematic does; the reply has KiCad's schematic parity
+    check and DRC. This starts boards: it replaces the empty board KiCad's New Project makes (keeping a copy), but
+    won't write over a board with anything on it that cadmate didn't write. Placement comes next: propose_placement.
+    """
+    try:
+        return pcb_write.from_schematic(schematic, out_path, libraries=libraries, size=size, layers=layers, scale=scale,
+                                        replace=replace, drc=drc)
+    except (pcb_write.BoardWriteError, OSError) as e:
+        return {"ok": False, "error": str(e)}
+
+
+@server.tool()
 def review_pcb_layout(path: str | None = None, currents: dict[str, float] | None = None, roles: dict[str, str] | None = None,
                       fab: str | None = None, limits: dict[str, float] | None = None, drc: bool = True) -> dict:
     """Review a routed board's layout, by hand or by an autorouter: what an experienced reviewer would point out.
@@ -938,6 +963,35 @@ def route_critical_nets(path: str | None = None, out_path: str | None = None, ro
     """
     return _flow_call(pcb_flow.route_critical, path=path, out_path=out_path, roles=roles, currents=currents, overrides=overrides,
                       limits=limits, items=items, dry_run=dry_run, in_place=in_place)
+
+
+@server.tool()
+def propose_placement(path: str | None = None, roles: dict[str, str] | None = None, limits: dict[str, float] | None = None,
+                      everything: bool = False) -> dict:
+    """Propose moves that put each bypass cap at its IC power pin and each crystal, with its load caps, at its MCU pins.
+
+    Nothing changes on the board. path is a .kicad_pcb; leave it out for the board open in KiCad's PCB editor. Built from
+    classify_critical_nets' decap and crystal items: a cap goes just outside the IC's courtyard beside its pin, turned so
+    its power pad faces the pin and its ground pad points out; a crystal goes beside the XI/XO pins, turned to match them,
+    with its load caps just beyond it. Each spot is clear of every other courtyard and inside the board outline; parts
+    already within the limits stay unless everything is set. moves lists ref, from, to {x, y, rotation}, the item it is for,
+    why, and the pad-to-pin distance before and after; table is the same as Markdown. Show the user the table and apply
+    only the moves they agree to, with apply_placement. Lay out connectors, mounting holes and big parts first: this
+    places the small parts around them.
+    """
+    return _flow_call(pcb_place.propose_path, path=path, roles=roles, limits=limits, everything=everything)
+
+
+@server.tool()
+def apply_placement(moves: list[dict], path: str | None = None, out_path: str | None = None, in_place: bool | None = None) -> dict:
+    """Make the placement moves the user agreed to: each {ref, to: {x, y, rotation}} as propose_placement gave it (or edited).
+
+    Moves carrying from are refused if that part has moved since the proposal. On the open board (no path) all moves are one
+    undo step, not saved. With a path, the result goes to out_path, or in a cadmate project into the board itself after a
+    snapshot (in_place). courtyard_overlaps lists any that remain around the moved parts. Run classify_critical_nets again
+    after: the decap and crystal items should then be ready to route.
+    """
+    return _flow_call(pcb_place.apply, path=path, moves=moves, out_path=out_path, in_place=in_place)
 
 
 @server.tool()

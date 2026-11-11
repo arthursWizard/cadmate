@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from cadmate import apps, kicad_live, pcb_review, schematic_review, schematic_write, sexpr, versions
+from cadmate import apps, kicad_live, pcb_board, pcb_place, pcb_review, pcb_write, schematic_review, schematic_write, sexpr, versions
 from test_pcb_review import HEAD, footprint, pad
 from test_pictures import png_info
 from test_schematic_write import LIBS, NETS, PARTS, big_symbol_lib, random_circuit
@@ -156,3 +156,58 @@ def test_bigger_written_schematics_have_the_nets_asked_for(tmp_path, seed):
     got = [g for g in kicad_nets(out) if len(g) > 1]
     want = [set(p) for p in nets.values() if len(p) > 1]
     assert sorted(map(sorted, got)) == sorted(map(sorted, want))
+
+
+def test_a_board_from_a_written_schematic_matches_it(tmp_path):
+    """Schematic to board: KiCad loads the board, its schematic parity check finds nothing, and every pad KiCad's
+    netlist puts on a net carries that net."""
+    fp = {"MCU8": "Fix:SOIC-8", "C": "Test:C_0603", "R": "Test:R_0603"}
+    parts = [{**p, "footprint": fp[p["symbol"].split(":")[1]]} for p in PARTS]
+    sch = tmp_path / "demo.kicad_sch"
+    schematic_write.write(str(sch), parts, NETS, no_connect=["U1.3", "U1.4", "U1.6", "U1.8"], libraries=LIBS, erc=False)
+    # R3 not fitted and kept off the BOM: the footprint must carry the same attributes or parity flags it
+    text = sch.read_text(encoding="utf-8")
+    r3 = next(n for n in sexpr.parse(text).children("symbol")
+              if any(p.atoms()[:2] == ["Reference", "R3"] for p in n.children("property")))
+    part = text[r3.start:r3.end].replace("(in_bom yes)", "(in_bom no)").replace("(dnp no)", "(dnp yes)")
+    assert "(dnp yes)" in part and "(in_bom no)" in part
+    sch.write_text(text[:r3.start] + part + text[r3.end:], encoding="utf-8")
+    r = pcb_write.from_schematic(str(sch), libraries={"Test": str(FIXTURES / "pcb" / "Test.pretty"), "Fix": str(FIXTURES)})
+    print(r)
+    assert r["ok"] and r["footprints"] == 5
+    assert r["parity"]["issues"] == 0, r["parity"]
+    fp = next(f for f in sexpr.parse((tmp_path / "demo.kicad_pcb").read_text(encoding="utf-8")).children("footprint")
+              if any(p.atoms()[:2] == ["Reference", "R3"] for p in f.children("property")))
+    assert {"dnp", "exclude_from_bom"} <= set(fp.child("attr").atoms())
+    b = pcb_board.parse((tmp_path / "demo.kicad_pcb").read_text(encoding="utf-8"))
+    got = {f"{p.ref}.{pad.number}": pad.net for p in b.parts for pad in p.pads}
+    for pins in kicad_nets(sch):
+        if len(pins) > 1:
+            assert len({got[p] for p in pins}) == 1 and None not in {got[p] for p in pins}, (pins, got)
+
+
+def test_moved_and_turned_footprints_still_match_the_schematic(tmp_path):
+    """apply_placement's file edit: KiCad loads the board after a move and a quarter turn, parity still finds nothing,
+    and the turned pads land where cadmate says they do."""
+    fp = {"MCU8": "Fix:SOIC-8", "C": "Test:C_0603", "R": "Test:R_0603"}
+    parts = [{**p, "footprint": fp[p["symbol"].split(":")[1]]} for p in PARTS]
+    sch = tmp_path / "demo.kicad_sch"
+    schematic_write.write(str(sch), parts, NETS, no_connect=["U1.3", "U1.4", "U1.6", "U1.8"], libraries=LIBS, erc=False)
+    pcb_write.from_schematic(str(sch), libraries={"Test": str(FIXTURES / "pcb" / "Test.pretty"), "Fix": str(FIXTURES)}, drc=False)
+    src = tmp_path / "demo.kicad_pcb"
+    b = pcb_board.parse(src.read_text(encoding="utf-8"))
+    c = next(p for p in b.parts if p.ref.startswith("C"))
+    out = tmp_path / "placed" / "demo.kicad_pcb"
+    out.parent.mkdir()
+    (out.parent / "demo.kicad_sch").write_text(sch.read_text(encoding="utf-8"), encoding="utf-8")
+    to = {"x": round(b.bbox()[0] + 4, 3), "y": round(b.bbox()[1] + 4, 3), "rotation": (c.rotation + 90) % 360}
+    r = pcb_place.apply(str(src), [{"ref": c.ref, "to": to}], out_path=str(out))
+    assert r["moved"] == [c.ref]
+    rep = pcb_review.run_drc(out)
+    assert rep is not None
+    s = pcb_review.drc_summary(rep)
+    assert s["parity"] == 0, rep.get("schematic_parity")
+    moved = pcb_board.parse(out.read_text(encoding="utf-8")).part(c.ref)
+    assert (moved.x, moved.y, moved.rotation) == (to["x"], to["y"], to["rotation"])
+    for old, new in zip(c.copper_pads, moved.copper_pads):
+        assert new.angle == (old.angle + 90) % 360

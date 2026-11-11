@@ -200,9 +200,10 @@ change. When you say good, Claude snapshots.
    `review_footprint` catch swapped pads, wrong courtyards and models that don't sit right. To edit a footprint or
    symbol together, open it in KiCad's editor, save, and tell Claude; the footprint editor needs Refresh to show
    Claude's change, the symbol editor reloads by itself.
-2. **Schematic.** KiCad 10 has no schematic API, so either you draw it and Claude reviews it, or Claude writes the
-   `.kicad_sch` from a script in `tools/` and you tidy it. Either way `review_schematic` checks readability (overlaps,
-   four-way junctions, ground symbols pointing up, sheets wired only by labels) and runs ERC.
+2. **Schematic.** Either you draw it and Claude reviews it, or Claude draws a new sheet with `write_schematic` from
+   the parts and nets ("draw the power and MCU blocks on a new sheet") and you tidy it in KiCad. KiCad 10 has no
+   schematic API, so Claude can't edit a sheet you drew; it writes new ones. Either way `review_schematic` checks
+   readability (overlaps, four-way junctions, ground symbols pointing up, sheets wired only by labels) and runs ERC.
 3. **Placement.** Update the PCB from the schematic in KiCad, then place the parts by hand or with Claude in the live
    PCB editor ("put the decaps next to U1's power pins"). cadmate has no automatic PCB placement; placement is your call,
    with Claude's help.

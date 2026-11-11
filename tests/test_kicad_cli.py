@@ -8,9 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from cadmate import apps, kicad_live, pcb_review, versions
+from cadmate import apps, kicad_live, pcb_review, schematic_review, schematic_write, sexpr, versions
 from test_pcb_review import HEAD, footprint, pad
 from test_pictures import png_info
+from test_schematic_write import LIBS, NETS, PARTS, big_symbol_lib, random_circuit
 
 CLI = apps.find_kicad_cli()
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -115,3 +116,43 @@ def test_board_step_with_a_model_that_isnt_there(tmp_path, monkeypatch):
     print(p.returncode, p.stdout, p.stderr)  # what kicad-cli says about it, in the CI log
     r = fab_export.export_step(f, out=tmp_path / "t.step")
     assert "R1" in r["model_not_loaded"], r
+
+
+def kicad_nets(sch: Path) -> list[set[str]]:
+    """KiCad's own netlist for a sheet: each net's pins as REF.PIN."""
+    net = sch.with_suffix(".net")
+    p = run("sch", "export", "netlist", "--format", "kicadsexpr", "--output", str(net), str(sch))
+    assert net.exists(), p.stderr or p.stdout
+    return [{f"{x.child('ref').atoms()[0]}.{x.child('pin').atoms()[0]}" for x in n.children("node")}
+            for n in sexpr.parse(net.read_text(encoding="utf-8")).child("nets").children("net")]
+
+
+def erc_errors(sch: Path) -> list:
+    rep = schematic_review.run_erc(sch)
+    assert rep and "error" not in rep, rep
+    return [(v["type"], v["description"]) for s in rep.get("sheets", []) for v in s.get("violations", [])
+            if v.get("severity") == "error"]
+
+
+def test_a_written_schematic_loads_and_passes_erc(tmp_path):
+    """KiCad reads the sheet cadmate writes (format, lib_symbols, instances), ERC finds no errors, and KiCad's own
+    netlist joins exactly the pins that were asked for."""
+    out = tmp_path / "demo.kicad_sch"
+    schematic_write.write(str(out), PARTS, NETS, no_connect=["U1.3", "U1.4", "U1.6", "U1.8"], libraries=LIBS, erc=False)
+    assert not erc_errors(out)
+    got = kicad_nets(out)
+    want = [{"U1.1", "C1.1", "R1.1"}, {"U1.2", "C1.2", "R3.2"}, {"U1.7", "R1.2"}, {"U1.5", "R2.1"}, {"R2.2", "R3.1"}]
+    for pins in want:
+        assert pins in got, (pins, got)
+
+
+@pytest.mark.parametrize("seed", [2, 49, 82])
+def test_bigger_written_schematics_have_the_nets_asked_for(tmp_path, seed):
+    """A 40-pin chip with up to 25 parts across blocks, by KiCad's own netlist."""
+    parts, nets, nc = random_circuit(seed)
+    out = tmp_path / "big.kicad_sch"
+    schematic_write.write(str(out), parts, nets, no_connect=nc, libraries={**LIBS, "Big": big_symbol_lib(tmp_path)},
+                          paper="A3", erc=False)
+    got = [g for g in kicad_nets(out) if len(g) > 1]
+    want = [set(p) for p in nets.values() if len(p) > 1]
+    assert sorted(map(sorted, got)) == sorted(map(sorted, want))

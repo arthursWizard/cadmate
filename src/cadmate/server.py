@@ -985,18 +985,20 @@ def export_board_step(path: str, out: str | None = None, part: str | None = None
 
 @server.tool()
 def check_ready_to_order(path: str, fab: str | None = None, currents: dict[str, float] | None = None,
-                         roles: dict[str, str] | None = None, fab_dir: str | None = None) -> dict:
+                         roles: dict[str, str] | None = None, fab_dir: str | None = None,
+                         packages: dict[str, str] | None = None) -> dict:
     """Before a board is ordered: every check it needs, in one call, sorted into what blocks the order (blocking), what
     to decide with the user (to_look_at), what passed, and what couldn't run (not_checked). Runs KiCad's DRC with
     schematic parity and its ERC, the layout review (with currents and roles as for review_pcb_layout), part numbers in
     the BOM (blocking when the house assembles it; for JLCPCB assembly, LCSC numbers too; numbers for the project's
-    distributor), the copper layer count against the project's, the fab files the house needs, all newer than the
+    distributor), each part's package as bought against its footprint (from a Package field, or packages
+    {ref: package text as the distributor lists it, e.g. "SOT-23-5", "0805", "QFN-32-EP(5x5)"}), the copper layer count against the project's, the fab files the house needs, all newer than the
     board (fab_dir if they were exported somewhere other than export_fab's default), and, in a cadmate project, the brief's unticked requirements, project errors and the enclosure check. ready
     is true only when DRC ran and nothing blocks. fab as for review_pcb_layout; with no house chosen it isn't assumed,
     and ask_user is the question to put to the user. Give the user ready or not first, then every blocking item, and
     DRC as all four numbers. path is a saved .kicad_pcb."""
     try:
-        return ready.check(path, fab=fab, currents=currents, roles=roles, fab_dir=fab_dir)
+        return ready.check(path, fab=fab, currents=currents, roles=roles, fab_dir=fab_dir, packages=packages)
     except (ready.ReadyError, pcb_review.ReviewError, OSError, ValueError) as e:
         return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
 

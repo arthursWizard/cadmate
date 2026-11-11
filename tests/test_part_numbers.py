@@ -287,3 +287,33 @@ def test_line_endings_and_numbered_fields_are_kept(tmp_path):
     raw = sch.read_bytes()
     assert raw.count(b"\n") == raw.count(b"\r\n")
     assert [int(i) for i in __import__("re").findall(rb"\(id (\d+)\)", raw)] == [0, 1, 2, 3, 4, 5]
+
+
+def test_a_kicad6_hierarchy_used_twice(tmp_path):
+    """KiCad 6 keeps every reference in the root's symbol_instances, by paths without the root's uuid."""
+    def sym(uuid, ref, x):
+        return (f'  (symbol (lib_id "Device:R") (at {x} 50 0) (unit 1) (in_bom yes) (on_board yes) (uuid {uuid})\n'
+                f'    (property "Reference" "{ref}" (id 0) (at {x} 49 0) (effects (font (size 1.27 1.27))))\n'
+                f'    (property "Value" "1k" (id 1) (at {x} 51 0) (effects (font (size 1.27 1.27))))\n'
+                f'    (property "Footprint" "R_0603" (id 2) (at {x} 50 0) (effects (font (size 1.27 1.27)) hide))\n  )\n')
+    sheets = "".join(f'  (sheet (at 50 100) (size 20 10) (uuid {u})\n    (property "Sheet name" "{n}" (id 0) (at 50 99 0))\n'
+                     f'    (property "Sheet file" "sub.kicad_sch" (id 1) (at 50 111 0))\n  )\n'
+                     for u, n in (("11111111-0000-0000-0000-00000000000a", "a"), ("11111111-0000-0000-0000-00000000000b", "b")))
+    inst = ('  (sheet_instances (path "/" (page "1")) (path "/11111111-0000-0000-0000-00000000000a" (page "2"))\n'
+            '    (path "/11111111-0000-0000-0000-00000000000b" (page "3")))\n'
+            '  (symbol_instances\n'
+            '    (path "/22222222-0000-0000-0000-000000000001" (reference "R1") (unit 1) (value "1k") (footprint "R_0603"))\n'
+            '    (path "/11111111-0000-0000-0000-00000000000a/22222222-0000-0000-0000-000000000002" (reference "R10") (unit 1))\n'
+            '    (path "/11111111-0000-0000-0000-00000000000b/22222222-0000-0000-0000-000000000002" (reference "R110") (unit 1))\n'
+            '  )\n')
+    (tmp_path / "main.kicad_sch").write_text('(kicad_sch (version 20211123) (generator eeschema)\n'
+                                             '  (uuid 33333333-0000-0000-0000-000000000000)\n'
+                                             + sym("22222222-0000-0000-0000-000000000001", "R1", 10) + sheets + inst + ")\n")
+    (tmp_path / "sub.kicad_sch").write_text('(kicad_sch (version 20211123) (generator eeschema)\n'
+                                            '  (uuid 44444444-0000-0000-0000-000000000000)\n'
+                                            + sym("22222222-0000-0000-0000-000000000002", "R10", 20) + ")\n")
+    r = pn.set_part_numbers(str(tmp_path / "main.kicad_sch"), {"R110": {"MPN": "X"}})
+    assert "unknown_refs" not in r and set(r["changed"]) == {"R10", "R110"}
+    assert r["shared_symbols"] == [{"refs": ["R10", "R110"], "given": ["R110"], "fields": ["MPN"]}]
+    r = pn.set_part_numbers(str(tmp_path / "main.kicad_sch"), {"R1": {"MPN": "Y"}})
+    assert set(r["changed"]) == {"R1"}

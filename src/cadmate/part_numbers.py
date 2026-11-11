@@ -109,6 +109,7 @@ def _symbols(sheets: list[Sheet]) -> list[Sym]:
     belong to other parts."""
     # KiCad 6 keeps the references of every sheet's symbols in the root sheet, by path to the symbol
     legacy: dict[str, str] = {}
+    root_path = "/" + _uuid_of(sheets[0].root)
     si = sheets[0].root.child("symbol_instances")
     if si is not None:
         for p in si.children("path"):
@@ -124,7 +125,10 @@ def _symbols(sheets: list[Sheet]) -> list[Sym]:
                                               if p.atoms() and r is not None and r.atoms()]
             mine = [r for path, r in listed if path in sh.paths]
             if not mine:
-                mine = [legacy[f"{p}/{_uuid_of(node)}"] for p in sorted(sh.paths) if f"{p}/{_uuid_of(node)}" in legacy]
+                # KiCad 6 leaves the root sheet's uuid out of these paths: /<sheet uuid>/<symbol uuid>
+                keys = [k for p in sorted(sh.paths) for k in (f"{p}/{_uuid_of(node)}",
+                                                               f"{p[len(root_path):]}/{_uuid_of(node)}")]
+                mine = [legacy[k] for k in dict.fromkeys(keys) if k in legacy]
             if not mine and not listed:
                 mine = [_prop_value(node, "Reference")]
             mine = list(dict.fromkeys(r for r in mine if r and not r.startswith("#") and "?" not in r))

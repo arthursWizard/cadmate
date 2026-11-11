@@ -4,10 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-  # Keeps main's KiCad cache (see kicad-cli) warm: GitHub evicts a cache unused for 7 days, and a PR's own cache is
-  # invisible to main and to other PRs. Run it by hand once after changing KICAD_SERIES.
-  schedule:
-    - cron: "17 4 * * 1,4"
+  # Run by hand to refill main's KiCad cache (see kicad-cli), e.g. after changing KICAD_SERIES or a quiet week.
   workflow_dispatch:
 
 jobs:

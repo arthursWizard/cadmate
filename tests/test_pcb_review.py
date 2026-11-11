@@ -315,6 +315,17 @@ def test_other_houses_track_via_and_ring_limits(house, name, track, drill, ring)
     assert rules(pr.review_board(ok, fab=house), "fab") == []
 
 
+def test_eurocircuits_multilayer_via_needs_the_inner_pad():
+    """A through via has its pad on the inner layers too, where Eurocircuits wants the hole + 0.35 mm, not + 0.30."""
+    v = via(30, 30, "SIG", size=0.4, drill=0.1)
+    two = board(v)
+    four = pb.parse(HEAD.replace('(2 "B.Cu" signal)', '(4 "In1.Cu" signal) (6 "In2.Cu" signal) (2 "B.Cu" signal)') + v + ")\n",
+                    "test.kicad_pcb")
+    assert len(four.copper_layers) == 4
+    assert rules(pr.review_board(two, fab="eurocircuits"), "fab") == []
+    assert any("annular ring under Eurocircuits's 0.175 mm" in f["what"] for f in rules(pr.review_board(four, fab="eurocircuits"), "fab"))
+
+
 def test_package_classes():
     def part(lib, ref="U1", pads=8):
         return pb.Part(ref, "", lib, 0, 0, 0, "front", [pb.Pad(ref, str(i), None, 0, 0, 1, 1, 0, "rect", ["F.Cu"], "smd") for i in range(pads)],

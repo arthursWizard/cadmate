@@ -227,6 +227,7 @@ def test_assembly_drawing_one_page_per_side_with_parts(tmp_path, monkeypatch):
     r = fx.export(pcb, refill=False)
     pdfs = [c for c in calls if "pdf" in c]
     top, bottom = (next(c for c in pdfs if c[c.index("--output") + 1].endswith(f"-{s}.pdf")) for s in ("top", "bottom"))
+    assert all("--crossout-DNP-footprints-on-fab-layers" in c for c in pdfs)  # a DNP part mustn't look like one to place
     assert top[top.index("--layers") + 1] == "F.Fab,Edge.Cuts" and "--mirror" not in top
     assert bottom[bottom.index("--layers") + 1] == "B.Fab,Edge.Cuts" and "--mirror" in bottom  # seen from below
     assert sorted(r["assembly_drawing"]) == ["bottom", "top"]
@@ -246,3 +247,33 @@ def test_houses_without_a_column_format_get_told_what_to_upload(tmp_path, monkey
     assert "CPL" in fx.export(pcb, refill=False, fab="eurocircuits")["note"]
     r = fx.export(pcb, refill=False, fab="OSH Park")
     assert r["fab"]["fab"] == "oshpark" and "generic BOM" in r["note"] and "jlc_bom" not in r
+
+
+def test_assembly_drawing_skips_a_side_with_only_dnp_parts_and_hidden_text(tmp_path, monkeypatch):
+    calls = []
+    _fake_cli(monkeypatch, calls)
+    # R10 moves to the top: underneath only H1 (not placed) and TP1 (DNP) remain, so no bottom page
+    text = FAB_BOARD.replace('(layer "B.Cu") (at 12 10)', '(layer "F.Cu") (at 12 10)')
+    # R2's reference sits on F.Fab but hidden: it still draws nothing
+    text = text.replace('(property "Reference" "R2")', '(property "Reference" "R2" (at 0 0) (layer "F.Fab") (hide yes))')
+    pcb = tmp_path / "board.kicad_pcb"
+    pcb.write_text(text, encoding="utf-8")
+    r = fx.export(pcb, refill=False)
+    assert sorted(r["assembly_drawing"]) == ["top"] and len([c for c in calls if "pdf" in c]) == 1
+    assert r["not_on_assembly_drawing"] == ["R2", "R10"]
+
+
+def test_a_failed_assembly_drawing_doesnt_fail_the_export(tmp_path, monkeypatch):
+    _fake_cli(monkeypatch)
+    real = fx._cli
+
+    def cli(*args, timeout=300):
+        if "pdf" in args:
+            raise fx.ExportError("kicad-cli pcb export failed: unknown option")
+        return real(*args, timeout=timeout)
+    monkeypatch.setattr(fx, "_cli", cli)
+    pcb = tmp_path / "board.kicad_pcb"
+    pcb.write_text(FAB_BOARD, encoding="utf-8")
+    r = fx.export(pcb, refill=False)
+    assert r["ok"] and "unknown option" in r["assembly_drawing_error"] and "assembly_drawing" not in r
+    assert (tmp_path / "fab/board/board-gerbers.zip").exists() and (tmp_path / "fab/board/board-bom.csv").exists()

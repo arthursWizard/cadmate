@@ -71,11 +71,11 @@ MISMATCH = [
     ("ESOP-8", "SOIC-8_3.9x4.9mm_P1.27mm", "exposed pad"),
     ("SMAF", "D_SMA", "SMAF but the footprint is SMA"),
     ('8-TSSOP (0.173", 4.40mm Width)', "TSSOP-8_3x3mm_P0.65mm", "4.40 mm wide but the footprint's is 3"),
-    ("TO-220-3", "TO-220-2_Vertical", "3 pins"),
+    ("TO-220-3", "TO-220-2_Vertical", "3 pins"),  # TO-220-N counts real leads: no tab allowance
     ("MSOP-8", "TSSOP-8_4.4x3mm_P0.65mm", "the footprint is the 4.4 mm TSSOP body"),
     ("TSSOP-8", "MSOP-8_3x3mm_P0.65mm", "TSSOP of unstated width"),
     ("MSOP-10", "TSSOP-8_3x3mm_P0.65mm", "10 pins"),
-    ("MSOP-10_L3.0-W3.0-P0.50", "TSSOP-10_3x3mm_P0.65mm", "pitch is 0.5 mm"),  # TO-220-N counts real leads: no tab allowance
+    ("MSOP-10_L3.0-W3.0-P0.50", "TSSOP-10_3x3mm_P0.65mm", "pitch is 0.5 mm"),
 ]
 
 

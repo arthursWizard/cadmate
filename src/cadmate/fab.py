@@ -40,7 +40,8 @@ SOURCES = {
               "tell the finish. Pad to track isn't stated, so the spacing is used. Via pads are cadmate's: the drill plus the "
               "ring each side.",
     "eurocircuits": "Eurocircuits STANDARD pool (eurocircuits.com/services/standard-pool/): pooled track/spacing 0.100 mm, "
-                    "smallest finished PTH 0.100 mm, outer pad 'Finished Hole Size + 0.300mm', copper to routed edge 0.250 mm on "
+                    "smallest finished PTH 0.100 mm, outer pad 'Finished Hole Size + 0.300mm' and inner pad 'Finished Hole "
+                    "Size + 0.350mm' (a through via has its pad on every layer, so a multilayer via is +0.35), copper to routed edge 0.250 mm on "
                     "outer layers and 0.400 mm on inner ones; drill to drill 'is 0.25mm (10mil), ... measured edge to edge of the "
                     "drill TOOLSIZE', and 'TOOLSIZE = ENDSIZE + 0.100mm' "
                     "(eurocircuits.com/technical-guidelines/pcb-design-guidelines/classification/ and /drilled-holes/), so "
@@ -71,8 +72,8 @@ PROFILES = {
     # Eurocircuits sizes holes as finished (ENDSIZE); its 0.25 mm drill spacing is between tools 0.1 mm larger
     "eurocircuits": {"track": 0.10, "clearance": 0.10, "pad_to_track": 0.10, "via_drill": 0.10, "via_diameter": 0.40,
                      "via_hole_to_hole": 0.35, "pth_hole_to_hole": 0.35, "edge": 0.25},
-    "eurocircuits-multilayer": {"track": 0.10, "clearance": 0.10, "pad_to_track": 0.10, "via_drill": 0.10, "via_diameter": 0.40,
-                                "via_hole_to_hole": 0.35, "pth_hole_to_hole": 0.35, "edge": 0.40},  # inner copper to edge
+    "eurocircuits-multilayer": {"track": 0.10, "clearance": 0.10, "pad_to_track": 0.10, "via_drill": 0.10, "via_diameter": 0.45,
+                                "via_hole_to_hole": 0.35, "pth_hole_to_hole": 0.35, "edge": 0.40},  # inner pad +0.35, edge 0.4
 }
 
 # where a fab names a comfortable value of its own, that is the preferred one instead of the margin's

@@ -191,19 +191,29 @@ def no_fab_drawing(text: str) -> list[str]:
         layer = (fp.child("layer").atoms() or ["F.Cu"])[0] if fp.child("layer") is not None else "F.Cu"
         fab = FAB_LAYER["bottom" if layer == "B.Cu" else "top"]
         drawn = any(isinstance(c, sexpr.Node) and c.child("layer") is not None and fab in c.child("layer").atoms()
-                    for c in fp.items[1:])
+                    and not _hidden_text(c) for c in fp.items[1:])
         if not drawn:
             out.append(ref)
     return sorted(out, key=_refkey)
 
 
+def _hidden_text(node: sexpr.Node) -> bool:
+    """A footprint text or property that isn't plotted: (hide yes), the older bare hide, or hidden in its effects."""
+    holders = [node] + [e for e in node.children("effects")]
+    for h in holders:
+        hide = h.child("hide")
+        if "hide" in h.atoms() or (hide is not None and "no" not in hide.atoms()):
+            return True
+    return False
+
+
 def assembly_drawing(board: Path, out_dir: Path, sides: list[str] | None = None) -> dict:
     """The assembly drawing: <board>-assembly-top.pdf and, when parts sit underneath, <board>-assembly-bottom.pdf
     (mirrored, as the assembler sees that side). Each is the side's fabrication layer over the board outline: part
-    outlines with their references. sides: which to draw, default those with placed parts (top alone on a bare board)."""
+    outlines with their references; DNP parts are crossed out. sides: which to draw, default those with placed parts."""
     text = board.read_text(encoding="utf-8", errors="replace")
     if sides is None:
-        sides = sorted({p["side"] for p in footprints(text) if p["bom"] and p["pos"]}, reverse=True) or ["top"]
+        sides = sorted({p["side"] for p in footprints(text) if p["bom"] and p["pos"]}, reverse=True)
     out = {}
     for side in sides:
         pdf = out_dir / f"{board.stem}-assembly-{side}.pdf"
@@ -289,7 +299,10 @@ def export(board: Path, out_dir: Path | None = None, refill: bool = True, fab: s
              "copper_layers": copper_layers(text), "bom": str(bom), "pos": str(pos), "assembled_sides": sorted(sides),
              "no_part_number": no_number, "fab": chosen, "zones": "refilled on the exported copy" if refill else "as saved"}
     if sides:
-        reply |= assembly_drawing(board, out, sorted(sides, reverse=True))
+        try:
+            reply |= assembly_drawing(board, out, sorted(sides, reverse=True))
+        except ExportError as e:  # the drawing is an extra: the Gerbers, BOM and placement are written and good
+            reply["assembly_drawing_error"] = str(e)
         if reply.get("not_on_assembly_drawing"):
             reply["assembly_drawing_note"] = ("these parts draw nothing on their side's fabrication layer (F.Fab, or B.Fab "
                                               "underneath), so the assembly drawing shows no outline or reference for them: "

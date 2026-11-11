@@ -186,7 +186,9 @@ def _differences(p: dict, f: dict) -> list[str]:
 
 def _msop_as_tssop(p: dict, f: dict) -> list[str]:
     """MSOP and TSSOP are one land pattern when the TSSOP side is the 3 mm body (KiCad's TSSOP-8_3x3mm_P0.65mm is an
-    MSOP-8). TSSOP's usual 4.4 mm body is not, and a TSSOP whose width isn't stated stays a mismatch: that's the guess."""
+    MSOP-8). TSSOP's usual 4.4 mm body is not, and a TSSOP whose width isn't stated stays a mismatch: that's the guess.
+    Within one family nothing is guessed, so a bare "TSSOP-8" still matches TSSOP-8_3x3mm, since only stated facts are
+    compared there."""
     t = p if p["family"] == "TSSOP" else f
     width = t.get("named_width", t.get("width"))
     if width is not None and abs(width - MSOP_WIDTH) <= t.get("width_tol", BODY_TOLERANCE):

@@ -41,6 +41,32 @@ jobs:
         env:
           CADMATE_REQUIRE_KICAD: "1"
 
+  # The tests that build and check models with a real FreeCAD (conda-forge's build: headless, no display needed).
+  freecad:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: freecad
+          create-args: freecad>=1.1
+          cache-environment: true
+      - name: Find freecadcmd
+        run: |
+          cmd=$(ls "$CONDA_PREFIX/bin/freecadcmd" "$CONDA_PREFIX/bin/FreeCADCmd" 2>/dev/null | head -1)
+          "$cmd" --version
+          echo "CADMATE_FREECADCMD=$cmd" >> "$GITHUB_ENV"
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - run: uv run pytest -q -rs tests/test_enclosure.py tests/test_part.py tests/test_review.py tests/test_apps.py
+        env:
+          CADMATE_REQUIRE_FREECAD: "1"
+
   # The wheel as PyPI would ship it, run from a clean environment the way `uvx cadmate` runs it.
   package:
     strategy:

@@ -1,7 +1,14 @@
+import os
 import socket
 import sys
 
 import pytest
+
+if os.environ.get("CADMATE_REQUIRE_FREECAD"):
+    from cadmate import apps
+
+    if apps.find_freecadcmd() is None:  # CI: a skip would hide a broken install
+        raise RuntimeError("CADMATE_REQUIRE_FREECAD is set but freecadcmd wasn't found")
 
 
 @pytest.fixture(autouse=True)

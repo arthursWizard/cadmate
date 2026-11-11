@@ -57,11 +57,20 @@ jobs:
             ls "$DEBS"/*.deb >/dev/null 2>&1 &&
             sudo apt-get install -y --no-install-recommends "$DEBS"/*.deb
           }
+          series_offered() {  # apt-get update exits 0 when the PPA's index fails, leaving Ubuntu's own (older) kicad
+            local cand
+            cand=$(apt-cache policy kicad | awk '/Candidate:/ {print $2}')
+            case "$cand" in
+              "$KICAD_SERIES".*|[0-9]*:"$KICAD_SERIES".*) ;;
+              *) echo "::warning::apt offers kicad '$cand', not $KICAD_SERIES.x: KiCad's PPA didn't load"; return 1 ;;
+            esac
+          }
           ppa() {  # download into a fresh folder, install exactly those files, and keep them for the cache
             local new="$RUNNER_TEMP/kicad-debs-new"
             sudo rm -rf "$new" && mkdir -p "$new/partial" &&
             sudo timeout 180 add-apt-repository -y "ppa:kicad/kicad-${KICAD_SERIES}-releases" &&
             sudo apt-get update &&
+            series_offered &&
             sudo apt-get install -y --no-install-recommends --download-only -o Dir::Cache::archives="$new" kicad &&
             sudo apt-get install -y --no-install-recommends "$new"/*.deb &&
             sudo rm -rf "$new/partial" "$new/lock" && sudo chown -R "$(id -u):$(id -g)" "$new" &&

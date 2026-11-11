@@ -4,6 +4,9 @@ Gerbers, drill and positions come from kicad-cli, so they are exactly what KiCad
 read from the board's footprints (value, footprint, and the part-number fields the schematic gave them); parts marked
 DNP or excluded from the BOM are left out, and parts with no part number are listed so the order isn't short.
 
+An assembly drawing goes with them for any house: one PDF page per side that has parts, from the fabrication layers
+(part outlines and references) over the board outline, the bottom one mirrored as seen from below.
+
 No board house is assumed. The generic BOM (manufacturer and part number first, any distributor numbers beside them)
 and placement file go to any assembler. When the board house is one cadmate knows the columns for (JLCPCB), its own BOM
 and CPL are written as well.
@@ -172,6 +175,57 @@ def jlc_cpl(kicad_pos_csv: str, parts: list[dict]) -> str:
     return buf.getvalue()
 
 
+FAB_LAYER = {"top": "F.Fab", "bottom": "B.Fab"}
+
+
+def no_fab_drawing(text: str) -> list[str]:
+    """Placed parts whose footprint draws nothing on its side's fabrication layer, so they'd be blank on the assembly
+    drawing (a footprint's F.Fab outline and reference are what it shows; a bottom part's are on B.Fab)."""
+    root = sexpr.parse(text)
+    out = []
+    placed = {p["ref"] for p in footprints(text) if p["bom"] and p["pos"]}
+    for fp in root.children("footprint"):
+        ref = _prop(fp, "Reference")
+        if ref not in placed:
+            continue
+        layer = (fp.child("layer").atoms() or ["F.Cu"])[0] if fp.child("layer") is not None else "F.Cu"
+        fab = FAB_LAYER["bottom" if layer == "B.Cu" else "top"]
+        drawn = any(isinstance(c, sexpr.Node) and c.child("layer") is not None and fab in c.child("layer").atoms()
+                    and not _hidden_text(c) for c in fp.items[1:])
+        if not drawn:
+            out.append(ref)
+    return sorted(out, key=_refkey)
+
+
+def _hidden_text(node: sexpr.Node) -> bool:
+    """A footprint text or property that isn't plotted: (hide yes), the older bare hide, or hidden in its effects."""
+    holders = [node] + [e for e in node.children("effects")]
+    for h in holders:
+        hide = h.child("hide")
+        if "hide" in h.atoms() or (hide is not None and "no" not in hide.atoms()):
+            return True
+    return False
+
+
+def assembly_drawing(board: Path, out_dir: Path, sides: list[str] | None = None) -> dict:
+    """The assembly drawing: <board>-assembly-top.pdf and, when parts sit underneath, <board>-assembly-bottom.pdf
+    (mirrored, as the assembler sees that side). Each is the side's fabrication layer over the board outline: part
+    outlines with their references; DNP parts are crossed out. sides: which to draw, default those with placed parts."""
+    text = board.read_text(encoding="utf-8", errors="replace")
+    if sides is None:
+        sides = sorted({p["side"] for p in footprints(text) if p["bom"] and p["pos"]}, reverse=True)
+    out = {}
+    for side in sides:
+        pdf = out_dir / f"{board.stem}-assembly-{side}.pdf"
+        args = versions.kicad_cli_args("pcb_pdf") + (["--mirror"] if side == "bottom" else [])
+        _cli(*args, "--layers", f"{FAB_LAYER[side]},Edge.Cuts", "--output", str(pdf), str(board))
+        out[side] = str(pdf)
+    reply = {"assembly_drawing": out}
+    if blank := no_fab_drawing(text):
+        reply["not_on_assembly_drawing"] = blank
+    return reply
+
+
 def copper_layers(text: str) -> list[str]:
     root = sexpr.parse(text)
     layers = root.child("layers")
@@ -227,7 +281,8 @@ def export(board: Path, out_dir: Path | None = None, refill: bool = True, fab: s
         for f in sorted(gerb.iterdir()):
             z.write(f, f.name)
     stem = board.stem
-    for old in (f"{stem}-pos-kicad.csv", f"{stem}-bom-jlc.csv", f"{stem}-cpl-jlc.csv"):  # a previous export's, maybe for another house
+    for old in (f"{stem}-pos-kicad.csv", f"{stem}-bom-jlc.csv", f"{stem}-cpl-jlc.csv", f"{stem}-assembly-top.pdf",
+                f"{stem}-assembly-bottom.pdf"):  # a previous export's, maybe for another house
         (out / old).unlink(missing_ok=True)
     with tempfile.TemporaryDirectory(prefix="cadmate-pos-") as d:
         tmp = Path(d) / f"{stem}-pos.csv"
@@ -243,6 +298,15 @@ def export(board: Path, out_dir: Path | None = None, refill: bool = True, fab: s
     reply = {"ok": True, "folder": str(out), "gerbers_zip": str(zpath), "files": sorted(f.name for f in gerb.iterdir()),
              "copper_layers": copper_layers(text), "bom": str(bom), "pos": str(pos), "assembled_sides": sorted(sides),
              "no_part_number": no_number, "fab": chosen, "zones": "refilled on the exported copy" if refill else "as saved"}
+    if sides:
+        try:
+            reply |= assembly_drawing(board, out, sorted(sides, reverse=True))
+        except ExportError as e:  # the drawing is an extra: the Gerbers, BOM and placement are written and good
+            reply["assembly_drawing_error"] = str(e)
+        if reply.get("not_on_assembly_drawing"):
+            reply["assembly_drawing_note"] = ("these parts draw nothing on their side's fabrication layer (F.Fab, or B.Fab "
+                                              "underneath), so the assembly drawing shows no outline or reference for them: "
+                                              "add one to the footprint")
     check = ("upload the zip and look at the board house's Gerber viewer; for assembly, check each part's rotation against "
              "its pin 1 in the assembler's preview, since library footprints and the assembler's parts don't always agree")
     if chosen["fab"] == "jlcpcb":
@@ -251,6 +315,8 @@ def export(board: Path, out_dir: Path | None = None, refill: bool = True, fab: s
         jc.write_text(jlc_cpl(kicad_pos, parts), encoding="utf-8")
         reply |= {"jlc_bom": str(jb), "jlc_cpl": str(jc),
                   "no_lcsc_number": sorted((p["ref"] for p in listed if placeholder(p["lcsc"])), key=_refkey)}
+    elif chosen["fab"] in fabmod.UPLOAD:
+        reply["note"] = fabmod.UPLOAD[chosen["fab"]]
     elif chosen["house"]:
         reply["note"] = (f"cadmate doesn't know {chosen['house']}'s own BOM columns: upload the generic BOM and placement "
                          "files, and match the column names to their template if they ask for one")

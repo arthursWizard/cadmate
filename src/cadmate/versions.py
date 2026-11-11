@@ -38,6 +38,9 @@ KICAD_CLI = {
     "pcb_gerbers": ["pcb", "export", "gerbers", "--subtract-soldermask"],
     "pcb_drill": ["pcb", "export", "drill", "--format", "excellon", "--excellon-separate-th", "--generate-map",
                   "--map-format", "gerberx2"],
+    # an assembly drawing page: the layers given, overlaid on one page in black, with the title block; DNP parts crossed out
+    "pcb_pdf": ["pcb", "export", "pdf", "--mode-single", "--black-and-white", "--include-border-title",
+                "--crossout-DNP-footprints-on-fab-layers"],
     "pcb_pos": ["pcb", "export", "pos", "--format", "csv", "--units", "mm", "--side", "both"],
     # the board with its parts' 3D models, for the enclosure: DNP parts left out, VRML-only models swapped for STEP
     "pcb_step": ["pcb", "export", "step", "--force", "--subst-models", "--no-dnp"],

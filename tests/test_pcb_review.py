@@ -295,8 +295,35 @@ def test_pcbway_limits():
     assert "annular ring under PCBWay's 0.15 mm" in whats and "charges extra below 0.2 mm" in whats
     assert all(f["source"] == "pcbway_pcb" for f in found)
     # a house cadmate has no profile for: named in what was skipped, nothing invented
-    r = pr.review_board(b, fab=None, house="Aisler")
-    assert not rules(r, "fab") and any("no rule profile for Aisler" in s["why"] for s in r["not_checked"])
+    r = pr.review_board(b, fab=None, house="Acme Boards")
+    assert not rules(r, "fab") and any("no rule profile for Acme Boards" in s["why"] for s in r["not_checked"])
+
+
+@pytest.mark.parametrize("house,name,track,drill,ring", [("OSH Park", "OSH Park", 0.1524, 0.254, 0.127),
+                                                          ("aisler", "AISLER", 0.2, 0.3, 0.2),
+                                                          ("Eurocircuits", "Eurocircuits", 0.1, 0.1, 0.15)])
+def test_other_houses_track_via_and_ring_limits(house, name, track, drill, ring):
+    b = board(seg((10, 10), (20, 10), "SIG", w=0.08), via(30, 30, "SIG", size=0.3, drill=0.08))
+    found = rules(pr.review_board(b, fab=house), "fab")
+    whats = " | ".join(f["what"] for f in found)
+    assert f"below {name}'s {track:g} mm minimum" in whats
+    assert f"below {name}'s {drill:g} mm minimum" in whats and f"annular ring under {name}'s {ring:.3g} mm" in whats
+    key = pr.fabmod.profile(house)
+    assert all(f["source"] == f"{key}_pcb" for f in found) and f"{key}_pcb" in pr.SOURCES
+    # a via the house makes comfortably: nothing to say
+    ok = board(via(30, 30, "SIG", size=0.8, drill=0.4))
+    assert rules(pr.review_board(ok, fab=house), "fab") == []
+
+
+def test_eurocircuits_multilayer_via_needs_the_inner_pad():
+    """A through via has its pad on the inner layers too, where Eurocircuits wants the hole + 0.35 mm, not + 0.30."""
+    v = via(30, 30, "SIG", size=0.4, drill=0.1)
+    two = board(v)
+    four = pb.parse(HEAD.replace('(2 "B.Cu" signal)', '(4 "In1.Cu" signal) (6 "In2.Cu" signal) (2 "B.Cu" signal)') + v + ")\n",
+                    "test.kicad_pcb")
+    assert len(four.copper_layers) == 4
+    assert rules(pr.review_board(two, fab="eurocircuits"), "fab") == []
+    assert any("annular ring under Eurocircuits's 0.175 mm" in f["what"] for f in rules(pr.review_board(four, fab="eurocircuits"), "fab"))
 
 
 def test_package_classes():

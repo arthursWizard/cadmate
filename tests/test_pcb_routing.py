@@ -364,6 +364,25 @@ def test_fab_limits_have_a_buffer_over_the_fab_minimum():
         fab.limits("acme")
 
 
+def test_every_house_has_a_cited_profile():
+    from cadmate import fab
+
+    assert [fab.profile(x) for x in ("OSH Park", "osh-park", "AISLER", "Euro Circuits", "acme")] == \
+        ["oshpark", "oshpark", "aisler", "eurocircuits", None]
+    for key in fab.SOURCES:
+        assert key in fab.NAMES and key in fab.PROFILES
+        for layers in (2, 4):
+            lim = fab.limits(key, layers)
+            assert set(lim["rules"]) == set(fab.PROFILES["jlcpcb"]) and lim["source"] == fab.SOURCES[key]
+            assert all(r["preferred"] >= r["hard"] for r in lim["rules"].values()), (key, layers)
+            assert lim["rules"]["via_diameter"]["hard"] > lim["rules"]["via_drill"]["hard"]
+    # multilayer rows where the house publishes different figures for them
+    assert fab.limits("oshpark", 4)["rules"]["track"]["hard"] == 0.127
+    assert fab.limits("aisler", 2)["rules"]["track"]["hard"] == 0.2 and fab.limits("aisler", 4)["rules"]["track"]["hard"] == 0.125
+    assert fab.limits("eurocircuits", 4)["rules"]["edge"]["hard"] == 0.4  # inner copper keeps further from the edge
+    assert fab.limits("eurocircuits")["rules"]["track"]["preferred"] == 0.15
+
+
 def test_narrow_tracks_sorted_against_the_fab():
     from cadmate import fab
 

@@ -31,7 +31,7 @@ Early. These workflows work end to end:
 - **Work on a board together in KiCad's PCB editor**: Claude reads the board straight from your open window, saved or not, sees what you moved since its last look, and edits on top; each edit is one undo step in KiCad. See "Live editing in the PCB editor" below.
 - **Route a board, critical connections first**: cadmate finds the connections that need care before anything is routed: decap to pin, crystals, USB and other differential pairs, switching regulator hot loops, ESD protection, feedback and ADC nets, reset and strap nets, RF feeds, high-current paths and ground returns. Each comes with its rule and the source the rule comes from, and you confirm or change the list. cadmate routes those, locks only what it routed, lets Freerouting do the rest, then the review checks the result. See "Routing a board" below.
 - **Review a schematic for readability**: text running over text or symbols, symbols on top of each other, items off the sheet or under the title block, four-way junctions, ground symbols pointing up, and a sheet that joins its resistors and caps by net labels instead of wires. The `kicad-schematics` skill carries the drawing rules (wires inside a functional block, labels where a net leaves it, signals left to right, power up and ground down). KiCad's ERC runs alongside when kicad-cli is found.
-- **Review a routed board**: after routing by hand or with Freerouting, cadmate points out what a reviewer would. A decap whose track wanders to its pin or loops back through a distant ground. A crystal trace that is long, uses vias or has another signal alongside. Fast signals crossing gaps in the ground pour. Tracks narrower than their net class or than IPC-2221 asks for the current. Your board house's track, via and spacing limits, when you've chosen one cadmate knows (JLCPCB, PCBWay); it never assumes one. Each finding comes with its location, the reasoning and a source. See "Reviewing a layout" below.
+- **Review a routed board**: after routing by hand or with Freerouting, cadmate points out what a reviewer would. A decap whose track wanders to its pin or loops back through a distant ground. A crystal trace that is long, uses vias or has another signal alongside. Fast signals crossing gaps in the ground pour. Tracks narrower than their net class or than IPC-2221 asks for the current. Your board house's track, via and spacing limits, when you've chosen one cadmate knows (JLCPCB, PCBWay, OSH Park, AISLER, Eurocircuits); it never assumes one. Each finding comes with its location, the reasoning and a source. See "Reviewing a layout" below.
 - **Make a symbol from a datasheet**: Claude reads the pin table, cadmate lays out the symbol per KiCad's library conventions (grid, sides by pin type, stacked power pins, hidden NC pins, fields) and writes it into a `.kicad_sym` library, checked against the pin table and the footprint's pads.
 
 - **Keep one active project with its history**: every design lives in one folder with a fixed layout (`kicad/`, `kicad/lib/`, `freecad/`, `fab/<board>/`, `tools/`, `docs/`) where no folder holds just one thing: a one-tool design keeps its files at the root, one board or part sits directly in its tool's place, and two or more get a folder each, named for what they are (`enclosure/`, `bracket/`). Changes go into it in place; when a state is worth keeping, `project_snapshot` copies it into `history/<YYYYMMDD-HHMM>_<label>/` first, and `project_restore` brings it back. The routing tools and the footprint, symbol and part writers follow this by themselves inside a project, and `project_check` points out anything out of place. See "Projects and history" below.
@@ -79,7 +79,7 @@ Early. These workflows work end to end:
 | `route_critical_nets` | Routes and locks the confirmed critical connections on the open board (one undo step) or into a copy of a `.kicad_pcb`; lists what it couldn't route and why | nothing |
 | `autoroute_rest` | Freerouting on the rest, around the locked tracks, with IPC-2221 widths for nets with a current; brings the result back, widens tracks below the net class, refills zones | Freerouting's jar, java, KiCad's bundled Python |
 | `finish_routing` | Cleans up after Freerouting: takes out tracks that break clearance or width, joins what's still in pieces with cadmate's router, refills zones | nothing |
-| `export_fab` | Gerber zip, a BOM and a placement file for any board house, plus JLCPCB's own BOM and CPL when it's the house; lists parts with no part number | KiCad (kicad-cli) |
+| `export_fab` | Gerber zip, a BOM, a placement file and an assembly drawing (PDF) for any board house, plus JLCPCB's own BOM and CPL when it's the house; lists parts with no part number | KiCad (kicad-cli) |
 | `export_board_step` | The board with its parts' 3D models as a STEP, into the FreeCAD part's `pcb-models/`, for fitting the enclosure; lists parts with no model or a model that didn't load | KiCad (kicad-cli) |
 | `check_ready_to_order` | Every check a board needs before it's ordered, in one call: DRC with schematic parity, ERC, the layout review, part numbers, each part's package against its footprint, fab files older than the board, the brief's open items. Says what blocks the order and what to decide | kicad-cli for DRC and ERC |
 | `write_schematic` | Draws a new `.kicad_sch` from parts and nets: parts placed beside the pins they connect to, wires inside a block, labels between blocks, power symbols, PWR_FLAGs and no-connects; then reviews it and runs ERC | KiCad's symbol libraries (or the project's); kicad-cli for the ERC part |
@@ -89,7 +89,7 @@ Early. These workflows work end to end:
 | `check_protoboard` | Checks a perfboard design: leads off the board or sharing a hole, leads under bodies, bodies overlapping, bad nets; and for wires: shorts, jumpers over parts, which nets are done | nothing |
 | `place_protoboard` | Places the parts automatically, steered by hints (fixed, near a hole, a board region, an edge), routes several placements and keeps the best | nothing |
 | `route_protoboard` | Routes a perfboard design on the hole grid (bottom, top on unplated double-sided boards, jumpers), keeping wires already drawn; lists what stays open | nothing |
-| `render_protoboard` | Top and mirrored bottom views as PNG and SVG, plus a step-by-step build list | an SVG converter (rsvg-convert or cairosvg; macOS has one) |
+| `render_protoboard` | Top and mirrored bottom views as PNG and SVG, plus a step-by-step build list | nothing |
 | `project_init` | Makes a design folder a cadmate project with the fixed layout (flat for one tool, one board or one part); adds what's missing, moves nothing | nothing |
 | `project_add_tool` | Adds KiCad or FreeCAD to a one-tool project: snapshots it, then moves the existing files from the root into `kicad/` or `freecad/` | nothing |
 | `project_add_board`, `project_add_part`, `project_add_protoboard` | Add a second board, FreeCAD part or protoboard: snapshot, move the first one into a folder named for it (fixing a board's `${KIPRJMOD}` paths), make the new one's folder | nothing |
@@ -127,7 +127,7 @@ Everything tied to a version lives in `src/cadmate/versions.py`: the supported a
 | FreeCAD models (FreeCADCmd) | yes | yes | yes, untested by hand |
 | Live KiCad editing (IPC API) | yes | yes | the default KiCad instance only |
 | Live FreeCAD bridge | yes | yes | yes, over a localhost port; CI only, untested by hand |
-| Snapshots (SVG to PNG) | built in | needs `rsvg-convert` (librsvg), or the `snapshots` extra | needs the `snapshots` extra and a cairo DLL |
+| Snapshots (SVG to PNG) | built in | built in | built in; CI only, untested by hand |
 | Freerouting | yes | yes | yes, untested by hand |
 
 CI runs the test suite on all three without KiCad or FreeCAD installed, and runs cadmate's kicad-cli commands against a real KiCad 10 on Linux. Day-to-day use so far has been on macOS only; Linux and Windows haven't been used by hand, and neither has Claude Desktop.
@@ -149,9 +149,6 @@ marketplace in `/plugin`. Start a new session after installing or updating.
 `cadmate@cadmate` is the latest release. To try what is merged on `main` but not released, install `cadmate-dev@cadmate`
 from the same marketplace and disable `cadmate@cadmate`; keep only one of the two enabled. See
 [Getting started](docs/getting-started.md#trying-unreleased-changes) and [Releasing](docs/releasing.md).
-
-For pictures on Linux, install `rsvg-convert` (macOS has a converter built in). The plugin doesn't install
-`cairosvg`, so pictures on Windows don't work through it yet.
 
 Claude Desktop and other MCP clients aren't a supported route yet; pointing one at
 `uvx --from git+https://github.com/arthursWizard/cadmate cadmate` should work but hasn't been tried.
@@ -256,7 +253,7 @@ Each item says what to do with it: `route` (cadmate routes and locks it), `place
 - **Switching nodes.** Signals running next to a regulator's SW/LX net, feedback especially. Source: TI AN-1149.
 - **Return path.** Signals crossing a gap in the ground pour on the layer next to them. These are warnings on fast nets and grouped notes on others. Source: Altium's guidance.
 - **Width and current.** Tracks narrower than their net class, which KiCad's DRC doesn't check. For the nets you give currents for, width per IPC-2221.
-- **Vias.** Count per net, and sizes against the board house's minimums (JLCPCB, PCBWay).
+- **Vias.** Count per net, and sizes against the board house's minimums (JLCPCB, PCBWay, OSH Park, AISLER, Eurocircuits).
 - **Assembly.** SMD parts on both sides. With JLCPCB assembling the board: package-to-package spacing from its SMD table, and parts close to the edge.
 - **Board house.** None is assumed. The house comes from the project (`project_fab`, asked once at the start) or the `fab` argument. With none chosen, or one cadmate has no profile for, the fab-specific checks are skipped and the reply says so; KiCad's DRC still checks the board's own rules.
 - **KiCad's DRC.** Unrouted nets and clearances, when `kicad-cli` is found.

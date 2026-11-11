@@ -76,3 +76,17 @@ def test_board_step_flags(tmp_path):
     step = tmp_path / "t.step"
     p = run(*versions.kicad_cli_args("pcb_step"), "--output", str(step), str(f))
     assert step.exists() and step.read_text(encoding="utf-8", errors="replace").startswith("ISO-10303-21"), p.stderr or p.stdout
+
+
+def test_board_step_with_a_model_that_isnt_there(tmp_path, monkeypatch):
+    """A model link kicad-cli can't resolve: the export still succeeds, and export_step names the part."""
+    from cadmate import fab_export
+
+    part = footprint("Resistor_SMD:R_0603", "R1", "1k", 20, 20, [pad(1, -0.8, 0, "A"), pad(2, 0.8, 0, "B")])
+    part = part.replace("(attr smd)", '(attr smd) (model "${KIPRJMOD}/models/gone.step")')
+    f = tmp_path / "t.kicad_pcb"
+    f.write_text(HEAD + part + ")\n", encoding="utf-8", newline="\n")
+    p = run(*versions.kicad_cli_args("pcb_step"), "--output", str(tmp_path / "raw.step"), str(f))
+    print(p.returncode, p.stdout, p.stderr)  # what kicad-cli says about it, in the CI log
+    r = fab_export.export_step(f, out=tmp_path / "t.step")
+    assert "R1" in r["model_not_loaded"], r

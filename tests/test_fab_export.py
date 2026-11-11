@@ -118,6 +118,8 @@ def test_jlcpcb_part_number_field_is_an_lcsc_number():
 def test_board_step_goes_to_the_parts_pcb_models(tmp_path, monkeypatch):
     from pathlib import Path
 
+    import pytest
+
     from cadmate import project
 
     def cli(*args, timeout=300):
@@ -136,14 +138,72 @@ def test_board_step_goes_to_the_parts_pcb_models(tmp_path, monkeypatch):
     pcb.write_text(BOARD, encoding="utf-8")
     r = fx.export_step(pcb)
     assert Path(r["step"]) == root / "freecad" / "pcb-models" / "main.step"
-    # every footprint in BOARD lacks a model link; the reply says so
-    assert r["no_3d_model"] == ["C1", "H1", "R2", "R10", "TP1"]
+    with pytest.raises(fx.ExportError, match="no FreeCAD part 'knobz'"):
+        fx.step_target(pcb, "knobz")
+    # every footprint in BOARD lacks a model link; the reply says so (TP1 is DNP, left out of the STEP on purpose)
+    assert r["no_3d_model"] == ["C1", "H1", "R2", "R10"]
     # two parts: say which
     (root / "freecad" / "enclosure").mkdir()
     (root / "freecad" / "enclosure" / "enclosure.FCStd").write_bytes(b"")
     (root / "freecad" / "knob").mkdir()
     (root / "freecad" / "knob" / "knob.FCStd").write_bytes(b"")
-    import pytest
     with pytest.raises(fx.ExportError, match="which FreeCAD part"):
         fx.step_target(pcb)
     assert fx.step_target(pcb, "enclosure") == root / "freecad" / "enclosure" / "pcb-models" / "main.step"
+
+
+def test_board_step_names_parts_whose_model_didnt_make_it(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    import pytest
+    from test_pcb_review import HEAD, footprint, pad
+
+    said = {"text": ""}
+
+    def cli(*args, timeout=300):
+        Path(args[args.index("--output") + 1]).write_text("ISO-10303-21;\n", encoding="utf-8")
+        return said["text"]
+    monkeypatch.setattr(fx, "_cli", cli)
+    (tmp_path / "models").mkdir()
+    (tmp_path / "models" / "ok.step").write_text("x", encoding="utf-8")
+    (tmp_path / "models" / "swapped.wrl").write_text("x", encoding="utf-8")
+    (tmp_path / "models" / "swapped.step").write_text("x", encoding="utf-8")
+    (tmp_path / "models" / "vrml.wrl").write_text("x", encoding="utf-8")
+
+    def part(ref, x, model="", attr="smd"):
+        return footprint("Lib:P", ref, "v", x, 20, [pad(1, 0, 0, "A")]).replace("(attr smd)", f"(attr {attr}) {model}")
+    parts = [part("U1", 10, '(model "${KIPRJMOD}/models/ok.step")'),
+             part("U2", 20, '(model "${KIPRJMOD}/models/swapped.wrl")'),  # --subst-models uses the STEP beside it
+             part("U3", 30, '(model "${KIPRJMOD}/models/vrml.wrl")'),
+             part("U4", 40, '(model "${KIPRJMOD}/models/gone.step")'),
+             part("U5", 50, '(model "${KIPRJMOD}/models/ok.step" (hide yes))'),
+             part("U6", 60, '(model "${CADMATE_TEST_UNSET_DIR}/lib.3dshapes/far.step")'),  # only kicad-cli can tell
+             part("U7", 70, attr="smd dnp")]
+    pcb = tmp_path / "main.kicad_pcb"
+    pcb.write_text(HEAD + "".join(parts) + ")\n", encoding="utf-8")
+    monkeypatch.delenv("CADMATE_TEST_UNSET_DIR", raising=False)
+    r = fx.export_step(pcb)
+    assert r["no_3d_model"] == ["U5"]  # hidden models aren't exported; U7 is DNP and left out
+    assert sorted(r["model_not_loaded"]) == ["U3", "U4"]
+    assert "VRML only" in r["model_not_loaded"]["U3"] and "file not found" in r["model_not_loaded"]["U4"]
+    # what kicad-cli says about a model it couldn't load counts too
+    said["text"] = "Build STEP data\nCould not add 3D model to U6.\nFile not found: /opt/lib.3dshapes/far.step\n"
+    r = fx.export_step(pcb)
+    assert sorted(r["model_not_loaded"]) == ["U3", "U4", "U6"] and "far.step" in r["kicad_cli_said"][-1]
+    # a part name is checked even when there's no part to choose between
+    with pytest.raises(fx.ExportError, match="only applies in a cadmate project"):
+        fx.step_target(pcb, "knobz")
+
+
+def test_kicad_cli_timeout_is_an_export_error(monkeypatch):
+    import subprocess
+
+    import pytest
+
+    monkeypatch.setattr(fx, "find_kicad_cli", lambda: "kicad-cli")
+
+    def slow(*a, **k):
+        raise subprocess.TimeoutExpired("kicad-cli", 600)
+    monkeypatch.setattr(fx.subprocess, "run", slow)
+    with pytest.raises(fx.ExportError, match="didn't finish in 10 min"):
+        fx._cli("pcb", "export", "step", timeout=600)

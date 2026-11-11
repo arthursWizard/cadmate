@@ -974,8 +974,9 @@ def export_fab(path: str, out_dir: str | None = None, fab: str | None = None) ->
 def export_board_step(path: str, out: str | None = None, part: str | None = None) -> dict:
     """The board as a STEP with its parts' 3D models (kicad-cli, DNP parts left out), to fit an enclosure around it in
     FreeCAD. In a cadmate project with FreeCAD it goes to the FreeCAD part's pcb-models/<board>.step (part names which,
-    when there are several); otherwise beside the board, or to out. no_3d_model lists parts without a model: they're
-    missing from the STEP and from check_enclosure's collisions. Re-export after the board changes."""
+    when there are several); otherwise beside the board, or to out. no_3d_model lists parts without a model (or only
+    hidden ones), model_not_loaded parts whose model link is missing or VRML-only, with what kicad-cli said: all are
+    missing from the STEP and from check_enclosure's collisions, so tell the user. Re-export after the board changes."""
     try:
         return fab_export.export_step(Path(path), Path(out) if out else None, part)
     except (fab_export.ExportError, OSError, ValueError) as e:

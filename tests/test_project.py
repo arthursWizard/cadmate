@@ -493,7 +493,11 @@ def test_fab_is_asked_once_and_recorded_in_the_brief(tmp_path):
     assert "- Board house: not decided yet" in brief and "- Assembly by the board house: no" in brief
     assert "- Copper layers: 4" in brief and brief.count("## Fab") == 1
     assert not any("where the board gets made" in f["problem"] for f in project.check(tmp_path)["findings"])
-    assert fab.resolve(None, tmp_path) == {"fab": None, "house": None, "assembly": False, "from": "project"}
+    assert fab.resolve(None, tmp_path) == {"fab": None, "house": None, "assembly": False, "distributor": None, "layers": 4,
+                                           "from": "project"}
+    # naming a house for one call keeps the project's other answers: they're about the order, not the house
+    assert fab.resolve("jlcpcb", tmp_path) == {"fab": "jlcpcb", "house": "jlcpcb", "assembly": False, "distributor": None,
+                                                    "layers": 4, "from": "argument"}
 
     # later they pick one; fields not given keep their value, and the brief's section is replaced, not added
     project.set_fab(tmp_path, house="PCBWay")

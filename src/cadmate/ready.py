@@ -43,7 +43,8 @@ def _types(by_type: dict) -> str:
     return ", ".join(f"{n} × {k}" for k, n in list(by_type.items())[:6])
 
 
-def check(path: str, fab: str | None = None, currents: dict | None = None, roles: dict | None = None) -> dict:
+def check(path: str, fab: str | None = None, currents: dict | None = None, roles: dict | None = None,
+          fab_dir: str | None = None) -> dict:
     board = Path(path).expanduser()
     if not board.exists() or board.suffix != ".kicad_pcb":
         raise ReadyError(f"no .kicad_pcb at {board}")
@@ -108,8 +109,9 @@ def check(path: str, fab: str | None = None, currents: dict | None = None, roles
             if not erc["errors"] and not erc["warnings"]:
                 passed.append("ERC: 0 errors, 0 warnings")
 
-    # part numbers
-    parts = [p for p in fab_export.footprints(board.read_text(encoding="utf-8", errors="replace")) if fab_export._in_bom(p)]
+    # part numbers, layers
+    text = board.read_text(encoding="utf-8", errors="replace")
+    parts = [p for p in fab_export.footprints(text) if fab_export._in_bom(p)]
     bare = sorted((p["ref"] for p in parts if not p["mpn"].strip()
                    and all(fab_export.placeholder_any(p[d]) for d in fab_export.DISTRIBUTORS)), key=fab_export._refkey)
     if bare:
@@ -124,26 +126,48 @@ def check(path: str, fab: str | None = None, currents: dict | None = None, roles
         if no_lcsc:
             blocking.append(_item("bom", f"{len(no_lcsc)} part(s) without an LCSC number for JLCPCB assembly: {', '.join(no_lcsc[:20])}",
                                   "add the LCSC field, or mark parts you'll solder yourself as excluded from the BOM"))
+    dist = fab_export._norm(chosen.get("distributor") or "")
+    dist = next((d for d, names in fab_export.FIELDS.items() if d in fab_export.DISTRIBUTORS and dist in names), None)
+    if dist:
+        missing = sorted((p["ref"] for p in parts if fab_export.placeholder_any(p[dist])), key=fab_export._refkey)
+        if missing:
+            look.append(_item("bom", f"{len(missing)} part(s) without a {chosen['distributor']} number: {', '.join(missing[:20])}",
+                              f"add the {chosen['distributor']} number, or buy those elsewhere"))
+    layers = len(fab_export.copper_layers(text))
+    if chosen.get("layers") and layers and layers != chosen["layers"]:
+        blocking.append(_item("layers", f"the board has {layers} copper layers; the project says {chosen['layers']}",
+                              "change the board's stackup, or the choice with project_fab if it changed"))
 
     # where it gets made
-    if not chosen["house"]:
+    ask = not chosen["house"] and chosen["from"] in ("project", "not asked")  # "none" as the argument is an answer
+    if ask:
         look.append(_item("fab", "no board house chosen" + (" yet: the user was never asked" if chosen["from"] == "not asked" else ""),
                           "ask the user now (ask_user): the generic fab files suit any house, but the house's own limits "
                           "and file format are only checked once it's chosen; record it with project_fab"))
-    elif not chosen["fab"]:
+    elif not chosen["house"] and chosen["from"] == "not in a project":
+        look.append(_item("fab", "no board house given, so its limits weren't checked",
+                          "pass fab if the user has one in mind; the generic fab files suit any house"))
+    elif chosen["house"] and not chosen["fab"]:
         look.append(_item("fab", f"cadmate has no rule profile for {chosen['house']}",
                           f"check the board's rules against {chosen['house']}'s capability page by hand"))
 
-    # fab files
-    fab_dir = (root / "fab" / board.stem) if root else board.parent / "fab" / board.stem
-    files = [f for f in fab_dir.rglob("*") if f.is_file()] if fab_dir.exists() else []
-    if not files:
-        look.append(_item("fab_files", "no fab files yet", "export_fab once everything above is clear"))
-    elif min(f.stat().st_mtime for f in files) < board.stat().st_mtime:
-        blocking.append(_item("fab_files", f"the fab files in {fab_dir.name}/ are older than the board",
+    # fab files: the ones this house needs, all newer than the board
+    out_dir = Path(fab_dir).expanduser() if fab_dir else (root / "fab" / board.stem) if root else board.parent / "fab" / board.stem
+    want = [f"{board.stem}-gerbers.zip", f"{board.stem}-bom.csv", f"{board.stem}-pos.csv"]
+    if chosen["fab"] == "jlcpcb":
+        want += [f"{board.stem}-bom-jlc.csv", f"{board.stem}-cpl-jlc.csv"]
+    have = [out_dir / n for n in want if (out_dir / n).is_file()]
+    if not have:
+        look.append(_item("fab_files", f"no fab files in {out_dir}", "export_fab once everything above is clear (pass "
+                                                                       "fab_dir here if they were exported elsewhere)"))
+    elif len(have) < len(want):
+        blocking.append(_item("fab_files", "fab files missing: " + ", ".join(n for n in want if not (out_dir / n).is_file()),
+                              "export_fab again" + (" now that the house is chosen" if chosen["house"] else "")))
+    elif min(f.stat().st_mtime for f in have) < board.stat().st_mtime:
+        blocking.append(_item("fab_files", f"the fab files in {out_dir.name}/ are older than the board",
                               "export_fab again: ordering them would send an earlier board"))
     else:
-        passed.append("fab files newer than the board")
+        passed.append("fab files complete and newer than the board")
 
     # the project: open requirements, layout errors, the enclosure check
     if root:
@@ -151,8 +175,11 @@ def check(path: str, fab: str | None = None, currents: dict | None = None, roles
         if brief and brief["open"]:
             blocking.append(_item("brief", f"{len(brief['open'])} requirement(s) in the brief not ticked: " + "; ".join(brief["open"][:8]),
                                   "check each against the design and tick it, or ask the user whether it still applies"))
-        elif brief:
+        elif brief and brief["met"]:
             passed.append(f"brief: all {len(brief['met'])} requirement(s) met")
+        else:
+            look.append(_item("brief", "the brief lists no requirements, so nothing was checked against them",
+                              "ask the user what the board must do and fit, and write it into docs/brief.md"))
         pc = project.check(root)
         for f in pc["findings"]:
             if f["severity"] == "error":
@@ -166,6 +193,6 @@ def check(path: str, fab: str | None = None, currents: dict | None = None, roles
            "say": "lead with ready or not; list every blocking item, then what to look at; give DRC as all four numbers"}
     if not ready and drc is None:
         out["why_not_ready"] = "DRC didn't run, so cadmate can't say the board is ready"
-    if not chosen["house"]:
+    if ask:
         out["ask_user"] = project.FAB_QUESTION
     return out

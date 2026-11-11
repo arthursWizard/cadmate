@@ -55,7 +55,7 @@ FIELDS = {
     "manufacturer": ("manufacturer", "mfr", "mfg", "mf", "manufacturername"),
     "mpn": ("mpn", "manufacturerpartnumber", "mfrpartnumber", "mfrno", "mfgpartnumber", "partnumber", "pn",
             "manufacturerpn"),
-    "lcsc": ("lcsc", "lcscpart", "lcscpartnumber", "jlcpcbpartnumber", "jlcpcb"),
+    "lcsc": ("lcsc", "lcscpart", "lcscpartnumber", "jlcpcbpart", "jlcpcbpartnumber", "jlcpcb"),
     "digikey": ("digikey", "digikeypartnumber", "digikeypn", "digikeypart"),
     "mouser": ("mouser", "mouserpartnumber", "mouserpn", "mouserpart"),
 }
@@ -202,7 +202,8 @@ def export(board: Path, out_dir: Path | None = None, refill: bool = True, fab: s
     if refill:
         from .freerouting import refill as _refill
 
-        copy = Path(tempfile.mkdtemp(prefix="cadmate-fab-")) / board.name  # not in the fab folder: it isn't for the fab
+        scratch = tempfile.TemporaryDirectory(prefix="cadmate-fab-")
+        copy = Path(scratch.name) / board.name  # not in the fab folder: it isn't for the fab
         shutil.copyfile(board, copy)
         for ext in (".kicad_pro", ".kicad_dru"):
             if board.with_suffix(ext).exists():
@@ -223,9 +224,10 @@ def export(board: Path, out_dir: Path | None = None, refill: bool = True, fab: s
     stem = board.stem
     for old in (f"{stem}-pos-kicad.csv", f"{stem}-bom-jlc.csv", f"{stem}-cpl-jlc.csv"):  # a previous export's, maybe for another house
         (out / old).unlink(missing_ok=True)
-    tmp = Path(tempfile.mkdtemp(prefix="cadmate-pos-")) / f"{stem}-pos.csv"
-    _cli(*versions.kicad_cli_args("pcb_pos"), "--output", str(tmp), str(board))
-    kicad_pos = tmp.read_text(encoding="utf-8")
+    with tempfile.TemporaryDirectory(prefix="cadmate-pos-") as d:
+        tmp = Path(d) / f"{stem}-pos.csv"
+        _cli(*versions.kicad_cli_args("pcb_pos"), "--output", str(tmp), str(board))
+        kicad_pos = tmp.read_text(encoding="utf-8")
     parts = footprints(text)
     bom, pos = out / f"{stem}-bom.csv", out / f"{stem}-pos.csv"
     bom.write_text(generic_bom(parts), encoding="utf-8")

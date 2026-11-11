@@ -26,12 +26,14 @@ def fake_kicad(monkeypatch, drc=CLEAN_DRC, erc=None):
     monkeypatch.setattr(apps, "find_kicad_cli", lambda: "kicad-cli")
 
 
-def export_files(pcb):
-    d = pcb.parent / "fab" / pcb.stem
+def export_files(pcb, jlc=False, d=None):
+    d = d or pcb.parent / "fab" / pcb.stem
     d.mkdir(parents=True, exist_ok=True)
-    (d / f"{pcb.stem}-bom.csv").write_text("x\n", encoding="utf-8")
+    names = ["gerbers.zip", "bom.csv", "pos.csv"] + (["bom-jlc.csv", "cpl-jlc.csv"] if jlc else [])
     later = time.time() + 5
-    os.utime(d / f"{pcb.stem}-bom.csv", (later, later))
+    for n in names:
+        (d / f"{pcb.stem}-{n}").write_text("x\n", encoding="utf-8")
+        os.utime(d / f"{pcb.stem}-{n}", (later, later))
 
 
 def test_a_clean_board_with_everything_done_is_ready(tmp_path, monkeypatch):
@@ -66,7 +68,7 @@ def test_what_blocks_an_order(tmp_path, monkeypatch):
                      encoding="utf-8")
     pcb = write(tmp_path, resistor("R1", 20, '(property "MPN" "RC0603FR-0710KL")'), resistor("R2", 30))
     (tmp_path / "main.kicad_sch").write_text("(kicad_sch)\n", encoding="utf-8")
-    export_files(pcb)
+    export_files(pcb, jlc=True)
     os.utime(pcb, (time.time() + 60, time.time() + 60))  # the board changed after the export
     r = ready.check(str(pcb))
     assert not r["ready"]
@@ -86,3 +88,78 @@ def test_not_ready_without_drc(tmp_path, monkeypatch):
     assert not r["ready"] and "DRC didn't run" in r["why_not_ready"]
     # outside a project, a part without a number is to look at (needed to buy it), not a blocker: assembly isn't known
     assert any(i["check"] == "bom" for i in r["to_look_at"]) and not any(i["check"] == "bom" for i in r["blocking"])
+
+
+def test_naming_the_house_keeps_the_projects_assembly_choice(tmp_path, monkeypatch):
+    """fab="jlcpcb" in a project that says JLCPCB assembles it must still block on missing part numbers."""
+    fake_kicad(monkeypatch)
+    project.init(tmp_path, tools=["kicad"])
+    project.set_fab(tmp_path, house="JLCPCB", assembly="yes")
+    pcb = write(tmp_path, resistor("R1", 20))
+    for fab in (None, "jlcpcb", "JLCPCB"):
+        r = ready.check(str(pcb), fab=fab)
+        assert not r["ready"] and r["fab"]["assembly"] is True, fab
+        whats = " | ".join(i["what"] for i in r["blocking"])
+        assert "no part number: R1" in whats and "without an LCSC number" in whats, fab
+
+
+def test_fab_files_must_match_the_house(tmp_path, monkeypatch):
+    fake_kicad(monkeypatch)
+    project.init(tmp_path, tools=["kicad"])
+    project.set_fab(tmp_path, house="undecided")
+    pcb = write(tmp_path, resistor("R1", 20, '(property "MPN" "X1")'))
+    export_files(pcb)  # exported while undecided: generic files only
+    assert "fab files complete and newer than the board" in ready.check(str(pcb))["passed"]
+    project.set_fab(tmp_path, house="JLCPCB", assembly="yes")  # then JLCPCB was chosen: its own files are missing
+    r = ready.check(str(pcb))
+    assert any("fab files missing: main-bom-jlc.csv, main-cpl-jlc.csv" in i["what"] for i in r["blocking"])
+    # exported somewhere else: found with fab_dir
+    other = tmp_path / "out"
+    export_files(pcb, d=other)
+    assert not any(i["check"] == "fab_files" for i in ready.check(str(pcb), fab="none", fab_dir=str(other))["blocking"])
+
+
+def test_answers_are_not_asked_again(tmp_path, tmp_path_factory, monkeypatch):
+    fake_kicad(monkeypatch)
+    project.init(tmp_path, tools=["kicad"])
+    project.set_fab(tmp_path, house="undecided")
+    pcb = write(tmp_path, resistor("R1", 20))
+    assert "ask_user" in ready.check(str(pcb))  # undecided in the project: ask now, at order time
+    r = ready.check(str(pcb), fab="none")  # the user just said no house: that's an answer
+    assert "ask_user" not in r and not any(i["check"] == "fab" for i in r["to_look_at"])
+    # outside a project there's nowhere to keep an answer, so no question either
+    loose = tmp_path_factory.mktemp("loose")  # not under the project
+    r = ready.check(str(write(loose, resistor("R1", 20))))
+    assert "ask_user" not in r and any("no board house given" in i["what"] for i in r["to_look_at"])
+
+
+def test_empty_brief_distributor_and_layers(tmp_path, monkeypatch):
+    fake_kicad(monkeypatch)
+    project.init(tmp_path, tools=["kicad"])
+    project.set_fab(tmp_path, house="undecided", distributor="DigiKey", layers=4)
+    pcb = write(tmp_path, resistor("R1", 20, '(property "MPN" "X1")'))
+    r = ready.check(str(pcb))
+    assert not any(p.startswith("brief:") for p in r["passed"])
+    looks = " | ".join(i["what"] for i in r["to_look_at"])
+    assert "the brief lists no requirements" in looks and "1 part(s) without a DigiKey number: R1" in looks
+    assert any("the board has 2 copper layers; the project says 4" in i["what"] for i in r["blocking"])
+
+
+def test_autoroute_uses_the_projects_board_house(tmp_path, monkeypatch):
+    from cadmate import freerouting, pcb_flow
+
+    seen = {}
+
+    def fake(src, dst, widths, passes, timeout, lim):
+        seen["lim"] = lim
+        return {"ok": True}
+    monkeypatch.setattr(freerouting, "autoroute_file", fake)
+    project.init(tmp_path, tools=["kicad"])
+    pcb = write(tmp_path, resistor("R1", 20))
+    out = pcb_flow.autoroute(str(pcb), out_path=str(tmp_path / "routed.kicad_pcb"), neck_rules=False)
+    assert seen["lim"] is None and out["fab_choice"]["from"] == "not asked"  # nothing assumed
+    project.set_fab(tmp_path, house="PCBWay")
+    pcb_flow.autoroute(str(pcb), out_path=str(tmp_path / "routed.kicad_pcb"), neck_rules=False)
+    assert seen["lim"]["fab"] == "pcbway"
+    pcb_flow.autoroute(str(pcb), out_path=str(tmp_path / "routed.kicad_pcb"), fab_name="none", neck_rules=False)  # an explicit "none" wins over the project
+    assert seen["lim"] is None

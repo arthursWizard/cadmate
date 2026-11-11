@@ -108,3 +108,8 @@ def test_export_follows_the_project_choice(tmp_path, monkeypatch):
     r = fx.export(pcb, refill=False)
     assert r["fab"]["from"] == "project" and r["fab"]["fab"] == "jlcpcb" and "jlc_bom" in r
     assert r["no_part_number"] == ["C1"]
+
+
+def test_jlcpcb_part_number_field_is_an_lcsc_number():
+    other = BOARD.replace('(property "LCSC" "C25744")', '(property "JLCPCB Part #" "C25744")', 1)
+    assert fx.footprints(other)[0]["lcsc"] == "C25744"

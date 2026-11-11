@@ -931,14 +931,7 @@ def write(path: str, parts: list[dict], nets: dict[str, list[str]], no_connect: 
     root_uuid = _sheet_uuid(out_path)
     text = _render(out_path, placed, power_parts, d, junctions, paper, title, root_uuid)
     sexpr.parse(text)
-    snapshot = None
-    root = project.find_root(out_path)
-    backup = None
-    if out_path.exists() and root:
-        snapshot = project.snapshot(root, "before-schematic-write", paths=[str(out_path)])
-    elif out_path.exists():
-        backup = out_path.with_name(out_path.name + ".bak")
-        backup.write_bytes(out_path.read_bytes())
+    kept = project.keep([out_path], "schematic-write")  # a snapshot inside a project, a .bak outside one
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(text, encoding="utf-8", newline="\n")
 
@@ -948,10 +941,8 @@ def write(path: str, parts: list[dict], nets: dict[str, list[str]], no_connect: 
               "review": {k: review[k] for k in ("counts", "findings", "more", "stats", "not_checked")},
               "next": "fix every review problem and warning (move parts with at, fields with ref_at/value_at), then "
                       "write again with replace=True; ask the user to look at the sheet in KiCad"}
-    if snapshot:
-        result["snapshot"] = snapshot
-    if backup:
-        result["backup"] = str(backup)
+    if kept:
+        result["previous_kept"] = kept
     if hidden_power:
         result["hidden_power_pins"] = hidden_power
         result["hidden_power_note"] = "hidden power pins on no net: KiCad joins each to the net named after the pin " \

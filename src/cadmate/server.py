@@ -847,7 +847,7 @@ def write_schematic(path: str, parts: list[dict], nets: dict[str, list[str]], no
     nets leaving their block get a label; show_names labels a net even where it's wired. no_connect: unused pins.
     notes: [{text, at}]. Coordinates are mm, Y down, on the 1.27 mm grid.
     plan_only returns each part's outline and pin positions without writing, to plan positions first. It writes new
-    sheets only (replace=True writes over one, after a snapshot when it's in a cadmate project); it doesn't edit a
+    sheets only (replace=True writes over one cadmate wrote, keeping the old one in history/ or as .bak); it doesn't edit a
     sheet someone drew. Fix what the review reports, then write again with replace=True.
     """
     try:

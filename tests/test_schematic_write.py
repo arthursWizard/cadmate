@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -110,7 +111,8 @@ def test_writing_over_a_sheet_in_a_project_snapshots_it_first(tmp_path):
     out.write_text('(kicad_sch (version 20250114) (generator "cadmate"))\n')
     r = sw.write(str(out), [{"ref": "R1", "symbol": "Device:R"}], {"A": ["R1.1", "R1.2"]}, libraries=LIBS,
                  replace=True, erc=False)
-    assert r["snapshot"]["paths"] == ["kicad/main.kicad_sch"]
+    meta = json.loads((Path(r["previous_kept"]) / "SNAPSHOT.json").read_text())
+    assert meta["paths"] == ["kicad/main.kicad_sch"] and meta["note"]
 
 
 def test_a_sheet_someone_drew_is_never_written_over(tmp_path):
@@ -125,7 +127,7 @@ def test_outside_a_project_the_old_sheet_is_kept_as_bak(tmp_path):
     sw.write(str(out), [{"ref": "R1", "symbol": "Device:R"}], {}, libraries=LIBS, erc=False)
     first = out.read_text()
     r = sw.write(str(out), [{"ref": "R1", "symbol": "Device:R"}], {}, libraries=LIBS, replace=True, erc=False)
-    assert Path(r["backup"]).read_text() == first
+    assert Path(r["previous_kept"]).read_text() == first
 
 
 def test_writing_again_gives_the_same_file(tmp_path):

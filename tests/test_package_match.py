@@ -44,6 +44,10 @@ MATCH = [
     ("TSSOP-8_173mil", "TSSOP-8_4.4x3mm_P0.65mm"),
     ("SSOP-16_L4.9-W3.9-P0.64-LS6.0-BL", "SSOP-16_3.9x4.9mm_P0.635mm"),  # 0.64 is 0.635 rounded
     ("TDFN-8", "DFN-8-1EP_3x3mm_P0.65mm_EP1.55x2.4mm"),
+    # KiCad's 3 mm TSSOP is an MSOP's land pattern
+    ("MSOP-8", "TSSOP-8_3x3mm_P0.65mm"),
+    ("MSOP-8_L3.0-W3.0-P0.65-LS4.9-BL", "TSSOP-8_3x3mm_P0.65mm"),
+    ('8-TSSOP (0.118", 3.00mm Width)', "MSOP-8_3x3mm_P0.65mm"),
 ]
 
 MISMATCH = [
@@ -67,7 +71,11 @@ MISMATCH = [
     ("ESOP-8", "SOIC-8_3.9x4.9mm_P1.27mm", "exposed pad"),
     ("SMAF", "D_SMA", "SMAF but the footprint is SMA"),
     ('8-TSSOP (0.173", 4.40mm Width)', "TSSOP-8_3x3mm_P0.65mm", "4.40 mm wide but the footprint's is 3"),
-    ("TO-220-3", "TO-220-2_Vertical", "3 pins"),  # TO-220-N counts real leads: no tab allowance
+    ("TO-220-3", "TO-220-2_Vertical", "3 pins"),
+    ("MSOP-8", "TSSOP-8_4.4x3mm_P0.65mm", "the footprint is the 4.4 mm TSSOP body"),
+    ("TSSOP-8", "MSOP-8_3x3mm_P0.65mm", "TSSOP of unstated width"),
+    ("MSOP-10", "TSSOP-8_3x3mm_P0.65mm", "10 pins"),
+    ("MSOP-10_L3.0-W3.0-P0.50", "TSSOP-10_3x3mm_P0.65mm", "pitch is 0.5 mm"),  # TO-220-N counts real leads: no tab allowance
 ]
 
 

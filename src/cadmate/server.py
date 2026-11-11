@@ -14,7 +14,7 @@ from pathlib import Path
 from mcp.server.mcpserver import Image, MCPServer
 
 from . import (apps, check, enclosure, fab_export, footprint, freerouting, generate, ipc, kicad_live, kicad_pcb_live, live, model, packages, part, pcb_flow, pcb_review, ready,
-               pcb_route, project, protoboard, protoboard_place, protoboard_render, review, schematic_review, symbol, symbol_check, symbol_generate)
+               pcb_route, project, protoboard, release, protoboard_place, protoboard_render, review, schematic_review, symbol, symbol_check, symbol_generate)
 from .footprint import read as _read_footprint  # generate_symbol's footprint argument shadows the module
 
 INSTRUCTIONS = """\
@@ -47,6 +47,8 @@ session that creates or changes design files, whoever asked for the change:
 - Report DRC as errors, warnings, unconnected and parity, with the warnings by type, never errors alone.
 - project_init on a new design folder; project_check before telling the user a step is done.
 - check_ready_to_order before telling the user a board can be ordered, and again after any change to it.
+- When the user orders a board (or calls a revision final), project_release freezes it as revision A, B, ... in
+  releases/<board>/<rev>/ with what changed since the last one. Never edit a release; release the next revision.
 - check_enclosure before showing the user an enclosure: collisions, openings nobody declared, joints with a gap or a step.
 The cadmate-project skill has the reasons and the edge cases.
 
@@ -1104,6 +1106,31 @@ def project_restore(path: str, name: str, paths: list[str] | None = None) -> dic
 
 
 @server.tool()
+def project_release(path: str, revision: str | None = None, notes: str = "", board: str | None = None,
+                    renders: list[str] | None = None, render: bool = True) -> dict:
+    """Release a board revision, when the user orders it or calls a state final. Snapshots the whole project
+    (history/<stamp>_release-<board>-<rev>/, never pruned) and freezes the board's fab files, renders and RELEASE.md into
+    releases/<board>/<rev>/, with what changed since the previous revision: parts added, removed or changed, nets,
+    copper layers, outline size, track and via counts. Run export_fab (and check_ready_to_order) first: it refuses fab files
+    older than the board, and never overwrites a release.
+
+    path: the .kicad_pcb, or the project when it has one board (else pass board). revision: A, B, ... or a number;
+    left out, the next letter. notes: what the user says this revision is for or fixes. renders: project paths of
+    pictures to include (a FreeCAD render, a renders/ folder); render adds top and bottom pictures through kicad-cli
+    when it's installed. Warns when the board's title block shows another revision."""
+    return _project(release.release, path, revision, notes, board, renders, render)
+
+
+@server.tool()
+def project_prune(path: str, keep: int = 10, confirm: bool = False) -> dict:
+    """Free space in history/: delete the automatic snapshots tools took before changing something (routing passes,
+    restores, moves), keeping the newest keep. Snapshots taken on purpose with project_snapshot and released ones are
+    never touched. Without confirm it only lists what would go and the space freed: show the user, and call again with
+    confirm=True on their yes. Deleted snapshots can't be restored; HISTORY.md marks them pruned."""
+    return _project(project.prune, path, keep, confirm)
+
+
+@server.tool()
 def project_check(path: str) -> dict:
     """Check a project against the layout: files outside it or too deep, names that mark versions or variants
     (-v2, -routed, -hand3, variant-*, .bak), more than one board per board folder, a KiCad project not named
@@ -1111,7 +1138,8 @@ def project_check(path: str) -> dict:
     tables and 3D model links that are absolute, missing or outside the project, fab files older than their board or
     for a board that's gone, badly named snapshots, leftover scratch, an assembly whose enclosure check is missing,
     older than its STEPs or failing, the other tool's files at the root of a one-tool project (project_add_tool), and a
-    board or part sitting loose beside board or part folders (project_add_board, project_add_part). The result says
+    board or part sitting loose beside board or part folders (project_add_board, project_add_part), a released revision
+    changed after release, and automatic snapshots piling up (project_prune). The result says
     which tools the project uses and whether it's flat. Each finding has a fix. Run it before telling the user a step
     is done."""
     return _project(project.check, path)

@@ -57,6 +57,9 @@ A board and an enclosure, the most common shape:
   history/
     HISTORY.md             index: one row per snapshot, oldest first
     20261031-1213_before-rework/   same relative paths as the project
+  releases/
+    RELEASES.md            index: one row per released revision
+    main/A/                frozen at release: fab files as sent, renders, RELEASE.md, release.json. Never edit
   .cadmate/work/           scratch: comparisons, temp outputs. Delete when the step is done
 ```
 
@@ -158,7 +161,9 @@ or the whole project, when:
 - the user has seen or approved the current state ("seems good", "PR good", a picked option), and the next change
   replaces it;
 - the change is big or hard to undo by hand (re-placement, a new connector, reshaping a part);
-- the user asks to keep it, or something is ordered (`label: "ordered"`, whole project, fab included).
+- the user asks to keep it.
+
+When something is ordered, don't snapshot: release it (below).
 
 Not before every small step. The routing tools (`route_critical_nets`, `autoroute_rest`, `finish_routing`) snapshot the
 board themselves before changing it in place, and the footprint, symbol and part writers put a replaced file into
@@ -166,6 +171,30 @@ history/ instead of a `.bak`.
 
 The label says what the state is or what comes next: `approved-layout`, `before-rework`, `ordered`.
 The note (one sentence) goes into HISTORY.md: "User approved the placement; next, routing".
+
+## Releasing a board revision
+
+A snapshot lets you go back; a release is the record of what was ordered. When the user orders a board, or calls a
+revision final:
+
+1. `export_fab`, then `check_ready_to_order`. Go through what it flags with the user first.
+2. `project_release` with notes in the user's words (what this revision is for, what it fixes). It takes the next
+   letter (A, B, ...) unless you pass `revision`. It snapshots the whole project (`release-<board>-<rev>`), copies the
+   fab files, any `renders` you name and top and bottom board pictures (when kicad-cli is there) into
+   `releases/<board>/<rev>/`, and writes RELEASE.md with what changed since the previous revision.
+3. Tell the user the revision and the changes. If the board's title block shows another revision, the result warns:
+   set it in Board Setup, re-export, release again.
+
+A release is frozen: never edit it. A change after ordering is the next revision. `project_check` flags a release
+whose files changed, or whose snapshot is gone. To open revision A again, `project_restore` its snapshot.
+
+## Pruning history
+
+Routing tools snapshot the board before each pass, so history grows by a board's size every time. `project_prune`
+deletes the automatic snapshots (those whose note starts "automatic") beyond the newest ten (`keep`). Snapshots taken
+on purpose with `project_snapshot` and released ones are never pruned. It only lists what would go until called with
+`confirm=True`: show the user the list and the space it frees, and ask first, since deleted snapshots can't be
+restored. `project_check` suggests it once there are more than ten.
 
 ## Alternatives
 
@@ -194,7 +223,7 @@ label like `option-b`.
   sits) so snapshots and the moves `project_add_tool` and `project_add_part` make keep working. A link from one part
   to another part's file breaks when either moves: re-link it in FreeCAD after.
 - **fab/ is generated.** Re-export after every board change (`project_check` flags fab files older than the board).
-  Snapshots include fab/ only when you snapshot the whole project, which is what you want for "ordered".
+  Snapshots include fab/ only when you snapshot the whole project; a release keeps the fab files as ordered.
 - **Git.** If the project is a git repository, commits do the same job better for text files (all KiCad files are
   text) and snapshots are still handy for the user to open an old version from Finder. Use both; don't commit
   `.cadmate/`.

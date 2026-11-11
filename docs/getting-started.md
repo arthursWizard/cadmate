@@ -193,7 +193,10 @@ so you mostly say "snapshot this as before-rework" or "go back to yesterday's ve
 At every step Claude does the work and shows you a picture or a report. You look in KiCad and say "good" or what to
 change. When you say good, Claude snapshots.
 
-1. **Parts.** For anything not in KiCad's libraries: "make the part for U3 from docs/xyz.pdf". `generate_part` writes
+1. **Parts.** cadmate doesn't search distributors. For stock and price, add a search tool for where you buy:
+   jlc-mcp (from anthropics/ai-eda) for JLCPCB and LCSC, or DigiKey's or Mouser's own API with your key. Put the
+   manufacturer part number (and any distributor number) on each part; `generate_part` and `generate_symbol` take them
+   as `fields`, and they end up in the BOM. For anything not in KiCad's libraries: "make the part for U3 from docs/xyz.pdf". `generate_part` writes
    the symbol, footprint and 3D model, linked and checked together, into `kicad/lib/`. `generate_symbol`,
    `generate_footprint` and the 3D model flow do one at a time. For existing parts, `check_part`, `check_footprint` and
    `review_footprint` catch swapped pads, wrong courtyards and models that don't sit right. To edit a footprint or

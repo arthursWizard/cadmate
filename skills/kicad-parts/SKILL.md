@@ -9,6 +9,12 @@ Uses the cadmate MCP server (and FreeCAD for the 3D model). You read the datashe
 
 The `kicad-symbols`, `kicad-footprints` and `kicad-3d-models` skills hold the details for each piece (pin types, JEDEC letters, model conventions); follow them for reading the datasheet.
 
+## Choosing the part, and its numbers
+
+cadmate doesn't search distributors. For stock, price and alternatives, use a search tool for the distributor the user buys from (the project's `project_fab` says which, if any). For JLCPCB and LCSC, jlc-mcp from anthropics/ai-eda (MIT) searches with stock, price and a basic-parts filter. DigiKey and Mouser have their own APIs, which need the user's key. Don't pick a distributor for the user.
+
+The manufacturer part number is the record that matters; distributor numbers are optional extras. Pass them as `symbol.fields`, for example `{"Manufacturer": "...", "MPN": "...", "LCSC": "C..."}`. They travel with the symbol into the schematic and the board, `export_fab` puts them in the BOM, and `check_ready_to_order` flags parts without one. Check that the orderable part's package is the one you're drawing: the same part number with a different suffix is often a different package.
+
 ## Workflow
 
 1. Ask for the datasheet and the exact package (orderable part number) if you don't have them. Never guess a pin or a dimension; ask.

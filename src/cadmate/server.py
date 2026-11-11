@@ -334,6 +334,7 @@ def generate_symbol(
     fp_filters: list[str] | None = None,
     pin_length: float | None = None,
     unit_shapes: dict[str, str] | None = None,
+    fields: dict[str, str] | None = None,
     overwrite: bool = False,
 ) -> dict:
     """Generate a KiCad schematic symbol from the datasheet's pin table and put it into a .kicad_sym library.
@@ -346,7 +347,8 @@ def generate_symbol(
     type. unit splits a part into units (one per amplifier, plus one for power); unit_shapes
     {"1": "opamp", ...} draws those units as KiCad's opamp triangle (one +, one -, one output, and
     optionally a supply each way), the rest are rectangles. Active-low names are
-    written ~{RST}; /RST, !RST and RST# are converted.
+    written ~{RST}; /RST, !RST and RST# are converted. fields adds hidden fields such as {"Manufacturer": ...,
+    "MPN": ..., "LCSC": ..., "DigiKey": ...}: the part numbers go with the symbol into the schematic, the board and the BOM.
 
     The layout follows KiCad's library conventions (100 mil grid, inputs left, outputs right, supplies
     on top, grounds at the bottom, same-name power pins stacked, NC pins hidden). footprint is the
@@ -360,7 +362,7 @@ def generate_symbol(
         return {"ok": False, "errors": ["library_path must be a KiCad symbol library file ending in .kicad_sym"]}
     result = symbol_generate.generate(name, pins, reference=reference, footprint=footprint, datasheet=datasheet,
                                       description=description, keywords=keywords, fp_filters=fp_filters, pin_length=pin_length,
-                                      unit_shapes=unit_shapes)
+                                      unit_shapes=unit_shapes, fields=fields)
     text = result.pop("text")
     if not result["ok"]:
         return result
@@ -440,7 +442,8 @@ def generate_part(
 ) -> dict:
     """Make a whole part from one datasheet: symbol, footprint and 3D model, linked to each other and checked together.
 
-    symbol: {name, pins, description?, keywords?, reference?, fp_filters?, pin_length?, unit_shapes?}, as for generate_symbol.
+    symbol: {name, pins, description?, keywords?, reference?, fp_filters?, pin_length?, unit_shapes?, fields?}, as for
+    generate_symbol; fields carries the part numbers (Manufacturer, MPN, and LCSC, DigiKey or Mouser numbers).
     footprint: {family, params, name?, density?, courtyard_clearance?, description?, tags?}, as for generate_footprint. Put the package
     height (and for soic the standoff) in params too; the 3D model is built from the same values.
     model: extra values for the 3D model (lead_thickness, terminal_thickness, standoff, lead_below, lead_diameter),

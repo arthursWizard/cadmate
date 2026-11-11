@@ -44,3 +44,67 @@ def test_copper_layers_in_stack_order():
 
 def test_placeholder_part_numbers_are_not_part_numbers():
     assert [fx.placeholder(x) for x in ("C25744", "", "TBD", "C25900?", " C1525 ")] == [False, True, True, True, False]
+
+
+MPN_BOARD = BOARD.replace('(property "Value" "100n")', '(property "Value" "100n") (property "Manufacturer" "Samsung") '
+                                                        '(property "MPN" "CL05B104KO5NNNC") (property "DigiKey" "1276-1001-1-ND")')
+
+
+def test_generic_bom_puts_the_manufacturer_part_first_and_only_the_distributors_in_use():
+    bom = fx.generic_bom(fx.footprints(MPN_BOARD)).splitlines()
+    assert bom[0] == "Designator,Quantity,Value,Footprint,Manufacturer,MPN,LCSC,DigiKey"
+    assert bom[1:] == ["C1,1,100n,C_0402_1005Metric,Samsung,CL05B104KO5NNNC,,1276-1001-1-ND",
+                       '"R2,R10",2,10k,R_0402_1005Metric,,,C25744,']
+    # field names as schematics spell them
+    other = BOARD.replace('(property "LCSC" "C25744")', '(property "Manufacturer_Part_Number" "RC0402FR-0710KL")', 1)
+    assert fx.footprints(other)[0]["mpn"] == "RC0402FR-0710KL"
+
+
+def test_generic_pos_keeps_placed_parts_in_mm():
+    pos = fx.generic_pos(POS, fx.footprints(BOARD)).splitlines()
+    assert pos[0] == "Designator,Value,Footprint,X (mm),Y (mm),Rotation,Side"
+    assert pos[1:] == ["C1,100n,C_0402,114.0000,-110.0000,90,top", "R2,10k,R_0402,110.0000,-110.0000,270,top",
+                       "R10,10k,R_0402,112.0000,-110.0000,180,bottom"]
+
+
+def _fake_cli(monkeypatch):
+    def cli(*args, timeout=300):
+        out = args[args.index("--output") + 1]
+        if "gerbers" in args or "drill" in args:
+            from pathlib import Path
+            Path(out, "board-F_Cu.gbr" if "gerbers" in args else "board.drl").write_text("G04*", encoding="utf-8")
+        else:
+            with open(out, "w", encoding="utf-8") as f:
+                f.write(POS)
+        return ""
+    monkeypatch.setattr(fx, "_cli", cli)
+
+
+def test_export_assumes_no_board_house(tmp_path, monkeypatch):
+    _fake_cli(monkeypatch)
+    pcb = tmp_path / "board.kicad_pcb"
+    pcb.write_text(MPN_BOARD, encoding="utf-8")
+    r = fx.export(pcb, refill=False)
+    names = sorted(p.name for p in (tmp_path / "fab" / "board").iterdir())
+    assert names == ["board-bom.csv", "board-gerbers.zip", "board-pos.csv", "gerbers"]
+    assert r["fab"]["fab"] is None and "jlc_bom" not in r
+    # C1 has an MPN, R2 and R10 an LCSC number: every part has some number
+    assert r["no_part_number"] == []
+    # with JLCPCB chosen, its own BOM and CPL come too, and a later neutral export removes them again
+    r = fx.export(pcb, refill=False, fab="jlcpcb")
+    assert r["no_lcsc_number"] == ["C1"] and (tmp_path / "fab" / "board" / "board-cpl-jlc.csv").exists()
+    fx.export(pcb, refill=False, fab="none")
+    assert not (tmp_path / "fab" / "board" / "board-bom-jlc.csv").exists()
+
+
+def test_export_follows_the_project_choice(tmp_path, monkeypatch):
+    from cadmate import project
+
+    _fake_cli(monkeypatch)
+    project.init(tmp_path, tools=["kicad"])
+    project.set_fab(tmp_path, house="JLCPCB", assembly="yes")
+    pcb = tmp_path / "main.kicad_pcb"
+    pcb.write_text(BOARD, encoding="utf-8")
+    r = fx.export(pcb, refill=False)
+    assert r["fab"]["from"] == "project" and r["fab"]["fab"] == "jlcpcb" and "jlc_bom" in r
+    assert r["no_part_number"] == ["C1"]

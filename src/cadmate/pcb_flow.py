@@ -48,6 +48,13 @@ def load(path: str | None) -> tuple[Board, object | None]:
     return b, live
 
 
+def _live_folder(live) -> Path | None:
+    """The folder of the board open in the editor, when KiCad says where its project is."""
+    project = getattr(getattr(getattr(live, "document", None), "project", None), "path", "") or ""
+    folder = Path(project) if project else None
+    return folder.parent if folder and folder.is_file() else folder
+
+
 def _rules_file(dst: Path | None, live) -> Path | None:
     """Where the board's custom rules live: next to the written board, or in the open board's project."""
     if dst is not None:
@@ -145,16 +152,16 @@ def route_critical(path: str | None = None, out_path: str | None = None, roles: 
 
 
 def autoroute(path: str | None = None, out_path: str | None = None, currents: dict | None = None, roles: dict | None = None,
-              passes: int = 30, timeout: int = 1200, fab_name: str | None = "jlcpcb", margin: float = fab.MARGIN,
+              passes: int = 30, timeout: int = 1200, fab_name: str | None = None, margin: float = fab.MARGIN,
               neck_rules: bool = True, in_place: bool | None = None) -> dict:
     """Freerouting on everything not routed yet, with the widths the high-current items ask for. Its narrow tracks are
     checked against the fab's minimums (fab_name, None to skip) plus the margin. With neck_rules, the necks into pads that
     the fab can make get a KiCad custom rule allowing them there, so DRC flags only what needs fixing."""
     b, live = load(path)
-    try:
-        lim = fab.limits(fab_name, len(b.copper_layers), margin) if fab_name else None
-    except ValueError as e:
-        raise FlowError(str(e)) from None
+    chosen = fab.resolve(fab_name, path or _live_folder(live))
+    if chosen["house"] and not chosen["fab"] and chosen["from"] == "argument":
+        raise FlowError(f"no rule profile for fab '{chosen['house']}'; known: {', '.join(fab.SOURCES)}, or 'none' to skip the check")
+    lim = fab.limits(chosen["fab"], len(b.copper_layers), margin) if chosen["fab"] else None
     plan = pcb_critical.classify(b, roles, currents, None, None, ["high_current"])
     widths, capped = {}, []
     for it in plan["items"]:
@@ -179,6 +186,10 @@ def autoroute(path: str | None = None, out_path: str | None = None, currents: di
         if snap:
             out["snapshot"] = snap
     out["widths_from_currents"] = widths
+    if not lim:
+        out["fab_choice"] = chosen | {"note": (f"cadmate has no rule profile for {chosen['house']}" if chosen["house"] else
+                                               "no board house chosen") + ", so Freerouting's narrow tracks weren't checked "
+                                              "against one; KiCad's DRC checks them against the board's own rules"}
     narrow = [w for w in out.get("widened", []) if "wanted_mm" in w]
     if narrow:
         out["still_narrow"] = narrow  # Freerouting necked these down where there's no room for the full width

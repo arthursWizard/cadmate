@@ -19,10 +19,12 @@ import tempfile
 from pathlib import Path
 
 from . import apps, versions
+from . import fab as fabmod
 from .pcb_board import (Board, NetGraph, Pad, Part, Track, convex_hull, dist, load_project, load_schematic, parse, point_in_polygon, point_seg,
                         polygon_area, polygon_gap, seg_seg)
 
 SOURCES = {
+    "pcbway_pcb": fabmod.SOURCES["pcbway"],
     "ipc2221": "IPC-2221 §6.2 conductor sizing: I = k·ΔT^0.44·A^0.725, A in mil², k = 0.048 outer / 0.024 inner layers "
                "(as reproduced in KiCad's PCB Calculator docs, pcb_calculator/tracks_width_versus_current_formula.md). "
                "IPC-2152 replaces these charts and finds IPC-2221 conservative, inner layers especially "
@@ -50,6 +52,8 @@ SOURCES = {
     "heuristic": "cadmate heuristic: no standard sets this number. Debatable; adjust it to the design.",
 }
 
+# PCBWay's via limits, mm (SOURCES["pcbway_pcb"]): holes under 0.2 mm cost extra; a 0.15 mm annular ring.
+PCBWAY_VIA = {"drill_extra_below": 0.2, "ring": 0.15}
 # JLCPCB's published minimums, mm (SOURCES["jlcpcb_pcb"]).
 JLCPCB = {"track": {1: 0.10, 2: 0.16}, "track_multilayer": {1: 0.09, 2: 0.15}, "via_drill": 0.15, "via_drill_preferred": 0.2,
           "via_diameter": 0.25, "via_ring_over_hole": 0.1, "edge": 0.2, "assembly_edge": 0.3}
@@ -592,6 +596,16 @@ class Review:
                 if v.size - v.drill < JLCPCB["via_ring_over_hole"] - 1e-6:
                     self.add("fab", "problem", f"{n} via(s) {v.size:g}/{v.drill:g} mm: diameter less than 0.1 mm over the hole",
                              "JLCPCB wants the via diameter 0.1 mm (0.15 preferred) larger than the hole.", "jlcpcb_pcb", v.x, v.y, net=v.net)
+        elif fab == "pcbway":
+            for key in sorted({(v.size, v.drill) for v in self.b.vias}):
+                v = next(w for w in self.b.vias if (w.size, w.drill) == key)
+                n = sum(1 for w in self.b.vias if (w.size, w.drill) == key)
+                if (v.size - v.drill) / 2 < PCBWAY_VIA["ring"] - 1e-6:
+                    self.add("fab", "problem", f"{n} via(s) {v.size:g}/{v.drill:g} mm: annular ring under PCBWay's {PCBWAY_VIA['ring']:g} mm",
+                             "The fab can't plate a ring that thin reliably.", "pcbway_pcb", v.x, v.y, net=v.net)
+                if v.drill < PCBWAY_VIA["drill_extra_below"] - 1e-6:
+                    self.add("fab", "note", f"{n} via(s) with a {v.drill:g} mm hole: PCBWay charges extra below 0.2 mm",
+                             "Larger holes are cheaper and more reliable when space allows.", "pcbway_pcb", v.x, v.y, net=v.net)
 
     # return path ---------------------------------------------------------------------------------------
 
@@ -670,12 +684,19 @@ class Review:
 
     # assembly ------------------------------------------------------------------------------------------
 
-    def assembly(self, fab: str | None) -> None:
-        if fab != "jlcpcb":
-            self.skipped.append({"rule": "assembly", "why": "no fab given; JLCPCB's spacing table is the one cadmate knows"})
-            return
+    def assembly(self, fab: str | None, assembled: bool | None = None) -> None:
         self.checked.append("assembly")
         parts = [p for p in self.b.parts if p.smd and not p.dnp and p.copper_pads]
+        if assembled is False:
+            self.skipped.append({"rule": "assembly_spacing", "why": "the project says the board house won't assemble it"})
+        elif fab != "jlcpcb":
+            self.skipped.append({"rule": "assembly_spacing", "why": ("no board house chosen" if fab is None else f"no spacing table for {fab}")
+                                 + "; JLCPCB's SMD spacing table is the only one cadmate has"})
+        else:
+            self._smt_spacing(parts)
+        self._sides_and_edge(parts, fab if assembled is not False else None)
+
+    def _smt_spacing(self, parts: list[Part]) -> None:
         unknown = set()
         extents = {p.ref: _extent(p) for p in parts}
         for i, a in enumerate(parts):
@@ -699,6 +720,8 @@ class Review:
                              "jlcpcb_smt", (a.x + b.x) / 2, (a.y + b.y) / 2, refs=[a.ref, b.ref], gap_mm=gap, recommended_mm=need)
         if unknown:
             self.skipped.append({"rule": "assembly", "why": f"package type not known for {', '.join(sorted(unknown)[:15])}; no JLCPCB spacing applied"})
+
+    def _sides_and_edge(self, parts: list[Part], fab: str | None) -> None:
         # the side an SMD part is soldered on is where its SMD pads are: a footprint placed on the front can carry its
         # SMD pads on the back (a socket or contact soldered under the board)
         def smd_side(p):
@@ -712,7 +735,7 @@ class Review:
             front = sorted(p.ref for p in smd if smd_side(p) == "front")
             self.add("assembly", "note", f"SMD parts on both sides ({len(front)} front, {len(back)} back)",
                      "Assembling both sides costs a second pass. Fine if intended.", "heuristic", refs=(back if len(back) <= len(front) else front)[:20])
-        if self.b.edges:
+        if self.b.edges and fab == "jlcpcb":
             for p in parts:
                 if re.match(r"^(J|P|CN)\d", p.ref):
                     continue  # connectors sit at the edge on purpose
@@ -723,10 +746,23 @@ class Review:
 
     # fab capability ------------------------------------------------------------------------------------
 
-    def fab_limits(self, fab: str | None) -> None:
-        if fab != "jlcpcb":
+    def fab_limits(self, fab: str | None, house: str | None = None) -> None:
+        if fab is None:
+            self.skipped.append({"rule": "fab", "why": (f"no rule profile for {house}" if house else "no board house chosen")
+                                 + ": only KiCad's DRC with the board's own rules checks what can be made"})
             return
         self.checked.append("fab")
+        if fab != "jlcpcb":
+            rules = {k: v["hard"] for k, v in fabmod.limits(fab, len(self.b.copper_layers))["rules"].items()}
+            src, name = f"{fab}_pcb", {"pcbway": "PCBWay"}.get(fab, fab)
+            thin = [t for t in self.b.tracks if t.width < rules["track"] - 1e-6]
+            if thin:
+                t = min(thin, key=lambda t: t.width)
+                self.add("fab", "problem", f"{len(thin)} track(s) below {name}'s {rules['track']:g} mm minimum, down to {t.width:g} mm",
+                         "The fab can't etch them reliably.", src, t.start[0], t.start[1], t.layer, net=t.net)
+            self._board_rules(name, src, (("min_clearance", rules["clearance"], "clearance"), ("min_track_width", rules["track"], "track width"),
+                                          ("min_copper_edge_clearance", rules["edge"], "copper to edge")))
+            return
         multi = len(self.b.copper_layers) > 2
         oz = max(1, round(max(self.b.copper_thickness.values() or [0.035]) / 0.035))
         table = JLCPCB["track_multilayer" if multi else "track"]
@@ -736,12 +772,15 @@ class Review:
             t = min(thin, key=lambda t: t.width)
             self.add("fab", "problem", f"{len(thin)} track(s) below JLCPCB's {min_track:g} mm minimum for {oz} oz, down to {t.width:g} mm",
                      "The fab can't etch them reliably.", "jlcpcb_pcb", t.start[0], t.start[1], t.layer, net=t.net)
+        self._board_rules("JLCPCB", "jlcpcb_pcb", (("min_clearance", min_track, "clearance"), ("min_track_width", min_track, "track width"),
+                                                   ("min_copper_edge_clearance", JLCPCB["edge"], "copper to edge"),
+                                                   ("min_via_diameter", JLCPCB["via_diameter"], "via diameter"),
+                                                   ("min_through_hole_diameter", JLCPCB["via_drill"], "hole size")))
+
+    def _board_rules(self, name: str, src: str, pairs) -> None:
         r = self.b.rules
         if r:
-            for key, fab_min, what in (("min_clearance", min_track, "clearance"), ("min_track_width", min_track, "track width"),
-                                       ("min_copper_edge_clearance", JLCPCB["edge"], "copper to edge"),
-                                       ("min_via_diameter", JLCPCB["via_diameter"], "via diameter"),
-                                       ("min_through_hole_diameter", JLCPCB["via_drill"], "hole size")):
+            for key, fab_min, what in pairs:
                 v = r.get(key)
                 if v is not None and v < fab_min - 1e-6:
                     cls_note = ""
@@ -749,9 +788,9 @@ class Review:
                         lo = min((c.clearance for c in self.b.net_classes.values() if c.clearance is not None), default=None)
                         if lo is not None and lo >= fab_min:
                             cls_note = f" The net classes still ask for at least {lo:g} mm, so DRC catches tracks, but not every item."
-                    self.add("fab", "note", f"the board's minimum {what} rule is {v:g} mm, below JLCPCB's {fab_min:g} mm",
+                    self.add("fab", "note", f"the board's minimum {what} rule is {v:g} mm, below {name}'s {fab_min:g} mm",
                              "KiCad's DRC only checks the rules you set, so it won't catch what the fab can't make." + cls_note,
-                             "jlcpcb_pcb", setting=key, board_value=v, fab_min=fab_min)
+                             src, setting=key, board_value=v, fab_min=fab_min)
 
 
 # --- helpers ----------------------------------------------------------------------------------------
@@ -935,7 +974,11 @@ _ORDER = {"problem": 0, "warning": 1, "note": 2}
 
 
 def review_board(board: Board, currents: dict[str, float] | None = None, roles: dict[str, str] | None = None,
-                 fab: str | None = "jlcpcb", limits: dict | None = None, drc: dict | None = None) -> dict:
+                 fab: str | None = None, limits: dict | None = None, drc: dict | None = None,
+                 assembly: bool | None = None, house: str | None = None) -> dict:
+    """fab is a rule profile ("jlcpcb", "pcbway") or None: no board house assumed. house is the name the user gave when
+    cadmate has no profile for it; assembly False skips the assembly spacing checks."""
+    fab = fabmod.profile(fab)
     lim = {**LIMITS, **(limits or {})}
     summary = None
     r = Review(board, infer_roles(board, roles), currents, lim)
@@ -946,8 +989,8 @@ def review_board(board: Board, currents: dict[str, float] | None = None, roles: 
     r.widths()
     r.vias(fab)
     r.return_path()
-    r.assembly(fab)
-    r.fab_limits(fab)
+    r.assembly(fab, assembly)
+    r.fab_limits(fab, house)
     findings = r.findings
     if drc is not None and "error" not in drc:
         found = _drc_findings(drc)
@@ -999,7 +1042,15 @@ def review_file(path: str, **kw) -> dict:
     load_project(board, f.with_suffix(".kicad_pro"))
     load_schematic(board, f.parent, f.stem)
     drc = run_drc(f) if kw.pop("drc", True) else None
-    return review_board(board, drc=drc, **kw)
+    return _with_fab(board, f, drc, kw)
+
+
+def _with_fab(board: Board, near, drc, kw) -> dict:
+    """review_board with the board house resolved: the fab argument, else the project's choice, else none."""
+    chosen = fabmod.resolve(kw.pop("fab", None), near)
+    out = review_board(board, drc=drc, fab=chosen["fab"], assembly=chosen["assembly"], house=chosen["house"], **kw)
+    out["fab"] = chosen
+    return out
 
 
 def review_live(**kw) -> dict:
@@ -1022,6 +1073,6 @@ def review_live(**kw) -> dict:
         copy = tmp / Path(live_board.name).name
         live_board.save_as(str(copy), overwrite=True, include_project=True)
         drc = run_drc(copy)
-    out = review_board(board, drc=drc, **kw)
+    out = _with_fab(board, folder, drc, kw)
     out["source"] = "the open PCB editor, unsaved edits included"
     return out

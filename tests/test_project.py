@@ -473,3 +473,46 @@ def test_check_flags_a_protoboard_left_in_docs(tmp_path):
     protoboard(root / "docs/tester.json")
     f = next(f for f in project.check(root)["findings"] if f["path"] == "docs/tester.json")
     assert "docs/" in f["problem"] and "project_add_tool protoboard" in f["fix"]
+
+
+def test_fab_is_asked_once_and_recorded_in_the_brief(tmp_path):
+    from cadmate import fab, project
+
+    r = project.init(tmp_path, tools=["kicad"])
+    assert "board house" in r["ask_user"]
+    assert any("where the board gets made" in f["problem"] for f in project.check(tmp_path)["findings"])
+    assert fab.resolve(None, tmp_path)["from"] == "not asked"
+    assert "Not asked yet" in (tmp_path / "docs/brief.md").read_text(encoding="utf-8")
+    # reading only: nothing recorded yet
+    assert project.set_fab(tmp_path)["asked"] is False
+
+    # the user leaves the house open but knows the rest
+    r = project.set_fab(tmp_path, house="not decided yet", assembly="no", layers=4)
+    assert r["fab"] == {"house": None, "assembly": False, "distributor": None, "layers": 4}
+    brief = (tmp_path / "docs/brief.md").read_text(encoding="utf-8")
+    assert "- Board house: not decided yet" in brief and "- Assembly by the board house: no" in brief
+    assert "- Copper layers: 4" in brief and brief.count("## Fab") == 1
+    assert not any("where the board gets made" in f["problem"] for f in project.check(tmp_path)["findings"])
+    assert fab.resolve(None, tmp_path) == {"fab": None, "house": None, "assembly": False, "from": "project"}
+
+    # later they pick one; fields not given keep their value, and the brief's section is replaced, not added
+    project.set_fab(tmp_path, house="PCBWay")
+    brief = (tmp_path / "docs/brief.md").read_text(encoding="utf-8")
+    assert "- Board house: PCBWay" in brief and "- Copper layers: 4" in brief and brief.count("## Fab") == 1
+    assert fab.resolve(None, tmp_path)["fab"] == "pcbway"
+    assert fab.resolve("none", tmp_path)["fab"] is None  # an explicit choice wins over the project's
+    # a house cadmate has no profile for is kept as named
+    r = project.set_fab(tmp_path, house="Aisler")
+    assert "no rule profile for Aisler" in r["note"] and fab.resolve(None, tmp_path)["house"] == "Aisler"
+
+
+def test_fab_section_added_to_an_older_brief(tmp_path):
+    from cadmate import project
+
+    project.init(tmp_path, tools=["kicad"])
+    brief = tmp_path / "docs/brief.md"
+    brief.write_text("# old: brief\n\n## Requirements\n\n- [ ] small\n", encoding="utf-8")
+    project.set_fab(tmp_path, house="JLCPCB")
+    text = brief.read_text(encoding="utf-8")
+    assert text.startswith("# old: brief") and "- [ ] small" in text and "- Board house: JLCPCB" in text
+    assert project.read_brief(tmp_path)["open"] == ["small"]

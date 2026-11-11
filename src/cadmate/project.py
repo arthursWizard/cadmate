@@ -99,7 +99,106 @@ and you have checked it (render, DRC, measurement). Re-read this before each sta
 ## Decided
 
 - (example) <a choice the user made, and what it was picked over> (<who>, <date>)
-"""
+
+{fab}"""
+
+
+# Where the board gets made. Asked once at the start of a project and kept in the marker under "fab"; the brief shows it
+# in its own section. Any of it can stay open ("not decided yet"); nothing in cadmate assumes a board house.
+FAB_FIELDS = {"house": "Board house", "assembly": "Assembly by the board house", "distributor": "Parts bought from",
+              "layers": "Copper layers"}
+FAB_QUESTION = ("Which board house will make this board (for example JLCPCB, PCBWay, Aisler, OSH Park), or is that not "
+                "decided yet? Will they also assemble it? Do you buy parts from one distributor (LCSC, DigiKey, Mouser)? "
+                "How many copper layers, if you know? Any of these can stay open.")
+UNDECIDED = ("", "undecided", "not decided", "not decided yet", "none", "unknown", "?")
+FAB_HEADING = "## Fab"
+
+
+def _fab_md(fab: dict | None) -> str:
+    def show(k):
+        v = (fab or {}).get(k)
+        if v is None:
+            return "not decided yet"
+        if k == "assembly":
+            return "yes" if v else "no"
+        return str(v)
+    head = ("Asked once at the start. cadmate's tools read these from cadmate-project.json; change them with project_fab."
+            if fab is not None else "Not asked yet: ask the user once (project_fab has the question) and record the answers "
+                                    "with project_fab.")
+    return f"{FAB_HEADING}\n\n{head}\n\n" + "".join(f"- {label}: {show(k)}\n" for k, label in FAB_FIELDS.items())
+
+
+def fab_settings(path: str | Path | None) -> dict | None:
+    """The project's fab choices ({house, assembly, distributor, layers}, None where not decided), or None when path isn't
+    in a project or the choices haven't been asked for yet."""
+    root = find_root(path) if path else None
+    f = _marker(root).get("fab") if root else None
+    return {k: f.get(k) for k in FAB_FIELDS} if isinstance(f, dict) else None
+
+
+def _fab_value(key: str, value):
+    if isinstance(value, str) and value.strip().lower() in UNDECIDED:
+        return None
+    if key == "assembly":
+        if isinstance(value, str):
+            v = value.strip().lower()
+            if v in ("yes", "true", "y"):
+                return True
+            if v in ("no", "false", "n"):
+                return False
+            raise ProjectError(f"assembly: yes, no or undecided, not {value!r}")
+        return None if value is None else bool(value)
+    if key == "layers":
+        try:
+            n = int(value)
+        except (TypeError, ValueError):
+            raise ProjectError(f"layers: a number of copper layers or undecided, not {value!r}") from None
+        if n < 1:
+            raise ProjectError("layers: at least 1")
+        return n
+    return None if value is None else str(value).strip()
+
+
+def set_fab(path: str | Path, **choices) -> dict:
+    """Record the user's fab choices in the marker and the brief. Fields left out keep their value; "undecided" clears one.
+    Called with nothing, it only reads them (and asks, if they were never recorded)."""
+    root = _root(path)
+    bad = sorted(set(choices) - set(FAB_FIELDS))
+    if bad:
+        raise ProjectError(f"unknown fab field(s) {bad}; known: {', '.join(FAB_FIELDS)}")
+    marker = _marker(root)
+    current = fab_settings(root)
+    given = {k: v for k, v in choices.items() if v is not None}
+    if not given:
+        if current is None:
+            return {"ok": True, "root": str(root), "fab": None, "asked": False, "ask_user": FAB_QUESTION}
+        return {"ok": True, "root": str(root), "fab": current, "asked": True}
+    fab = {**{k: None for k in FAB_FIELDS}, **(current or {}), **{k: _fab_value(k, v) for k, v in given.items()}}
+    marker["fab"] = fab
+    (root / MARKER).write_text(json.dumps(marker, indent=2) + "\n", encoding="utf-8", newline="\n")
+    brief = root / BRIEF
+    if brief.exists():
+        brief.write_text(_with_fab_section(brief.read_text(encoding="utf-8"), fab), encoding="utf-8", newline="\n")
+    from . import fab as fabmod  # it reads this module
+
+    house = fab["house"]
+    out = {"ok": True, "root": str(root), "fab": fab, "asked": True, "brief": BRIEF if brief.exists() else None}
+    if house and fabmod.profile(house) is None:
+        out["note"] = (f"cadmate has no rule profile for {house}: reviews use KiCad's DRC with the board's own rules, and "
+                       f"export_fab writes the generic BOM and placement files. Set the board's rules from {house}'s "
+                       "capability page.")
+    return out
+
+
+def _with_fab_section(text: str, fab: dict | None) -> str:
+    """The brief with its Fab section replaced, or added at the end."""
+    section = _fab_md(fab)
+    m = re.search(rf"^{re.escape(FAB_HEADING)}[ \t]*$", text, re.M)
+    if not m:
+        return text.rstrip() + "\n\n" + section
+    nxt = re.search(r"^## ", text[m.end():], re.M)
+    end = m.end() + nxt.start() if nxt else len(text)
+    return text[:m.start()] + section + ("\n" + text[end:] if nxt else "")
 
 
 class ProjectError(RuntimeError):
@@ -362,7 +461,7 @@ def init(root: str | Path, name: str | None = None, boards: list[str] | None = N
     mk(MARKER, json.dumps(marker, indent=2) + "\n")
     mk("README.md", readme_md(name, sh))
     mk("CLAUDE.md", CLAUDE_MD.format(name=name, layout=sh.summary()))
-    mk(BRIEF, BRIEF_MD.format(name=name))
+    mk(BRIEF, BRIEF_MD.format(name=name, fab=_fab_md(fab_settings(root))))
     dirs = ["tools", "docs", HISTORY, WORK]
     if "kicad" in sh.tools:
         dirs += [sh.show("kicad", KICAD_LIB), "fab"]
@@ -384,8 +483,12 @@ def init(root: str | Path, name: str | None = None, boards: list[str] | None = N
                  "protoboard": f"{one}.json and its renders (render_protoboard out={sh.show(tool, one)})"}[tool]
         nxt.append(f"one {u}: {files} directly in {sh.here(tool)}" if len(names or []) < 2 else
                    f"each {u} in {sh.show(tool, f'<{u}>')}/")
-    return {"ok": True, "root": str(root), "name": name, "tools": list(sh.tools), "flat": not sh.nested, "made": made,
-            "layout": sh.layout(), "next": "; ".join(nxt) + "; then project_check"}
+    out = {"ok": True, "root": str(root), "name": name, "tools": list(sh.tools), "flat": not sh.nested, "made": made,
+           "layout": sh.layout(), "next": "; ".join(nxt) + "; then project_check"}
+    if "kicad" in sh.tools and fab_settings(root) is None:
+        out["ask_user"] = FAB_QUESTION
+        out["then"] = "record the answers with project_fab (any can stay undecided); don't assume a board house"
+    return out
 
 
 def add_tool(path: str | Path, tool: str, now: datetime | None = None) -> dict:
@@ -757,6 +860,10 @@ def check(path: str | Path) -> dict:
         if d.is_dir() and not SNAP_NAME.match(d.name):
             found.append(_finding("warning", f"{HISTORY}/{d.name}", "snapshot folder not named <YYYYMMDD-HHMM>_<label>",
                                   "rename it so history sorts by time, e.g. 20261031-1213_before-rework"))
+    if "kicad" in sh.tools and fab_settings(root) is None:
+        found.append(_finding("info", MARKER, "the user hasn't been asked where the board gets made",
+                              "ask once (project_fab has the question) and record the answers with project_fab; any can "
+                              "stay undecided"))
     brief = read_brief(root)
     if brief is None:
         found.append(_finding("warning", BRIEF, "no brief", "write the user's requirements into docs/brief.md (project_init "

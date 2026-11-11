@@ -137,3 +137,11 @@ def test_dnp_and_bom_flags_and_symbol_fields_reach_the_footprint(tmp_path):
     assert props["MPN"].atoms()[1] == "RC0603-10K" and props["MPN"].child("hide") is not None
     assert props["Datasheet"].atoms()[1] == "https://example.com/r.pdf"
     assert board(out).part("R1").dnp
+
+
+def test_a_board_with_only_a_drawn_outline_is_not_replaced_unasked(tmp_path):
+    out = tmp_path / "x.kicad_pcb"
+    out.write_text('(kicad_pcb (version 20250926) (generator "pcbnew")\n'
+                   '\t(gr_rect (start 0 0) (end 50 30) (layer "Edge.Cuts")))\n')
+    with pytest.raises(pcb_write.BoardWriteError, match="exists"):
+        pcb_write.write(str(out), COMPS, NETS, libraries=FP)

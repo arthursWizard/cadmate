@@ -11,12 +11,13 @@ from itertools import product
 from pathlib import Path
 
 from . import pcb_critical, pcb_flow, sexpr
-from .pcb_board import Board, Pad, Part, Point, _rotate, dist
+from .pcb_board import Board, Pad, Part, Point, _rotate, dist, point_in_polygon, point_seg, seg_seg
 
 GAP = 0.15  # mm kept between courtyards
 STEP = 0.25  # mm search step
 SLIDE = 8.0  # mm a part may slide along the IC edge from its ideal spot
 OUT = 6.0  # mm it may be pushed further out from the edge
+CLEARANCE = 0.2  # mm from a moved pad to another net's track or via, when the net classes give nothing larger
 
 Box = tuple[float, float, float, float]
 
@@ -66,12 +67,77 @@ def _r(v: float) -> float:
     return round(v, 4) + 0.0
 
 
+def _corners(cx: float, cy: float, w: float, h: float, angle: float) -> list[Point]:
+    out = []
+    for lx, ly in ((-w / 2, -h / 2), (w / 2, -h / 2), (w / 2, h / 2), (-w / 2, h / 2)):
+        dx, dy = _rotate(lx, ly, angle)
+        out.append((cx + dx, cy + dy))
+    return out
+
+
+def _poly_dist(a: Point, b: Point, poly: list[Point]) -> float:
+    """From segment ab to a polygon's area: 0 when it touches or is inside."""
+    if point_in_polygon(a, poly) or point_in_polygon(b, poly):
+        return 0.0
+    return min(seg_seg(a, b, poly[i], poly[(i + 1) % len(poly)]) for i in range(len(poly)))
+
+
+def _inside_edges(p: Point, edges: list[tuple[Point, Point]]) -> bool:
+    """Ray casting over the Edge.Cuts segments, so cutouts and L shapes count."""
+    x, y = p
+    inside = False
+    for (x1, y1), (x2, y2) in edges:
+        if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / (y2 - y1) + x1:
+            inside = not inside
+    return inside
+
+
+def _on_pad(pad: Pad, pt: Point, layer: str | None = None) -> bool:
+    return (layer is None or pad.on(layer)) and pad.contains(pt, 0.01)
+
+
+def routed(b: Board, part: Part) -> int:
+    """Tracks and vias that end on this part's pads: moving the part leaves them dangling."""
+    n = 0
+    for pad in part.copper_pads:
+        n += sum(1 for t in b.tracks if t.net == pad.net and (_on_pad(pad, t.start, t.layer) or _on_pad(pad, t.end, t.layer)))
+        n += sum(1 for v in b.vias if v.net == pad.net and _on_pad(pad, (v.x, v.y)))
+    return n
+
+
 class _Plan:
     def __init__(self, b: Board, movers: set[str]):
         self.b = b
-        self.outline = b.bbox()
+        self.edges = b.edges
         self.taken: list[tuple[str, Box]] = [(p.ref, _box(p)) for p in b.parts if p.ref not in movers]
         self.at: dict[str, tuple[float, float, float, Box]] = {}  # ref -> new x, y, rotation, box
+
+    def clearance(self, net: str | None) -> float:
+        nc = self.b.net_class(net) if net else None
+        return max(CLEARANCE, (nc.clearance if nc and nc.clearance else 0.0))
+
+    def on_board(self, box: Box) -> bool:
+        if not self.edges:
+            return True
+        corners = [(box[0], box[1]), (box[2], box[1]), (box[2], box[3]), (box[0], box[3])]
+        if not all(_inside_edges(c, self.edges) for c in corners):
+            return False
+        return all(_poly_dist(a, b, corners) > 1e-6 for a, b in self.edges)
+
+    def copper_clear(self, pads: list[tuple[Pad, list[Point]]], near: list, vias: list, keepouts: list) -> bool:
+        """The moved pads keep clear of other nets' tracks and vias, and of keepout areas on their layers."""
+        for pad, poly in pads:
+            cl = self.clearance(pad.net)
+            for t in near:
+                if t.net != pad.net and pad.on(t.layer) and _poly_dist(t.start, t.end, poly) < cl + t.width / 2:
+                    return False
+            for v in vias:
+                if v.net != pad.net and _poly_dist((v.x, v.y), (v.x, v.y), poly) < cl + v.size / 2:
+                    return False
+            for layer, outline in keepouts:
+                if pad.on(layer) and (any(point_in_polygon(c, outline) for c in poly) or any(point_in_polygon(c, poly) for c in outline)):
+                    return False
+        return True
 
     def where(self, part: Part, pad: Pad) -> Point:
         """A pad's position with its part where the plan has put it."""
@@ -87,7 +153,8 @@ class _Plan:
     def fit(self, part: Part, turn: int, point: Point, line_up: Point, d: Point, edge: float) -> tuple[float, float, Box] | None:
         """Put part (turned by turn) just outside edge in direction d, with point (on the part) level with line_up.
 
-        Slides along the edge, then outward, to the nearest spot clear of every other courtyard and inside the outline."""
+        Slides along the edge, then outward, to the nearest spot clear of every other courtyard, of other nets' tracks
+        and vias, of keepout areas, and inside the board outline (its real shape, cutouts included)."""
         cx, cy = part.x, part.y
         b0 = _box(part)
         rel = [_rotate(x - cx, y - cy, turn) for x, y in ((b0[0], b0[1]), (b0[2], b0[1]), (b0[0], b0[3]), (b0[2], b0[3]))]
@@ -102,14 +169,22 @@ class _Plan:
             x = line_up[0] - px
         perp = (-d[1], d[0])
         n_s, n_o = int(SLIDE / STEP), int(OUT / STEP)
+        # what could be in reach of any candidate spot
+        reach = max(ex1 - ex0, ey1 - ey0) + SLIDE + OUT + 2.0
+        near = [t for t in self.b.tracks if point_seg((x, y), t.start, t.end)[0] < reach]
+        vias = [v for v in self.b.vias if dist((v.x, v.y), (x, y)) < reach]
+        pads = [(pd, _rotate(pd.x - cx, pd.y - cy, turn)) for pd in part.copper_pads]
         steps = sorted(product(range(-n_s, n_s + 1), range(n_o + 1)), key=lambda t: (math.hypot(t[0], t[1] * 1.5), t[1], abs(t[0]), t[0]))
         for s, o in steps:
             nx = x + (s * perp[0] + o * d[0]) * STEP
             ny = y + (s * perp[1] + o * d[1]) * STEP
             box = (nx + ex0, ny + ey0, nx + ex1, ny + ey1)
-            if self.outline and not (box[0] >= self.outline[0] and box[1] >= self.outline[1] and box[2] <= self.outline[2] and box[3] <= self.outline[3]):
-                continue
             if any(_hits(box, t) for r, t in self.taken if r != part.ref):
+                continue
+            if not self.on_board(box):
+                continue
+            moved = [(pd, _corners(nx + o[0], ny + o[1], pd.w, pd.h, pd.angle + turn)) for pd, o in pads]
+            if not self.copper_clear(moved, near, vias, self.b.keepouts):
                 continue
             return nx, ny, box
         return None
@@ -153,7 +228,7 @@ def propose(b: Board, roles: dict | None = None, limits: dict | None = None, eve
 
     # a power pin with no cap within the classifier's reach gets the nearest free small cap on its net, however far
     ctx = pcb_critical.Ctx(b, pcb_critical.infer_roles(b, roles), {}, lim)
-    used = {pp.ref for _, pp, _ in decaps} | {k["for"] for k in kept} | {r for it in crystals for r in it["refs"]}
+    used = {pp.ref for _, pp, _ in decaps} | {r for it in crystals for r in it["refs"]}
     used |= {it["refs"][0] for it in plan_items["items"] if it["class"] == "decap" and it["connections"]}
     free = [(c, pp) for c, pp, _, f in ctx.caps() if ctx.role(pp.net) == "power" and (f is None or f <= 1.01e-6) and c.ref not in used]
     for it in lonely:
@@ -168,11 +243,14 @@ def propose(b: Board, roles: dict | None = None, limits: dict | None = None, eve
     xtal_jobs = []
     for it in crystals:
         x = b.part(it["id"].split(":", 1)[1])
+        if x is None:
+            continue
         pins = [(_pad(b, c["a"]["pad"]), _pad(b, c["b"]["pad"])) for c in it["connections"]
                 if c["a"]["pad"].startswith(x.ref + ".") and "pad" in c["b"] and not c["b"]["pad"].startswith(x.ref + ".")]
         loads = [(_pad(b, c["a"]["pad"]), _pad(b, c["b"]["pad"])) for c in it["connections"]
                  if "pad" in c["b"] and c["b"]["pad"].startswith(x.ref + ".") and not c["a"]["pad"].startswith(x.ref + ".")]
-        if len(pins) != 2 or pins[0][1].ref != pins[1][1].ref:
+        loads = [(cp, xp) for cp, xp in loads if cp and xp]
+        if len(pins) != 2 or not all(a and q for a, q in pins) or pins[0][1].ref != pins[1][1].ref:
             cannot.append({"for": it["id"], "why": f"{x.ref} doesn't have two pads going to one IC; place it by hand"})
             continue
         far = max(dist((a.x, a.y), (p.x, p.y)) for a, p in pins)
@@ -182,6 +260,25 @@ def propose(b: Board, roles: dict | None = None, limits: dict | None = None, eve
             kept.append({"for": it["id"], "why": f"{x.ref} is {far:.1f} mm from {pins[0][1].ref} and its load caps are next to it"})
             continue
         xtal_jobs.append((it, x, pins, move_x, move_c))
+
+    # locked parts and parts with tracks on their pads stay where they are
+    def fixed(part: Part, item: str) -> bool:
+        why = "locked; unlock it in KiCad to let it move" if part.locked else (
+            f"{routed(b, part)} track(s) or via(s) already on its pads; move it by hand or remove them first"
+            if routed(b, part) else "")
+        if why:
+            cannot.append({"for": item, "ref": part.ref, "why": f"{part.ref} is {why}"})
+        return bool(why)
+
+    decaps = [(it, pp, pin) for it, pp, pin in decaps if not fixed(b.part(pp.ref), it["id"])]
+    jobs = []
+    for it, x, pins, move_x, move_c in xtal_jobs:
+        if move_x and fixed(x, it["id"]):
+            move_x = False
+        move_c = [(cp, xp) for cp, xp in move_c if not fixed(b.part(cp.ref), it["id"])]
+        if move_x or move_c:
+            jobs.append((it, x, pins, move_x, move_c))
+    xtal_jobs = jobs
 
     movers = {pp.ref for _, pp, _ in decaps} | {x.ref for _, x, _, mx, _ in xtal_jobs if mx} | \
              {cp.ref for *_, mc in xtal_jobs for cp, _ in mc}
@@ -355,6 +452,10 @@ def apply(path: str | None, moves: list[dict], out_path: str | None = None, in_p
         raise pcb_flow.FlowError(f"no part {', '.join(missing)} on this board")
     if moved:
         raise pcb_flow.FlowError(f"{', '.join(moved)} moved since the proposal (from doesn't match); propose_placement again")
+    locked = sorted(ref for ref in want if b.part(ref).locked)
+    if locked:
+        raise pcb_flow.FlowError(f"{', '.join(locked)} locked; unlock in KiCad first if it should move")
+    dangling = {ref: n for ref in want if (n := routed(b, b.part(ref)))}
     final = {ref: (m["x"], m["y"], m["rotation"] if m["rotation"] is not None else b.part(ref).rotation) for ref, m in want.items()}
     out: dict = {"ok": True, "moved": sorted(final)}
     if live is not None:
@@ -387,8 +488,12 @@ def apply(path: str | None, moves: list[dict], out_path: str | None = None, in_p
 
         after = parse(text, dst.name)
     out["courtyard_overlaps"] = overlaps(after, set(final))
+    if dangling:
+        out["tracks_left_dangling"] = dangling
+        out["tracks_left_dangling_note"] = "these parts had tracks or vias on their pads; those stayed where they were, so reroute them"
     out["next"] = ("classify_critical_nets again: the decap and crystal items should now be 'route', then route_critical_nets"
-                   + ("; fix the courtyard overlaps first" if out["courtyard_overlaps"] else ""))
+                   + ("; fix the courtyard overlaps first" if out["courtyard_overlaps"] else "")
+                   + ("; reroute the dangling tracks" if dangling else ""))
     return out
 
 

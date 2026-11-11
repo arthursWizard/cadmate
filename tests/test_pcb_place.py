@@ -120,3 +120,56 @@ def test_apply_writes_a_new_board_and_refuses_stale_moves(tmp_path):
         pl.apply(str(out), moves, out_path=str(tmp_path / "again.kicad_pcb"))
     with pytest.raises(pcb_flow.FlowError, match="no part"):
         pl.apply(str(src), [{"ref": "C99", "to": {"x": 1, "y": 1}}], out_path=str(out))
+
+
+def test_locked_part_is_never_proposed_or_moved(tmp_path):
+    locked = cap("C1", 50, 35).replace('(layer "F.Cu") (at 50 35 0)', '(layer "F.Cu") (locked yes) (at 50 35 0)')
+    assert "(locked yes)" in locked
+    text = HEAD + ic() + locked + gnd_pour() + ")\n"
+    res = pl.propose(pb.parse(text))
+    assert res["moves"] == [] and "locked" in res["cannot"][0]["why"]
+    src = tmp_path / "main.kicad_pcb"
+    src.write_text(text, encoding="utf-8")
+    with pytest.raises(pcb_flow.FlowError, match="locked"):
+        pl.apply(str(src), [{"ref": "C1", "to": {"x": 20, "y": 20, "rotation": 0}}], out_path=str(tmp_path / "o.kicad_pcb"))
+
+
+def test_routed_part_stays_and_apply_says_what_it_leaves_dangling(tmp_path):
+    from test_pcb_review import seg
+    text = HEAD + ic() + cap("C1", 50, 35) + seg((49.2, 35), (45, 35), "+3V3") + gnd_pour() + ")\n"
+    res = pl.propose(pb.parse(text))
+    assert res["moves"] == [] and "track" in res["cannot"][0]["why"]
+    src = tmp_path / "main.kicad_pcb"
+    src.write_text(text, encoding="utf-8")
+    r = pl.apply(str(src), [{"ref": "C1", "to": {"x": 20, "y": 30, "rotation": 0}}], out_path=str(tmp_path / "o.kicad_pcb"))
+    assert r["tracks_left_dangling"] == {"C1": 1}
+
+
+def test_cap_keeps_clear_of_another_nets_track_and_via():
+    from test_pcb_review import seg, via
+    # a track and a via of another net right where the cap would go, left of U1's VDD pin
+    text = (HEAD + ic() + cap("C1", 50, 35) + seg((22, 18.1), (26, 18.1), "SIG") + via(23, 17, "SIG2")
+            + gnd_pour() + ")\n")
+    res = pl.propose(pb.parse(text))
+    [m] = res["moves"]
+    after = applied(text, res)
+    for p in after.part("C1").copper_pads:
+        assert pb.point_seg((p.x, p.y), (22, 18.1), (26, 18.1))[0] > 0.2 + 0.125 + min(p.w, p.h) / 2 - 1e-6
+        assert pb.dist((p.x, p.y), (23, 17)) > 0.3 + 0.2
+    assert m["distance_mm"]["after"] < 6
+
+
+def test_cap_never_lands_in_a_board_cutout():
+    # board with a notch where the cap would naturally go (left of U1's VDD pin)
+    head = HEAD.replace('\t(gr_rect (start 0 0) (end 60 40) (stroke (width 0.05) (type default)) (fill no) (layer "Edge.Cuts") (uuid "edge"))\n', "")
+    pts = [(0, 0), (60, 0), (60, 40), (0, 40), (0, 20), (25.9, 20), (25.9, 15), (0, 15)]
+    outline = "".join(f'\t(gr_line (start {a[0]} {a[1]}) (end {b[0]} {b[1]}) (layer "Edge.Cuts") (stroke (width 0.05) (type default)))\n'
+                      for a, b in zip(pts, pts[1:] + pts[:1]))
+    text = head + outline + ic() + cap("C1", 50, 35) + gnd_pour() + ")\n"
+    b = pb.parse(text)
+    res = pl.propose(b)
+    assert len(res["moves"]) == 1
+    box = pl._box(applied(text, res).part("C1"))
+    plan = pl._Plan(b, {"C1"})
+    assert plan.on_board(box)
+    assert not (box[0] < 25.9 and box[1] < 20 and box[3] > 15)  # not in the notch

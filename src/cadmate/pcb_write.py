@@ -478,7 +478,13 @@ def _empty_board(path: Path) -> bool:
         root = sexpr.parse(path.read_text(encoding="utf-8", errors="replace"))
     except (OSError, sexpr.SexprError):
         return False
-    return root.head == "kicad_pcb" and not any(root.children(h) for h in ("footprint", "segment", "arc", "via", "zone"))
+    if root.head != "kicad_pcb" or any(root.children(h) for h in ("footprint", "segment", "arc", "via", "zone")):
+        return False
+    # a drawn outline is someone's work too
+    return not any(isinstance(n, sexpr.Node) and n.head and n.head.startswith("gr_") and
+                   any(isinstance(c, sexpr.Node) and c.head in ("layer", "layers") for c in n.items) and "Edge.Cuts" in
+                   [a for c in n.items if isinstance(c, sexpr.Node) and c.head in ("layer", "layers") for a in c.atoms()]
+                   for n in root.items)
 
 
 def _board_uuid(path: Path) -> uuidlib.UUID:

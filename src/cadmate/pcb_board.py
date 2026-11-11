@@ -112,6 +112,7 @@ class Part:
     through_hole: bool
     dnp: bool = False
     description: str = ""
+    locked: bool = False
 
     @property
     def copper_pads(self) -> list[Pad]:
@@ -475,7 +476,8 @@ def _part(node: sexpr.Node, names: dict[str, str], copper: list[str], edges: lis
     attr = node.child("attr")
     attrs = attr.atoms() if attr is not None else []
     return Part(ref, _prop(node, "Value"), (node.atoms() or [""])[0], fx, fy, frot, side, pads, convex_hull(court),
-                "smd" in attrs, "through_hole" in attrs, "dnp" in attrs or node.child("dnp") is not None, _prop(node, "Description"))
+                "smd" in attrs, "through_hole" in attrs, "dnp" in attrs or node.child("dnp") is not None, _prop(node, "Description"),
+                "locked" in node.atoms() or (node.child("locked") is not None and node.child("locked").atoms()[:1] != ["no"]))
 
 
 def _edge_segments_abs(g: sexpr.Node, fx: float, fy: float, frot: float) -> list[tuple[Point, Point]]:

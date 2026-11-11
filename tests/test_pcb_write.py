@@ -81,7 +81,7 @@ def test_missing_footprints_are_listed_not_guessed(tmp_path):
 
 def test_a_board_someone_placed_is_never_written_over(tmp_path):
     out = tmp_path / "x.kicad_pcb"
-    out.write_text('(kicad_pcb (version 20250926) (generator "pcbnew"))\n')
+    out.write_text('(kicad_pcb (version 20250926) (generator "pcbnew")\n\t(footprint "R" (layer "F.Cu") (at 1 1)))\n')
     with pytest.raises(pcb_write.BoardWriteError, match="exists"):
         pcb_write.write(str(out), COMPS, NETS, libraries=FP)
     with pytest.raises(pcb_write.BoardWriteError, match="wasn't started by cadmate"):
@@ -106,3 +106,34 @@ def test_kicad_netlist_is_read():
     assert comps[0].symbol_uuid == "/0a1b2c3d-0000-4000-8000-000000000001"
     assert comps[0].sheet_file == "main.kicad_sch"
     assert nets == {"/A": ["R1.1"], "GND": ["R1.2"]}
+
+
+def test_the_empty_board_kicad_makes_with_a_new_project_is_replaced(tmp_path):
+    out = tmp_path / "x.kicad_pcb"
+    out.write_text('(kicad_pcb (version 20250926) (generator "pcbnew") (general (thickness 1.6)) (layers (0 "F.Cu" signal)))\n')
+    r = pcb_write.write(str(out), COMPS, NETS, libraries=FP)
+    assert r["ok"] and r["previous_kept"]
+    assert len(board(out).parts) == len(COMPS)
+
+
+def test_dnp_and_bom_flags_and_symbol_fields_reach_the_footprint(tmp_path):
+    text = '''(export (version "E")
+  (components
+    (comp (ref "R1") (value "10k") (footprint "Test:R_0603") (datasheet "https://example.com/r.pdf") (description "Resistor")
+      (fields (field (name "Footprint") "Test:R_0603") (field (name "MPN") "RC0603-10K") (field (name "Datasheet") "https://example.com/r.pdf"))
+      (property (name "dnp")) (property (name "exclude_from_bom"))
+      (sheetpath (names "/") (tstamps "/")) (tstamps "0a1b2c3d-0000-4000-8000-000000000001")))
+  (nets (net (code "1") (name "/A") (node (ref "R1") (pin "1")))))'''
+    comps, nets = pcb_write.parse_netlist(text)
+    [c] = comps
+    assert c.flags == ("exclude_from_bom", "dnp")
+    assert c.fields == {"Datasheet": "https://example.com/r.pdf", "Description": "Resistor", "MPN": "RC0603-10K"}
+    out = tmp_path / "x.kicad_pcb"
+    pcb_write.write(str(out), comps, nets, libraries=FP)
+    fp = sexpr.parse(out.read_text(encoding="utf-8")).child("footprint")
+    attr = fp.child("attr").atoms()
+    assert "dnp" in attr and "exclude_from_bom" in attr and "exclude_from_pos_files" not in attr
+    props = {pr.atoms()[0]: pr for pr in fp.children("property")}
+    assert props["MPN"].atoms()[1] == "RC0603-10K" and props["MPN"].child("hide") is not None
+    assert props["Datasheet"].atoms()[1] == "https://example.com/r.pdf"
+    assert board(out).part("R1").dnp

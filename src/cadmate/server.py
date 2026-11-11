@@ -871,10 +871,12 @@ def board_from_schematic(schematic: str, out_path: str | None = None, libraries:
     Footprint field, found through the project's fp-lib-table, KiCad's, or its installed libraries (or pass libraries
     {nickname: .pretty folder}). out_path defaults to the schematic's name with .kicad_pcb, beside it, so KiCad pairs
     them. Parts start where their symbols sit on the sheet (scale 0.5: 10 mm on the sheet is 5 mm on the board),
-    moved apart until no courtyards overlap, with a board outline around them, or size [w, h] in mm. layers is 2 or
-    4. Each footprint stays linked to its symbol, so Update PCB from Schematic works on it later; the reply has
-    KiCad's schematic parity check and DRC. This starts boards: it won't write over a board someone placed.
-    Placement comes next, critical parts first.
+    moved apart until no courtyards overlap, with a board outline around them, or size [w, h] in mm. Parts on
+    sub-sheets have no position on the top sheet, so they go in rows below the rest; overlapping lists any part that
+    found no free spot. layers is 2 or 4. Each footprint stays linked to its symbol and gets its fields (hidden) and its
+    DNP and exclude-from-BOM/position flags, as Update PCB from Schematic does; the reply has KiCad's schematic parity
+    check and DRC. This starts boards: it replaces the empty board KiCad's New Project makes (keeping a copy), but
+    won't write over a board with anything on it that cadmate didn't write. Placement comes next: propose_placement.
     """
     try:
         return pcb_write.from_schematic(schematic, out_path, libraries=libraries, size=size, layers=layers, scale=scale,

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import math
 import re
+import shutil
 import subprocess
 import tempfile
 import uuid as uuidlib
@@ -44,6 +45,9 @@ USER_LAYERS = ['(9 "F.Adhes" user "F.Adhesive")', '(11 "B.Adhes" user "B.Adhesiv
                '(33 "B.Fab" user)']
 
 
+FLAGS = ("exclude_from_pos_files", "exclude_from_bom", "dnp")  # netlist properties that are footprint attributes
+
+
 class BoardWriteError(ValueError):
     pass
 
@@ -57,7 +61,8 @@ class Comp:
     sheet_name: str = "/"
     sheet_file: str = ""
     sch_at: tuple[float, float] | None = None  # where its symbol sits on the schematic
-    fields: dict = field(default_factory=dict)
+    fields: dict = field(default_factory=dict)  # the symbol's other fields (Datasheet, MPN, ...), copied as hidden properties
+    flags: tuple[str, ...] = ()  # dnp, exclude_from_bom, exclude_from_pos_files: footprint attributes, as Update PCB sets them
 
 
 @dataclass(eq=False)
@@ -81,7 +86,15 @@ def netlist(sch: Path, pin_info: dict | None = None) -> tuple[list[Comp], dict[s
     if not cli:
         raise BoardWriteError("this needs kicad-cli to read the schematic's netlist; install KiCad 10 "
                               "(or give the parts and nets directly)")
-    out = Path(tempfile.mkdtemp(prefix="cadmate-net-")) / "net.net"
+    tmp = Path(tempfile.mkdtemp(prefix="cadmate-net-"))
+    out = tmp / "net.net"
+    try:
+        return _export(cli, sch, out, pin_info)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _export(cli: str, sch: Path, out: Path, pin_info: dict | None) -> tuple[list[Comp], dict[str, list[str]]]:
     try:
         proc = subprocess.run([cli, "sch", "export", "netlist", "--format", "kicadsexpr", "--output", str(out), str(sch)],
                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
@@ -109,11 +122,18 @@ def parse_netlist(text: str, pin_info: dict[str, tuple[str, str]] | None = None)
         sp = c.child("sheetpath")
         stamps = _val(c.child("tstamps")) or _val(c.child("tstamp"))
         sheet_stamps = _val(sp.child("tstamps")) if sp is not None else "/"
+        fields = {"Datasheet": _val(c.child("datasheet")), "Description": _val(c.child("description"))}
+        for f in (c.child("fields") or sexpr.Node()).children("field"):
+            name, vals = _val(f.child("name")), f.atoms()
+            if name not in ("Reference", "Value", "Footprint"):
+                fields[name] = vals[0] if vals else ""
+        fields = {k: v for k, v in fields.items() if k and (v or k in ("Datasheet", "Description")) and v != "~"}
         comps.append(Comp(ref=_val(c.child("ref")), value=_val(c.child("value")), footprint=_val(c.child("footprint")),
                           symbol_uuid=(sheet_stamps.rstrip("/") + "/" + stamps.split()[0]) if stamps else "",
                           sheet_name=_val(sp.child("names")) if sp is not None else "/",
                           sheet_file=props.get("Sheetfile", ""),
-                          fields={k: v for k, v in props.items() if k not in ("Sheetname", "Sheetfile")}))
+                          fields={k: v for k, v in fields.items() if v},
+                          flags=tuple(f for f in FLAGS if f in props)))
     nets: dict[str, list[str]] = {}
     for n in (root.child("nets") or sexpr.Node()).children("net"):
         nets[_val(n.child("name"))] = [f"{_val(x.child('ref'))}.{_val(x.child('pin'))}" for x in n.children("node")]
@@ -202,6 +222,7 @@ def _instance(p: Placed, pad_nets: dict[str, str], board_uuid: uuidlib.UUID,
     drop = ("version", "generator", "generator_version", "tedit", "uuid", "at", "path", "sheetname", "sheetfile",
             "layer")
     have_props = set()
+    have_attr = False
     for item in root.items[2:]:
         if not isinstance(item, sexpr.Node):
             continue
@@ -210,12 +231,17 @@ def _instance(p: Placed, pad_nets: dict[str, str], board_uuid: uuidlib.UUID,
         elif item.head == "property" and item.atoms():
             name = item.atoms()[0]
             have_props.add(name)
-            new = {"Reference": c.ref, "Value": c.value, "Footprint": c.footprint}.get(name)
+            new = {"Reference": c.ref, "Value": c.value, "Footprint": c.footprint}.get(name, c.fields.get(name))
             if new is not None:
                 # the value is the second atom: replace the quoted string after the name
                 m = re.match(r'\(property\s+"(?:[^"\\]|\\.)*"\s+"(?:[^"\\]|\\.)*"', text[item.start:item.end])
                 if m:
                     edits.append((item.start, item.start + m.end(), f"(property {q(name)} {q(new)}"))
+        elif item.head == "attr":
+            have_attr = True
+            add = [f for f in c.flags if f not in item.atoms()]
+            if add:
+                edits.append((item.end - 1, item.end - 1, " " + " ".join(add)))
         elif item.head == "pad" and item.atoms():
             net = pad_nets.get(item.atoms()[0])
             for old in (item.child("net"), item.child("pinfunction"), item.child("pintype")):
@@ -246,6 +272,12 @@ def _instance(p: Placed, pad_nets: dict[str, str], board_uuid: uuidlib.UUID,
             layer = "F.SilkS" if name == "Reference" else "F.Fab"
             extra.append(f"(property {q(name)} {q(val)} (at 0 0 0) (layer {q(layer)}){hide} "
                          f"(effects (font (size 1 1) (thickness 0.15))))")
+    for name, val in c.fields.items():
+        if name not in have_props:
+            extra.append(f"(property {q(name)} {q(val)} (at 0 0 0) (layer \"F.Fab\") (hide yes) "
+                         f"(effects (font (size 1 1) (thickness 0.15))))")
+    if c.flags and not have_attr:
+        extra.append(f"(attr {' '.join(c.flags)})")
     if c.symbol_uuid:
         extra += [f"(path {q(c.symbol_uuid)})", f"(sheetname {q(c.sheet_name or '/')})",
                   f"(sheetfile {q(c.sheet_file)})"]
@@ -260,9 +292,10 @@ def _overlaps(a, b) -> bool:
     return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
 
 
-def _place(parts: list[Placed], scale: float) -> None:
+def _place(parts: list[Placed], scale: float) -> list[str]:
     """Parts where the schematic has them, scaled down, then each one moved to the nearest free spot in turn
-    (biggest first), so nothing overlaps. Parts with no position on the top sheet go in rows below."""
+    (biggest first), so nothing overlaps. Parts with no position on the top sheet (including every part on a
+    sub-sheet) go in rows below. Returns the parts that found no free spot near where they wanted to be."""
     with_pos = [p for p in parts if p.comp.sch_at is not None]
     without = [p for p in parts if p.comp.sch_at is None]
     if with_pos:
@@ -271,6 +304,7 @@ def _place(parts: list[Placed], scale: float) -> None:
         for p in with_pos:
             p.at = (round((p.comp.sch_at[0] - x0) * scale * 2) / 2, round((p.comp.sch_at[1] - y0) * scale * 2) / 2)
     done: list[Placed] = []
+    crowded: list[str] = []
     for p in sorted(with_pos, key=lambda p: -(p.court[2] - p.court[0]) * (p.court[3] - p.court[1])):
         want = p.at
         for r in range(400):  # rings of 0.5 mm steps around where it wants to be
@@ -284,6 +318,9 @@ def _place(parts: list[Placed], scale: float) -> None:
                     break
             if spot is not None:
                 break
+        if spot is None:
+            p.at = want
+            crowded.append(p.comp.ref)
         done.append(p)
     # the rest in rows under what's placed
     y = max((q.box()[3] for q in done), default=0.0) + 5.0
@@ -296,6 +333,7 @@ def _place(parts: list[Placed], scale: float) -> None:
         x += w + GAP
         row_h = max(row_h, h)
         done.append(p)
+    return crowded
 
 
 # --- the board ----------------------------------------------------------------------------------------------------
@@ -310,11 +348,11 @@ def write(out: str, comps: list[Comp], nets: dict[str, list[str]], libraries: di
         raise BoardWriteError("the board path must end in .kicad_pcb")
     if layers not in LAYERS:
         raise BoardWriteError("layers must be 2 or 4")
-    if out_path.exists():
+    if out_path.exists() and not _empty_board(out_path):
         if not replace:
             raise BoardWriteError(f"{out_path} exists; this starts new boards. To bring schematic changes into a board "
                                   f"you've placed, use Update PCB from Schematic in KiCad")
-        if not _written_by_cadmate(out_path):
+        if not _written_by_cadmate(out_path) and not _empty_board(out_path):
             raise BoardWriteError(f"{out_path} wasn't started by cadmate, so writing over it would lose someone's "
                                   f"work; use Update PCB from Schematic in KiCad")
     fps = kicad_libs.Footprints(out_path.parent, libraries)
@@ -334,7 +372,7 @@ def write(out: str, comps: list[Comp], nets: dict[str, list[str]], libraries: di
         placed.append(Placed(comp=c, text=text, court=court))
     if not placed:
         raise BoardWriteError("no footprints to place: " + "; ".join((no_footprint and [f"no footprint field on {no_footprint}"] or []) + not_found[:5]))
-    _place(placed, scale)
+    crowded = _place(placed, scale)
 
     # board outline: around the parts with a margin, or the size asked for, parts centred in it
     bx0 = min(p.box()[0] for p in placed)
@@ -389,6 +427,9 @@ def write(out: str, comps: list[Comp], nets: dict[str, list[str]], libraries: di
                       "pins, crystal at its MCU, connectors at the edge); the routing tools come after placement"}
     if kept:
         result["previous_kept"] = kept
+    if crowded:
+        result["overlapping"] = crowded
+        result["overlapping_note"] = "no free spot was found near these parts' schematic positions, so they overlap others; move them"
     if not fits:
         result["too_small"] = f"the parts need about {bx1 - bx0:.1f} x {by1 - by0:.1f} mm before any routing room"
     if no_footprint:
@@ -429,6 +470,15 @@ def _written_by_cadmate(path: Path) -> bool:
     except (OSError, sexpr.SexprError):
         return False
     return g is not None and g.atoms()[:1] == ["cadmate"]
+
+
+def _empty_board(path: Path) -> bool:
+    """A board with nothing on it yet, like the one KiCad's New Project makes beside the schematic."""
+    try:
+        root = sexpr.parse(path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, sexpr.SexprError):
+        return False
+    return root.head == "kicad_pcb" and not any(root.children(h) for h in ("footprint", "segment", "arc", "via", "zone"))
 
 
 def _board_uuid(path: Path) -> uuidlib.UUID:

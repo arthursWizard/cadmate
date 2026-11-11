@@ -165,10 +165,20 @@ def test_a_board_from_a_written_schematic_matches_it(tmp_path):
     parts = [{**p, "footprint": fp[p["symbol"].split(":")[1]]} for p in PARTS]
     sch = tmp_path / "demo.kicad_sch"
     schematic_write.write(str(sch), parts, NETS, no_connect=["U1.3", "U1.4", "U1.6", "U1.8"], libraries=LIBS, erc=False)
+    # R3 not fitted and kept off the BOM: the footprint must carry the same attributes or parity flags it
+    text = sch.read_text(encoding="utf-8")
+    r3 = next(n for n in sexpr.parse(text).children("symbol")
+              if any(p.atoms()[:2] == ["Reference", "R3"] for p in n.children("property")))
+    part = text[r3.start:r3.end].replace("(in_bom yes)", "(in_bom no)").replace("(dnp no)", "(dnp yes)")
+    assert "(dnp yes)" in part and "(in_bom no)" in part
+    sch.write_text(text[:r3.start] + part + text[r3.end:], encoding="utf-8")
     r = pcb_write.from_schematic(str(sch), libraries={"Test": str(FIXTURES / "pcb" / "Test.pretty"), "Fix": str(FIXTURES)})
     print(r)
     assert r["ok"] and r["footprints"] == 5
     assert r["parity"]["issues"] == 0, r["parity"]
+    fp = next(f for f in sexpr.parse((tmp_path / "demo.kicad_pcb").read_text(encoding="utf-8")).children("footprint")
+              if any(p.atoms()[:2] == ["Reference", "R3"] for p in f.children("property")))
+    assert {"dnp", "exclude_from_bom"} <= set(fp.child("attr").atoms())
     b = pcb_board.parse((tmp_path / "demo.kicad_pcb").read_text(encoding="utf-8"))
     got = {f"{p.ref}.{pad.number}": pad.net for p in b.parts for pad in p.pads}
     for pins in kicad_nets(sch):

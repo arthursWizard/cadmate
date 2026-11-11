@@ -73,7 +73,8 @@ def generate_part(
     sym_result = symbol_generate.generate(
         sym_name, symbol_spec.get("pins") or [], reference=symbol_spec.get("reference", "U"), footprint=f"{library}:{fp_name}",
         datasheet=datasheet, description=symbol_spec.get("description"), keywords=symbol_spec.get("keywords"),
-        fp_filters=symbol_spec.get("fp_filters"), pin_length=symbol_spec.get("pin_length"), unit_shapes=symbol_spec.get("unit_shapes"))
+        fp_filters=symbol_spec.get("fp_filters"), pin_length=symbol_spec.get("pin_length"), unit_shapes=symbol_spec.get("unit_shapes"),
+        fields=symbol_spec.get("fields"))
     warnings += [f"symbol: {w}" for w in sym_result["warnings"]]
     if not sym_result["ok"]:
         return _fail([f"symbol: {e}" for e in sym_result["errors"]], warnings)

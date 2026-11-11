@@ -111,8 +111,10 @@ def generate(
     pin_length: float | None = None,
     stack_power_pins: bool = True,
     unit_shapes: dict | None = None,
+    fields: dict[str, str] | None = None,
 ) -> dict:
-    """Build a symbol. Returns {"ok", "name", "text", "report", "errors", "warnings", "summary"}; text is set only when ok."""
+    """Build a symbol. fields: extra hidden fields, such as Manufacturer, MPN and distributor numbers (LCSC, DigiKey,
+    Mouser); they reach the board's footprints and the BOM. Returns {"ok", "name", "text", "report", "errors", "warnings", "summary"}; text is set only when ok."""
     warnings: list[str] = []
     try:
         table = [_read_pin(p, i, warnings) for i, p in enumerate(pins or [])]
@@ -161,6 +163,10 @@ def generate(
 
     filters = _filters(fp_filters, footprint)
     sym.properties = _fields(sym, reference, footprint, datasheet, description, keywords, filters, laid_out, length)
+    try:
+        _extra_fields(sym, fields)
+    except ValueError as e:
+        return _fail([str(e)], warnings)
     if len(units) > 1 and not _interchangeable(laid_out):
         sym.units_locked = True
     for pin_name, reason in symbol_check.s42_exceptions_needed(sym).items():
@@ -675,6 +681,23 @@ def _fields(sym: Symbol, reference, footprint, datasheet, description, keywords,
     if filters:
         props["ki_fp_filters"] = symbol.Property(" ".join(filters), 0, 0, True)
     return props
+
+
+RESERVED = {"reference", "value", "footprint", "datasheet", "description", "ki_keywords", "ki_fp_filters"}
+
+
+def _extra_fields(sym: Symbol, fields: dict | None) -> None:
+    """Hidden fields after Description, one grid step apart, in the order given."""
+    if not fields:
+        return
+    y = sym.properties["Description"].y
+    x = sym.properties["Description"].x
+    for key, value in fields.items():
+        key = str(key).strip()
+        if not key or key.lower() in RESERVED:
+            raise ValueError(f"fields: {key!r} is set by cadmate itself; use the matching argument")
+        y -= 2.54
+        sym.properties[key] = symbol.Property(str(value).strip(), x, y, True, "left")
 
 
 # --- writer --------------------------------------------------------------------------------------

@@ -36,10 +36,14 @@ def _cli(*args: str, timeout: int = 300) -> str:
     cli = find_kicad_cli()
     if not cli:
         raise ExportError(f"kicad-cli not found; set {KICAD_CLI_ENV}")
-    r = subprocess.run([cli, *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+    try:
+        r = subprocess.run([cli, *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise ExportError(f"kicad-cli {args[0]} {args[1]} didn't finish in {timeout // 60} min; try again, or run it in "
+                          "KiCad to see where it stops") from None
     if r.returncode != 0:
         raise ExportError(f"kicad-cli {args[0]} {args[1]} failed: {(r.stderr or r.stdout).strip()[-500:]}")
-    return r.stdout
+    return "\n".join(x for x in (r.stdout, r.stderr) if x)  # what it printed, warnings included
 
 
 def _prop(fp: sexpr.Node, name: str) -> str:
@@ -259,3 +263,116 @@ def placeholder_any(number: str) -> bool:
     """An empty or unfinished distributor number (TBD, with a question mark)."""
     n = number.strip()
     return not n or "?" in n or n.lower() in ("tbd", "todo", "n/a", "na", "-")
+
+
+def step_target(board: Path, part: str | None = None) -> Path:
+    """Where a board's STEP goes. In a cadmate project with FreeCAD: <part>/pcb-models/<board>.step, for the part
+    named, or the only one there is; with KiCad only, or outside a project: beside the board."""
+    from . import project
+
+    root = project.find_root(board)
+    sh = project.shape(root) if root else None
+    if not root or "freecad" not in sh.tools:
+        if part:
+            raise ExportError(f"part {part!r} only applies in a cadmate project with FreeCAD; leave it out, or pass out")
+        return board.with_suffix(".step")
+    area = root / sh.dir("freecad")
+    here, folders = project.units(root, sh, "freecad")
+    if part and folders:
+        if not (area / part).is_dir():
+            raise ExportError(f"no FreeCAD part {part!r}; parts: {', '.join(f.name for f in folders)}")
+        dest = area / part
+    elif part:  # one part sits directly in the FreeCAD area: the name must be one of its files
+        names = sorted({f.stem for f in here})
+        if part not in names:
+            raise ExportError(f"no FreeCAD part {part!r}" + (f"; the part here is {', '.join(names)}" if names else
+                                                             "; there's no part file yet") + ". Leave part out: there's only one")
+        dest = area
+    elif len(folders) > 1:
+        raise ExportError(f"which FreeCAD part is the board for? pass part: one of {', '.join(f.name for f in folders)}")
+    else:
+        dest = folders[0] if folders else area
+    return dest / "pcb-models" / f"{board.stem}.step"
+
+
+STEP_EXTS = (".step", ".stp", ".STEP", ".STP")
+FAILED = re.compile(r"not found|cannot|can't|could not|couldn't|fail|unsupported|error|warning|missing", re.I)
+
+
+def _model_path(raw: str, board: Path) -> Path | None:
+    """A model link as a file, with ${KIPRJMOD} and set environment variables expanded; None while a variable is
+    unknown here (kicad-cli may still know it, from KiCad's own settings)."""
+    text = re.sub(r"\$\{(\w+)\}", lambda m: str(board.parent) if m[1] == "KIPRJMOD" else os.environ.get(m[1], m[0]), raw)
+    if "${" in text:
+        return None
+    path = Path(text).expanduser()
+    return path if path.is_absolute() else board.parent / path
+
+
+def _model_problem(raw: str, board: Path) -> str | None:
+    """Why a model link won't be in the STEP, as far as can be told without KiCad: missing, or VRML with no STEP."""
+    path = _model_path(raw, board)
+    if path is None:
+        return None
+    if path.suffix.lower() == ".wrl":  # --subst-models swaps in a STEP of the same name, when there is one
+        if any(path.with_suffix(e).is_file() for e in STEP_EXTS):
+            return None
+        return "VRML only, no STEP beside it" if path.is_file() else "file not found"
+    return None if path.is_file() else "file not found"
+
+
+def _hidden(model: sexpr.Node) -> bool:
+    h = model.child("hide")
+    return "hide" in model.atoms() or (h is not None and "no" not in h.atoms())
+
+
+def export_step(board: Path, out: Path | None = None, part: str | None = None) -> dict:
+    """The board as a STEP with its parts' 3D models, for fitting the enclosure in FreeCAD. Written to out, else
+    step_target's place. Parts without a 3D model are listed: they'd be missing from any collision check."""
+    board = board.expanduser()
+    if not board.exists():
+        raise ExportError(f"no board at {board}")
+    dest = out.expanduser() if out else step_target(board, part)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    printed = _cli(*versions.kicad_cli_args("pcb_step"), "--output", str(dest), str(board), timeout=600)
+    if not dest.exists():
+        raise ExportError(f"kicad-cli wrote no STEP at {dest}")
+    lines = [ln.strip() for ln in printed.splitlines() if ln.strip()]
+    bad = [ln for ln in lines if FAILED.search(ln)]  # kicad-cli's complaints, e.g. a model file it couldn't find
+    root = sexpr.parse(board.read_text(encoding="utf-8", errors="replace"))
+    no_model, not_loaded = [], {}
+    for fp in root.children("footprint"):
+        ref = _prop(fp, "Reference")
+        attr = fp.child("attr")
+        flags = set(attr.atoms()) if attr is not None else set()
+        dnp = "dnp" in flags or (fp.child("dnp") is not None and "yes" in fp.child("dnp").atoms())
+        if not ref or ref.startswith("#") or "board_only" in flags or dnp:  # --no-dnp leaves DNP parts out on purpose
+            continue
+        shown = [m for m in fp.children("model") if m.atoms() and not _hidden(m)]
+        if not shown:
+            no_model.append(ref)
+            continue
+        why = []
+        for m in shown:
+            raw = m.atoms()[0]
+            name = Path(raw.replace("\\", "/")).name
+            said = [ln for ln in bad if (name and name in ln) or (re.search(rf"\b{re.escape(ref)}\b", ln) and "model" in ln.lower())]
+            problem = _model_problem(raw, board)
+            if problem or said:
+                why.append(f"{raw}: {problem or said[0]}")
+        if why:  # a model that didn't make it in: that body is missing from the collision check
+            not_loaded[ref] = "; ".join(why)
+    reply = {"ok": True, "step": str(dest), "size_kb": round(dest.stat().st_size / 1024),
+             "next": "bring it into the assembly beside the case parts, then check_enclosure for collisions and fit"}
+    if no_model:
+        reply["no_3d_model"] = sorted(no_model, key=_refkey)
+    if not_loaded:
+        reply["model_not_loaded"] = dict(sorted(not_loaded.items(), key=lambda kv: _refkey(kv[0])))
+    if no_model or not_loaded:
+        reply["note"] = ("these parts are missing from the STEP, so they're missing from any collision check too: "
+                         "no_3d_model have no model (or only hidden ones), model_not_loaded link one that couldn't be "
+                         "read. Fix the link, or make a model with the kicad-3d-models flow if the part is tall or near "
+                         "the case")
+    if bad:
+        reply["kicad_cli_said"] = bad[:20]
+    return reply

@@ -319,3 +319,15 @@ def test_regulator_output_named_like_a_supply_may_be_power_out():
     r, s = build("DRV_TEST", rows, footprint="Package_SO:SOIC-8_3.9x4.9mm_P1.27mm", description="Test part, SOIC-8", keywords="test")
     assert not r["errors"], r["errors"]
     assert next(p for p in s.pins if p.name == "AVDD").etype == "power_out"
+
+
+def test_part_numbers_go_into_hidden_fields():
+    pins = [{"number": 1, "name": "A", "type": "I"}, {"number": 2, "name": "Y", "type": "O"}]
+    r = symbol_generate.generate("BUF", pins, fields={"Manufacturer": "Acme", "MPN": "BUF-1", "LCSC": "C12345"})
+    assert r["ok"], r["errors"]
+    s = symbol.parse_symbol(r["text"])
+    props = {k: (p.value, p.hidden) for k, p in s.properties.items()}
+    assert props["Manufacturer"] == ("Acme", True) and props["MPN"] == ("BUF-1", True) and props["LCSC"] == ("C12345", True)
+    assert s.properties["MPN"].y < s.properties["Description"].y  # below the other hidden fields, not on top of them
+    bad = symbol_generate.generate("BUF", pins, fields={"Footprint": "x"})
+    assert not bad["ok"] and "set by cadmate itself" in bad["errors"][0]

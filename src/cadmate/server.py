@@ -334,6 +334,7 @@ def generate_symbol(
     fp_filters: list[str] | None = None,
     pin_length: float | None = None,
     unit_shapes: dict[str, str] | None = None,
+    fields: dict[str, str] | None = None,
     overwrite: bool = False,
 ) -> dict:
     """Generate a KiCad schematic symbol from the datasheet's pin table and put it into a .kicad_sym library.
@@ -346,7 +347,8 @@ def generate_symbol(
     type. unit splits a part into units (one per amplifier, plus one for power); unit_shapes
     {"1": "opamp", ...} draws those units as KiCad's opamp triangle (one +, one -, one output, and
     optionally a supply each way), the rest are rectangles. Active-low names are
-    written ~{RST}; /RST, !RST and RST# are converted.
+    written ~{RST}; /RST, !RST and RST# are converted. fields adds hidden fields such as {"Manufacturer": ...,
+    "MPN": ..., "LCSC": ..., "DigiKey": ...}: the part numbers go with the symbol into the schematic, the board and the BOM.
 
     The layout follows KiCad's library conventions (100 mil grid, inputs left, outputs right, supplies
     on top, grounds at the bottom, same-name power pins stacked, NC pins hidden). footprint is the
@@ -360,7 +362,7 @@ def generate_symbol(
         return {"ok": False, "errors": ["library_path must be a KiCad symbol library file ending in .kicad_sym"]}
     result = symbol_generate.generate(name, pins, reference=reference, footprint=footprint, datasheet=datasheet,
                                       description=description, keywords=keywords, fp_filters=fp_filters, pin_length=pin_length,
-                                      unit_shapes=unit_shapes)
+                                      unit_shapes=unit_shapes, fields=fields)
     text = result.pop("text")
     if not result["ok"]:
         return result
@@ -440,7 +442,8 @@ def generate_part(
 ) -> dict:
     """Make a whole part from one datasheet: symbol, footprint and 3D model, linked to each other and checked together.
 
-    symbol: {name, pins, description?, keywords?, reference?, fp_filters?, pin_length?, unit_shapes?}, as for generate_symbol.
+    symbol: {name, pins, description?, keywords?, reference?, fp_filters?, pin_length?, unit_shapes?, fields?}, as for
+    generate_symbol; fields carries the part numbers (Manufacturer, MPN, and LCSC, DigiKey or Mouser numbers).
     footprint: {family, params, name?, density?, courtyard_clearance?, description?, tags?}, as for generate_footprint. Put the package
     height (and for soic the standoff) in params too; the 3D model is built from the same values.
     model: extra values for the 3D model (lead_thickness, terminal_thickness, standoff, lead_below, lead_diameter),
@@ -963,6 +966,19 @@ def export_fab(path: str, out_dir: str | None = None, fab: str | None = None) ->
     """
     try:
         return fab_export.export(Path(path), Path(out_dir) if out_dir else None, fab=fab)
+    except (fab_export.ExportError, OSError, ValueError) as e:
+        return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
+
+
+@server.tool()
+def export_board_step(path: str, out: str | None = None, part: str | None = None) -> dict:
+    """The board as a STEP with its parts' 3D models (kicad-cli, DNP parts left out), to fit an enclosure around it in
+    FreeCAD. In a cadmate project with FreeCAD it goes to the FreeCAD part's pcb-models/<board>.step (part names which,
+    when there are several); otherwise beside the board, or to out. no_3d_model lists parts without a model (or only
+    hidden ones), model_not_loaded parts whose model link is missing or VRML-only, with what kicad-cli said: all are
+    missing from the STEP and from check_enclosure's collisions, so tell the user. Re-export after the board changes."""
+    try:
+        return fab_export.export_step(Path(path), Path(out) if out else None, part)
     except (fab_export.ExportError, OSError, ValueError) as e:
         return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
 

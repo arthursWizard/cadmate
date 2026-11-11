@@ -80,6 +80,7 @@ Early. These workflows work end to end:
 | `autoroute_rest` | Freerouting on the rest, around the locked tracks, with IPC-2221 widths for nets with a current; brings the result back, widens tracks below the net class, refills zones | Freerouting's jar, java, KiCad's bundled Python |
 | `finish_routing` | Cleans up after Freerouting: takes out tracks that break clearance or width, joins what's still in pieces with cadmate's router, refills zones | nothing |
 | `export_fab` | Gerber zip, a BOM and a placement file for any board house, plus JLCPCB's own BOM and CPL when it's the house; lists parts with no part number | KiCad (kicad-cli) |
+| `export_board_step` | The board with its parts' 3D models as a STEP, into the FreeCAD part's `pcb-models/`, for fitting the enclosure; lists parts with no model or a model that didn't load | KiCad (kicad-cli) |
 | `check_ready_to_order` | Every check a board needs before it's ordered, in one call: DRC with schematic parity, ERC, the layout review, part numbers, fab files older than the board, the brief's open items. Says what blocks the order and what to decide | kicad-cli for DRC and ERC |
 | `review_schematic` | Readability review of a `.kicad_sch`: overlapping text and symbols, off-sheet items, four-way junctions, power symbol direction, label vs wire use; plus KiCad's ERC | nothing; kicad-cli for the ERC part |
 | `review_pcb_layout` | Layout review of the open board or a `.kicad_pcb`: decoupling, crystal, switching nodes, return paths, width and current, vias, the board house's rules when one is chosen, and KiCad's DRC | nothing; kicad-cli for the DRC part |
@@ -106,7 +107,7 @@ cadmate requires **KiCad 10** and **FreeCAD 1.1** or later, and follows new rele
 - **KiCad files** are read directly: footprints from KiCad 5 (`module`) to current (`footprint`) formats, symbol libraries from KiCad 6 on, including KiCad 10's one-file-per-symbol `.kicad_symdir` folders. They are written in KiCad 10's format, as KiCad's own editors write it. No KiCad install is needed for footprint or symbol work.
 - **`kicad-cli`** for DRC, ERC, pictures and fab exports (Gerbers, drill, positions).
 - **KiCad IPC API** (through `kicad-python`, pinned to the release that matches KiCad 10) only for live editing, switched on when present.
-- **FreeCAD** through `FreeCADCmd`, using the Part API that is stable across 0.20 to 1.1. Headless builds keep their colours on FreeCAD 1.0 and later; with 0.20 and 0.21 the STEP is grey.
+- **FreeCAD** through `FreeCADCmd`, using the Part API that is stable across 0.20 to 1.1. Headless builds keep their colours on FreeCAD 1.0 and later; with 0.20 and 0.21 the STEP is grey. The enclosure check also needs scipy in FreeCAD's Python: the official installers include it, but a conda-forge FreeCAD needs `scipy` installed alongside.
 
 Everything tied to a version lives in `src/cadmate/versions.py`: the supported and tested versions, the file format numbers cadmate writes, and the kicad-cli arguments it uses. When a new KiCad or FreeCAD comes out, start there. CI runs cadmate's kicad-cli commands against a real KiCad (`tests/test_kicad_cli.py`), so a renamed flag or a changed report shows up as a failing check.
 

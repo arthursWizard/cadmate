@@ -194,7 +194,9 @@ change. When you say good, Claude snapshots.
    manufacturer part number (and any distributor number) on each part; `generate_part` and `generate_symbol` take them
    as `fields`, and they end up in the BOM. Add a `Package` field with the package as the distributor lists it
    (`SOT-23-5`, `0805`, `QFN-32-EP(5x5)`), and `check_ready_to_order` checks it against the footprint, so a part
-   bought in a different package than the pads were drawn for is caught before the order. For anything not in KiCad's libraries: "make the part for U3 from docs/xyz.pdf". `generate_part` writes
+   bought in a different package than the pads were drawn for is caught before the order. A sheet drawn with KiCad's
+   generic symbols gets its numbers in one go: "find parts for everything without a number", agree the picks, and
+   `set_part_numbers` writes them onto the schematic and board. For anything not in KiCad's libraries: "make the part for U3 from docs/xyz.pdf". `generate_part` writes
    the symbol, footprint and 3D model, linked and checked together, into `kicad/lib/`. `generate_symbol`,
    `generate_footprint` and the 3D model flow do one at a time. For existing parts, `check_part`, `check_footprint` and
    `review_footprint` catch swapped pads, wrong courtyards and models that don't sit right. To edit a footprint or

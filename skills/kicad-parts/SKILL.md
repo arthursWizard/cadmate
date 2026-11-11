@@ -1,6 +1,6 @@
 ---
 name: kicad-parts
-description: Make a complete KiCad part from one datasheet, symbol, footprint and 3D model linked together, or check that an existing part's three pieces fit. Use when the user asks for a part, a library part, or "everything" for a component, or asks why a symbol, footprint and model don't line up.
+description: Make a complete KiCad part from one datasheet, symbol, footprint and 3D model linked together, or check that an existing part's three pieces fit. Use when the user asks for a part, a library part, or "everything" for a component, or asks why a symbol, footprint and model don't line up, or wants part numbers (MPN, LCSC, DigiKey, Mouser) filled in on an existing schematic.
 ---
 
 # A whole part from one datasheet
@@ -14,6 +14,16 @@ The `kicad-symbols`, `kicad-footprints` and `kicad-3d-models` skills hold the de
 cadmate doesn't search distributors. For stock, price and alternatives, use a search tool for the distributor the user buys from (the project's `project_fab` says which, if any). For JLCPCB and LCSC, jlc-mcp from anthropics/ai-eda (MIT) searches with stock, price and a basic-parts filter. DigiKey and Mouser have their own APIs, which need the user's key. Don't pick a distributor for the user.
 
 The manufacturer part number is the record that matters; distributor numbers are optional extras. Pass them as `symbol.fields`, for example `{"Manufacturer": "...", "MPN": "...", "LCSC": "C..."}`. They travel with the symbol into the schematic and the board, `export_fab` puts them in the BOM, and `check_ready_to_order` flags parts without one. Check that the orderable part's package is the one you're drawing: the same part number with a different suffix is often a different package. Put the distributor's package text in a `Package` field (or pass search results as `packages` to `check_ready_to_order`); the ready check compares it with the footprint and blocks the order on a mismatch, such as an 0805 part on 0603 pads or a SOT-23-5 on a SOT-23-6 footprint. It only compares what both sides state: a package it can't read is listed to check by eye.
+
+## Numbers for a schematic that's already drawn
+
+Most sheets use generic symbols (`Device:R`, `Device:C`) with only a value, so each part needs its numbers before an assembled board can be ordered. Don't send the user into KiCad to type them in one by one:
+
+1. `check_ready_to_order` on the board (or `export_fab`'s `no_part_number`) lists the parts without a number. Group them by value and footprint, as a BOM would: one pick per group.
+2. Find a part for each group with the user's search tool (jlc-mcp for JLCPCB/LCSC, the DigiKey or Mouser API). Match the footprint's package and the value's rating (voltage, tolerance, power), and prefer what the house stocks (JLCPCB's basic parts avoid a setup fee).
+3. Show the user the picks as a table (refs, value, footprint, manufacturer, MPN, distributor number, package) and get their agreement. They are buying these.
+4. `set_part_numbers` with the root schematic and `{"R1,R2,R5": {"Manufacturer": ..., "MPN": ..., "LCSC": ...}}`. Add `Package` with the distributor's package text so the ready check compares it with the footprint. Run it with `dry_run` first if the user wants to see the edit. It writes the schematic and the board beside it, and keeps the old files first. Ask the user to close them in KiCad before, or it refuses. Check `changed`: each part's value and footprint is listed beside its new number, so a wrong ref shows up there; `unknown_refs`, `shared_symbols`, `conflicts` and `warnings` all need a word to the user.
+5. `check_ready_to_order` again, then `export_fab`.
 
 ## Workflow
 

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from cadmate import apps, kicad_live, pcb_board, pcb_place, pcb_review, pcb_write, schematic_review, schematic_write, sexpr, versions
+from cadmate import apps, kicad_live, part_numbers, pcb_board, pcb_place, pcb_review, pcb_write, schematic_review, schematic_write, sexpr, versions
 from test_pcb_review import HEAD, footprint, pad
 from test_pictures import png_info
 from test_schematic_write import LIBS, NETS, PARTS, big_symbol_lib, random_circuit
@@ -211,3 +211,26 @@ def test_moved_and_turned_footprints_still_match_the_schematic(tmp_path):
     assert (moved.x, moved.y, moved.rotation) == (to["x"], to["y"], to["rotation"])
     for old, new in zip(c.copper_pads, moved.copper_pads):
         assert new.angle == (old.angle + 90) % 360
+
+
+def test_part_numbers_added_to_a_sheet_reach_kicad(tmp_path):
+    """set_part_numbers' edits: KiCad loads the sheet and board, its netlist carries the new fields, and the board's
+    schematic parity check still finds nothing."""
+    fp = {"MCU8": "Fix:SOIC-8", "C": "Test:C_0603", "R": "Test:R_0603"}
+    parts = [{**p, "footprint": fp[p["symbol"].split(":")[1]]} for p in PARTS]
+    sch = tmp_path / "demo.kicad_sch"
+    schematic_write.write(str(sch), parts, NETS, no_connect=["U1.3", "U1.4", "U1.6", "U1.8"], libraries=LIBS, erc=False)
+    pcb_write.from_schematic(str(sch), libraries={"Test": str(FIXTURES / "pcb" / "Test.pretty"), "Fix": str(FIXTURES)}, drc=False)
+    r = part_numbers.set_part_numbers(str(sch), {"R2,R3": {"MPN": "RC0603FR-071KL", "LCSC": "C21190"},
+                                                 "C1": {"Manufacturer": "Samsung", "MPN": "CL10B104KB8NNNC"}})
+    assert set(r["changed"]) == {"C1", "R2", "R3"} and set(r["board"]["changed"]) == {"C1", "R2", "R3"}
+    net = sch.with_suffix(".net")
+    p = run("sch", "export", "netlist", "--format", "kicadsexpr", "--output", str(net), str(sch))
+    assert net.exists(), p.stderr or p.stdout
+    comps = {c.child("ref").atoms()[0]: {f.child("name").atoms()[0]: (f.atoms() or [""])[0]
+                                        for f in (c.child("fields").children("field") if c.child("fields") else [])}
+             for c in sexpr.parse(net.read_text(encoding="utf-8")).child("components").children("comp")}
+    assert comps["R3"]["MPN"] == "RC0603FR-071KL" and comps["R3"]["LCSC"] == "C21190"
+    assert comps["C1"]["Manufacturer"] == "Samsung"
+    drc = pcb_review.drc_summary(pcb_review.run_drc(tmp_path / "demo.kicad_pcb"))
+    assert drc["parity"] == 0, drc

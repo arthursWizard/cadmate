@@ -8,8 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from cadmate import apps, pcb_review, versions
+from cadmate import apps, kicad_live, pcb_review, versions
 from test_pcb_review import HEAD, footprint, pad
+from test_pictures import png_info
 
 CLI = apps.find_kicad_cli()
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -41,6 +42,18 @@ def test_symbol_svg_flags(tmp_path):
     p = run(*versions.kicad_cli_args("sym_svg"), "--symbol", "NE555D", "--output", str(tmp_path),
             str(FIXTURES / "Symbols.kicad_symdir" / "NE555D.kicad_sym"))
     assert list(tmp_path.glob("*.svg")), p.stderr or p.stdout
+
+
+@pytest.mark.parametrize("item, name", [("SOIC-8.kicad_mod", None),
+                                        ("Symbols.kicad_symdir/NE555D.kicad_sym", "NE555D")])
+def test_snapshot_png(tmp_path, item, name):
+    src = FIXTURES / item
+    path = tmp_path / src.name
+    path.write_bytes(src.read_bytes())
+    png = kicad_live.snapshot(str(path), name, width=600)
+    width, height, corner = png_info(png)
+    assert width == 600 and height > 50 and corner[:3] == (255, 255, 255)
+    assert png.stat().st_size > 2_000  # a drawing, not a blank page
 
 
 def test_drc_report_has_the_fields_cadmate_reads(tmp_path):

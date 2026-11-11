@@ -57,6 +57,7 @@ TAB_FAMILIES = {"TO-252", "TO-263", "SOT-223", "SOT-89"}  # SMD tabs: sources co
 BODY_FAMILIES = {"QFN", "DFN", "QFP", "SOIC", "TSSOP", "MSOP", "SSOP"}  # where size tells packages apart
 BODY_TOLERANCE = 0.15  # mm
 WIDTH_TOLERANCE = 0.25  # mm, for widths given in mil (150 mil is the 3.9 mm body)
+MSOP_WIDTH = 3.0  # mm: every MSOP/VSSOP is a 3 mm body, which KiCad also names TSSOP-N_3x3mm (same land pattern)
 PITCH_TOLERANCE = 0.01  # mm: 0.64 is 0.635 rounded, while 0.635 and 0.65 are different parts
 
 
@@ -164,7 +165,9 @@ def _differences(p: dict, f: dict) -> list[str]:
             return f"{x['chip']} ({CHIP[x['chip']]} metric)" if x["chip"] else x["family"]
         return [f"the part is {size(p)} but the footprint is {size(f)}"]
     why = []
-    if p["family"] != f["family"]:
+    if {p["family"], f["family"]} == {"MSOP", "TSSOP"}:
+        why += _msop_as_tssop(p, f)
+    elif p["family"] != f["family"]:
         why.append(f"the part is {p['family']} but the footprint is {f['family']}")
     if p["pins"] and f["pins"] and p["pins"] != f["pins"]:
         if not (p["family"] in TAB_FAMILIES and abs(p["pins"] - f["pins"]) == 1):  # TO-252-3 is KiCad's TO-252-2
@@ -179,6 +182,21 @@ def _differences(p: dict, f: dict) -> list[str]:
     if p.get("pitch") and f.get("pitch") and abs(p["pitch"] - f["pitch"]) > PITCH_TOLERANCE:
         why.append(f"the part's pitch is {p['pitch']:g} mm but the footprint's is {f['pitch']:g} mm")
     return why
+
+
+def _msop_as_tssop(p: dict, f: dict) -> list[str]:
+    """MSOP and TSSOP are one land pattern when the TSSOP side is the 3 mm body (KiCad's TSSOP-8_3x3mm_P0.65mm is an
+    MSOP-8). TSSOP's usual 4.4 mm body is not, and a TSSOP whose width isn't stated stays a mismatch: that's the guess.
+    Within one family nothing is guessed, so a bare "TSSOP-8" still matches TSSOP-8_3x3mm, since only stated facts are
+    compared there."""
+    t = p if p["family"] == "TSSOP" else f
+    width = t.get("named_width", t.get("width"))
+    if width is not None and abs(width - MSOP_WIDTH) <= t.get("width_tol", BODY_TOLERANCE):
+        return []
+    what = f"the {width:g} mm TSSOP body" if width is not None else "TSSOP of unstated width (usually 4.4 mm)"
+    if t is f:
+        return [f"the part is MSOP (3 mm body) but the footprint is {what}"]
+    return [f"the part is {what} but the footprint is MSOP (3 mm body)"]
 
 
 def compare(package: str, footprint: str) -> dict:

@@ -506,8 +506,8 @@ def test_fab_is_asked_once_and_recorded_in_the_brief(tmp_path):
     assert fab.resolve(None, tmp_path)["fab"] == "pcbway"
     assert fab.resolve("none", tmp_path)["fab"] is None  # an explicit choice wins over the project's
     # a house cadmate has no profile for is kept as named
-    r = project.set_fab(tmp_path, house="Aisler")
-    assert "no rule profile for Aisler" in r["note"] and fab.resolve(None, tmp_path)["house"] == "Aisler"
+    r = project.set_fab(tmp_path, house="Acme Boards")
+    assert "no rule profile for Acme Boards" in r["note"] and fab.resolve(None, tmp_path)["house"] == "Acme Boards"
 
 
 def test_fab_section_added_to_an_older_brief(tmp_path):

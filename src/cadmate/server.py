@@ -841,7 +841,7 @@ def review_pcb_layout(path: str | None = None, currents: dict[str, float] | None
     ground under it); signals near switching nodes; tracks narrower than their net class; current per IPC-2221 for the
     nets in currents ({net: amps}), and the capacity of power nets without one; vias per net; fast signals crossing
     gaps in the ground pour; the board house's track, via and edge minimums and, for JLCPCB, its SMD spacing (fab:
-    "jlcpcb", "pcbway", or "none"; left out, the project's choice from project_fab, else no house is assumed: the reply's
+    "jlcpcb", "pcbway", "oshpark", "aisler", "eurocircuits", or "none"; left out, the project's choice from project_fab, else no house is assumed: the reply's
     fab says which was used and not_checked what was skipped); and
     KiCad's own DRC (unrouted nets, clearances) when kicad-cli is found; drc gives errors, warnings, unconnected and parity with the types: report all four. Net roles are inferred from names, pin types,
     power symbols and parts; net_roles says what was inferred and why. Correct them with roles ({net: "ground" |
@@ -927,7 +927,8 @@ def autoroute_rest(path: str | None = None, out_path: str | None = None, current
     On a board with inner-layer planes, each SMD pad on a plane net first gets a locked via into its plane (plane_fanout
     says how many, and which pads had no room), since Freerouting doesn't route to planes itself.
 
-    fab_check sorts Freerouting's narrow tracks against the fab's minimums ("jlcpcb" or "pcbway"; left out, the
+    fab_check sorts Freerouting's narrow tracks against the fab's minimums ("jlcpcb", "pcbway", "oshpark", "aisler"
+    or "eurocircuits"; left out, the
     project's choice from project_fab; with no house chosen it's skipped and KiCad's DRC checks the board's own rules):
     errors are under the fab's own minimum and must be rerouted, warnings are between it and the minimum plus margin
     (25 % by default) and stay only where there's no room. Freerouting necks tracks into small pads and can't be told not to
@@ -959,8 +960,10 @@ def export_fab(path: str, out_dir: str | None = None, fab: str | None = None) ->
     upload), a BOM (Designator, Quantity, Value, Footprint, Manufacturer, MPN, and the LCSC, DigiKey or Mouser numbers
     the parts have) and a placement file (Designator, Value, Footprint, X, Y in mm, Rotation, Side). With JLCPCB as the
     house, its own BOM (Comment, Designator, Footprint, LCSC Part #) and CPL come too, and no_lcsc_number lists parts
-    without one. fab: "jlcpcb", another house's name, or "none"; left out, the project's choice from project_fab, else
-    none is assumed. DNP and excluded parts are left out; no_part_number lists parts with no part number of any kind.
+    without one. An assembly drawing comes for any house: <board>-assembly-top.pdf, and -bottom.pdf (mirrored) when parts
+    sit underneath, from the fabrication layers (outlines and references); not_on_assembly_drawing lists parts whose
+    footprint draws nothing there. fab: "jlcpcb", another house's name, or "none"; left out, the project's choice from
+    project_fab, else none is assumed. For a house with no column format of its own, note says what it asks for. DNP and excluded parts are left out; no_part_number lists parts with no part number of any kind.
     Zones are refilled on a copy first. Run DRC first. Goes to out_dir (default <project>/fab/<board name> in a cadmate
     project, else <board folder>/fab/<board name>); the Gerbers there are regenerated, not added to.
     """

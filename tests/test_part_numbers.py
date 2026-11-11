@@ -138,7 +138,7 @@ def test_a_sheet_used_twice_shares_its_numbers(design):
     sch = design / "main.kicad_sch"
     r = pn.set_part_numbers(str(sch), {"R10": {"MPN": "RC0603FR-071KL"}})
     assert set(r["changed"]) == {"R10", "R110"}
-    assert r["shared_symbols"] == [{"refs": ["R10", "R110"], "given": ["R10"]}]
+    assert r["shared_symbols"] == [{"refs": ["R10", "R110"], "given": ["R10"], "fields": ["MPN"]}]
     assert r["board"]["not_on_board"] == ["R110"]
     assert str(design / "sub.kicad_sch") in r["files_written"]
     (f,) = fields(design / "sub.kicad_sch", "R110")
@@ -157,6 +157,10 @@ def test_mistakes_are_reported_or_refused(design):
         pn.set_part_numbers(str(sch), {"R1": {"Value": "22k"}})
     with pytest.raises(pn.PartNumberError, match="given twice"):
         pn.set_part_numbers(str(sch), {"R1": {"MPN": "A"}, "R1,C1": {"MPN": "B"}})
+    with pytest.raises(pn.PartNumberError, match="one line"):
+        pn.set_part_numbers(str(sch), {"R1": {"MPN": "A\rB"}})
+    with pytest.raises(pn.PartNumberError, match="must be text"):
+        pn.set_part_numbers(str(sch), {"R1": {"MPN": ["A"]}})
     r = pn.set_part_numbers(str(sch), {"R1,C1": {"LCSC": "98220"}, "R99": {"MPN": "X"}}, dry_run=True)
     assert r["unknown_refs"] == ["R99"] and set(r["changed"]) == {"C1", "R1"} and r["files_written"] == []
     assert any("isn't C followed by digits" in w for w in r["warnings"])
@@ -207,3 +211,79 @@ def test_older_kicad_formats(tmp_path):
     # the board names its parts in fp_text, which this doesn't read: it says so rather than guessing
     r = pn.set_part_numbers(str(sch), {"R1": {"LCSC": "C1"}})
     assert r["board"]["not_on_board"] == ["R1"]
+
+
+def test_the_whole_design_is_checked_for_kicad_having_it_open(design):
+    """Eeschema locks only the root sheet, so a part on a sub-sheet is refused too, and nothing is written."""
+    before = {f: f.read_bytes() for f in design.iterdir()}
+    (design / "~main.kicad_sch.lck").write_text("{}")
+    with pytest.raises(pn.PartNumberError, match="open"):
+        pn.set_part_numbers(str(design / "main.kicad_sch"), {"R10": {"MPN": "X"}})
+    (design / "~main.kicad_sch.lck").unlink()
+    (design / "~main.kicad_pcb.lck").write_text("{}")
+    with pytest.raises(pn.PartNumberError, match="open"):
+        pn.set_part_numbers(str(design / "main.kicad_sch"), {"R10": {"MPN": "X"}})
+    (design / "~main.kicad_pcb.lck").unlink()
+    assert {f: f.read_bytes() for f in design.iterdir()} == before
+
+
+def test_one_field_under_two_spellings(design):
+    sch = design / "main.kicad_sch"
+    with pytest.raises(pn.PartNumberError, match="same field with different values"):
+        pn.set_part_numbers(str(sch), {"U1": {"DigiKey": "A", "Digi-Key PN": "B"}})
+    with pytest.raises(pn.PartNumberError, match="given twice"):
+        pn.set_part_numbers(str(sch), {"U1": {"DigiKey": "A"}, "U1,R1": {"Digi-Key PN": "B"}})
+    r = pn.set_part_numbers(str(sch), {"U1": {"DigiKey": "A", "Digi-Key PN": "A"}})
+    assert r["board"]["changed"]["U1"] == {"DigiKey": {"from": "", "to": "A"}}
+    assert (design / "main.kicad_pcb").read_text(encoding="utf-8").count('"DigiKey"') == 1
+    # across refs sharing a symbol: one field, however each spelled it
+    r = pn.set_part_numbers(str(sch), {"R10": {"lcsc": "C5"}, "R110": {"LCSC": "C5"}})
+    assert set(r["changed"]) == {"R10", "R110"} and "conflicts" not in r
+    assert (design / "sub.kicad_sch").read_text(encoding="utf-8").count('"C5"') == 1
+    r = pn.set_part_numbers(str(sch), {"R10": {"lcsc": "C5"}, "R110": {"LCSC": "C6"}})
+    assert r["conflicts"][0]["refs"] == ["R10", "R110"] and r["files_written"] == []
+
+
+def test_refs_from_sheets_no_longer_in_the_hierarchy_are_ignored(design):
+    """A symbol keeps instance paths of sheets since deleted; a reference there may now be another part's."""
+    sub = design / "sub.kicad_sch"
+    stale = '\t\t\t\t(path "/a0000000-0000-4000-8000-000000000001/deadbeef-0000-4000-8000-000000000000"\n' \
+            '\t\t\t\t\t(reference "R1")\n\t\t\t\t\t(unit 1)\n\t\t\t\t)\n'
+    text = sub.read_text(encoding="utf-8")
+    i = text.index("\t\t\t\t(path")
+    sub.write_text(text[:i] + stale + text[i:], encoding="utf-8", newline="\n")
+    before = sub.read_bytes()
+    r = pn.set_part_numbers(str(design / "main.kicad_sch"), {"R1": {"MPN": "X"}})
+    assert set(r["changed"]) == {"R1"} and "shared_symbols" not in r
+    assert sub.read_bytes() == before
+
+
+def test_refs_sharing_a_symbol_with_different_fields_are_reported(design):
+    r = pn.set_part_numbers(str(design / "main.kicad_sch"), {"R10": {"Mouser": "M1"}, "R110": {"MPN": "P1"}})
+    assert r["shared_symbols"] == [{"refs": ["R10", "R110"], "given": ["R10", "R110"], "fields": ["MPN", "Mouser"]}]
+    assert r["changed"]["R10"]["fields"].keys() == {"Mouser", MPN}
+
+
+def test_a_board_only_part_is_reported_not_set(design):
+    pcb = design / "main.kicad_pcb"
+    pcb.write_text(pcb.read_text(encoding="utf-8").replace("\t(footprint", footprint("H1", "Fiducial") + "\t(footprint", 1),
+                   encoding="utf-8", newline="\n")
+    r = pn.set_part_numbers(str(design / "main.kicad_sch"), {"H1": {"MPN": "X"}, "R1": {"MPN": "Y"}})
+    assert r["unknown_refs"] == ["H1"] and set(r["changed"]) == {"R1"}
+    (h1,) = fields(pcb, "H1")
+    assert MPN not in h1 and "MPN" not in h1
+
+
+def test_line_endings_and_numbered_fields_are_kept(tmp_path):
+    sch = tmp_path / "old.kicad_sch"
+    sch.write_bytes((
+        '(kicad_sch (version 20230121) (generator eeschema)\n  (uuid 1)\n'
+        '  (symbol (lib_id "Device:R") (at 10 10 0) (unit 1) (in_bom yes) (on_board yes) (uuid 2)\n'
+        '    (property "Reference" "R1" (at 10 9 0) (id 0) (effects (font (size 1.27 1.27))))\n'
+        '    (property "Value" "1k" (at 10 11 0) (id 1) (effects (font (size 1.27 1.27))))\n'
+        '    (property "Footprint" "R_0603" (at 10 10 0) (id 2) (effects (font (size 1.27 1.27)) hide))\n'
+        '    (instances (project "old" (path "/1" (reference "R1") (unit 1))))\n  )\n)\n').replace("\n", "\r\n").encode())
+    pn.set_part_numbers(str(sch), {"R1": {"MPN": "X", "LCSC": "C1", "Mouser": "M"}})
+    raw = sch.read_bytes()
+    assert raw.count(b"\n") == raw.count(b"\r\n")
+    assert [int(i) for i in __import__("re").findall(rb"\(id (\d+)\)", raw)] == [0, 1, 2, 3, 4, 5]

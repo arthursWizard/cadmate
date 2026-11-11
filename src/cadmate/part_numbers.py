@@ -16,7 +16,9 @@ reply says so; different numbers for refs that share a symbol are refused.
 
 from __future__ import annotations
 
+import os
 import re
+import tempfile
 import uuid as uuidlib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,6 +50,7 @@ class Sheet:
     path: Path
     text: str
     root: sexpr.Node
+    paths: set[str] = field(default_factory=set)  # where the sheet sits in the hierarchy: /root/sheet/... uuids
     edits: list[tuple[int, int, str]] = field(default_factory=list)
 
 
@@ -63,60 +66,67 @@ def _prop_value(node: sexpr.Node, name: str) -> str:
     return ""
 
 
+def _uuid_of(node: sexpr.Node) -> str:
+    u = node.child("uuid")
+    return (u.atoms() or [""])[0] if u is not None else ""
+
+
 def _sheet_files(root_sch: Path) -> list[Sheet]:
-    """The root sheet and every sheet below it, each file once (a sheet used twice is one file)."""
-    out: list[Sheet] = []
-    seen: set[Path] = set()
-    todo = [root_sch]
+    """The root sheet and every sheet below it, each file once (a sheet used twice is one file), with the hierarchy
+    paths it's used at, as KiCad names a sheet's instances: /<root uuid>/<sheet uuid>/..."""
+    out: dict[Path, Sheet] = {}
+    todo = [(root_sch, None)]
     while todo:
-        f = todo.pop(0)
+        f, path = todo.pop(0)
         key = f.resolve()
-        if key in seen:
+        if key not in out:
+            if not f.exists():
+                raise PartNumberError(f"{f} is in the hierarchy but isn't there")
+            text = f.read_bytes().decode("utf-8")  # not read_text: line endings stay as they are
+            try:
+                root = sexpr.parse(text)
+            except sexpr.SexprError as e:
+                raise PartNumberError(f"{f.name} isn't a KiCad schematic: {e}") from None
+            if root.head != "kicad_sch":
+                raise PartNumberError(f"{f.name} isn't a KiCad schematic")
+            out[key] = Sheet(f, text, root)
+        sh = out[key]
+        if path is None:
+            path = "/" + _uuid_of(sh.root)
+        if path in sh.paths or path.count("/") > 32:  # a sheet that includes itself
             continue
-        seen.add(key)
-        if not f.exists():
-            raise PartNumberError(f"{f} is in the hierarchy but isn't there")
-        text = f.read_bytes().decode("utf-8")  # not read_text: line endings stay as they are
-        try:
-            root = sexpr.parse(text)
-        except sexpr.SexprError as e:
-            raise PartNumberError(f"{f.name} isn't a KiCad schematic: {e}") from None
-        if root.head != "kicad_sch":
-            raise PartNumberError(f"{f.name} isn't a KiCad schematic")
-        out.append(Sheet(f, text, root))
-        for s in root.children("sheet"):
+        sh.paths.add(path)
+        for s in sh.root.children("sheet"):
             name = _prop_value(s, "Sheetfile") or _prop_value(s, "Sheet file")  # KiCad 7+, KiCad 6
             if name:
-                todo.append(f.parent / name)
-    return out
+                todo.append((f.parent / name, f"{path}/{_uuid_of(s)}"))
+    return list(out.values())
 
 
-def _symbols(sheets: list[Sheet], project_name: str) -> list[Sym]:
-    # KiCad 6 keeps the references of every sheet's symbols in the root sheet, keyed by path ending in the symbol uuid
-    legacy: dict[str, list[str]] = {}
+def _symbols(sheets: list[Sheet]) -> list[Sym]:
+    """Every placed symbol with the references it has where its sheet is used. Only instances at a path the hierarchy
+    has count: a symbol keeps the paths of sheets since deleted or of other projects, with references that may now
+    belong to other parts."""
+    # KiCad 6 keeps the references of every sheet's symbols in the root sheet, by path to the symbol
+    legacy: dict[str, str] = {}
     si = sheets[0].root.child("symbol_instances")
     if si is not None:
         for p in si.children("path"):
             r = p.child("reference")
             if p.atoms() and r is not None and r.atoms():
-                legacy.setdefault(p.atoms()[0].rsplit("/", 1)[-1], []).append(r.atoms()[0])
+                legacy[p.atoms()[0]] = r.atoms()[0]
     out = []
     for sh in sheets:
         for node in sh.root.children("symbol"):
-            refs: list[tuple[str, str]] = []
             inst = node.child("instances")
-            if inst is not None:
-                for proj in inst.children("project"):
-                    pname = (proj.atoms() or [""])[0]
-                    for p in proj.children("path"):
-                        r = p.child("reference")
-                        if r is not None and r.atoms():
-                            refs.append((pname, r.atoms()[0]))
-            # a sheet shared between projects lists the other projects' references too
-            mine = [r for n, r in refs if n == project_name] or [r for _, r in refs]
+            listed = [] if inst is None else [(p.atoms()[0], r.atoms()[0]) for proj in inst.children("project")
+                                              for p in proj.children("path") for r in [p.child("reference")]
+                                              if p.atoms() and r is not None and r.atoms()]
+            mine = [r for path, r in listed if path in sh.paths]
             if not mine:
-                u = node.child("uuid")
-                mine = legacy.get((u.atoms() or [""])[0] if u is not None else "", []) or [_prop_value(node, "Reference")]
+                mine = [legacy[f"{p}/{_uuid_of(node)}"] for p in sorted(sh.paths) if f"{p}/{_uuid_of(node)}" in legacy]
+            if not mine and not listed:
+                mine = [_prop_value(node, "Reference")]
             mine = list(dict.fromkeys(r for r in mine if r and not r.startswith("#") and "?" not in r))
             if mine:
                 out.append(Sym(sh.path, node, mine, _prop_value(node, "Value"), _prop_value(node, "Footprint")))
@@ -124,7 +134,7 @@ def _symbols(sheets: list[Sheet], project_name: str) -> list[Sym]:
 
 
 def ref_of(node: sexpr.Node, sch: bool) -> list[str]:
-    """The references a placed symbol (every instance of it) or a footprint goes by."""
+    """Every reference a placed symbol (any instance listed) or a footprint names, hierarchy not checked."""
     refs = [_prop_value(node, "Reference")]
     inst = node.child("instances") if sch else None
     if inst is not None:
@@ -160,13 +170,15 @@ def _hidden(p: sexpr.Node) -> bool:
 def _indent(text: str, pos: int) -> str:
     line = text.rfind("\n", 0, pos) + 1
     lead = text[line:pos]
-    return "\n" + lead if not lead.strip() else " "
+    nl = "\r\n" if text[max(line - 2, 0):line] == "\r\n" else "\n"
+    return nl + lead if not lead.strip() else " "
 
 
 def _set(text: str, node: sexpr.Node, name: str, value: str, board: bool, version: int,
-         new_name: str | None = None) -> tuple[str, str, list]:
+         new_name: str | None = None, added: int = 0) -> tuple[str, str, list]:
     """(field name written, old value, edits) to make node's field read value; no edits when it already does.
-    A field that isn't there yet is added as new_name (default: name)."""
+    A field that isn't there yet is added as new_name (default: name); added counts the fields already added to this
+    node in this call, so each gets its own (id N) in formats that number them."""
     q = sexpr.quote
     p = _target(node, name)
     if p is not None:
@@ -191,7 +203,7 @@ def _set(text: str, node: sexpr.Node, name: str, value: str, board: bool, versio
         if tmpl.child("id") is not None:  # KiCad 6 and 7 number their fields
             top = max((int(i.atoms()[0]) for i in (x.child("id") for x in props) if i is not None and i.atoms()
                        and i.atoms()[0].isdigit()), default=0)
-            new = re.sub(r"\(id\s+\d+\)", f"(id {top + 1})", new, count=1)
+            new = re.sub(r"\(id\s+\d+\)", f"(id {top + 1 + added})", new, count=1)
         new = re.sub(r'\(uuid\s+"?[0-9a-fA-F-]+"?\s*\)', lambda _m: f'(uuid "{uuidlib.uuid4()}")', new)
     elif board and len(last.atoms()) == 2 and len(last.items) == 3:  # KiCad 7 boards: (property "Name" "value")
         new = f"(property {q(name)} {q(value)})"
@@ -231,28 +243,50 @@ def _apply(text: str, edits: list[tuple[int, int, str]]) -> str:
     return text
 
 
+def _key(name: str) -> str:
+    """One key per field however it's spelled: the part-number kind (mpn, lcsc...), else the name itself."""
+    return fab_export.field_kind(name) or name
+
+
 def _expand(parts: dict) -> dict[str, dict[str, str]]:
-    """{ref or "R1,R2,R5": {field: value}} -> {ref: {field: value}}."""
+    """{ref or "R1,R2,R5": {field: value}} -> {ref: {field: value}}, one entry per field (by _key)."""
     if not isinstance(parts, dict) or not parts:
         raise PartNumberError('parts must be {ref: {field: value}}, e.g. {"R1,R2": {"MPN": "...", "LCSC": "C..."}}')
     out: dict[str, dict[str, str]] = {}
     for key, fields in parts.items():
         if not isinstance(fields, dict) or not fields:
             raise PartNumberError(f"{key}: give the fields as {{name: value}}")
-        clean = {}
+        clean: dict[str, str] = {}
+        names: dict[str, str] = {}  # key -> the name it was given as
         for name, value in fields.items():
             name = str(name).strip()
             if not name:
                 raise PartNumberError(f"{key}: a field with no name")
             if fab_export._norm(name) in DESIGN_FIELDS:
                 raise PartNumberError(f"{key}: {name} is part of the design, not a part number; change it in KiCad")
-            clean[name] = "" if value is None else str(value).strip()
+            if value is not None and not isinstance(value, (str, int, float)):
+                raise PartNumberError(f"{key}: {name} must be text, not {type(value).__name__}")
+            value = "" if value is None else str(value).strip()
+            if "\n" in value or "\r" in value:
+                raise PartNumberError(f"{key}: {name} has a line break; a part number is one line")
+            k = _key(name)
+            if k in names:
+                if clean[names[k]] != value:
+                    raise PartNumberError(f"{key}: {names[k]} and {name} are the same field with different values; "
+                                          "give it once")
+                continue
+            names[k] = name
+            clean[name] = value
         for ref in (r.strip() for r in str(key).split(",")):
             if not ref:
                 continue
-            if ref in out and any(out[ref].get(n, v) != v for n, v in clean.items()):
-                raise PartNumberError(f"{ref} is given twice with different values")
-            out.setdefault(ref, {}).update(clean)
+            have = {_key(n): (n, v) for n, v in out.get(ref, {}).items()}
+            for n, v in clean.items():
+                if _key(n) in have and have[_key(n)][1] != v:
+                    raise PartNumberError(f"{ref} is given twice with different values for {n}")
+                if _key(n) not in have:
+                    out.setdefault(ref, {})[n] = v
+            out.setdefault(ref, {})
     return out
 
 
@@ -262,7 +296,7 @@ def set_part_numbers(schematic: str, parts: dict, board: str | None = None, dry_
         raise PartNumberError(f"no .kicad_sch at {sch}")
     want = _expand(parts)
     sheets = _sheet_files(sch)
-    syms = _symbols(sheets, sch.stem)
+    syms = _symbols(sheets)
     by_ref: dict[str, list[Sym]] = {}
     for s in syms:
         for r in s.refs:
@@ -278,20 +312,22 @@ def set_part_numbers(schematic: str, parts: dict, board: str | None = None, dry_
         given = [r for r in s.refs if r in want]
         if not given:
             continue
-        fields: dict[str, str] = {}
+        by_key: dict[str, tuple[str, str]] = {}  # key -> (name, value), the first ref's spelling
         bad = False
         for r in given:
             for n, v in want[r].items():
-                if fields.setdefault(n, v) != v:
+                if by_key.setdefault(_key(n), (n, v))[1] != v:
                     bad = True
         if bad:
             conflicts.append({"refs": given, "why": "these share one symbol (the same sheet used more than once), so "
                                                     "they can't have different numbers; nothing was set for them"})
             skip.update(s.refs)
             continue
-        per_sym[id(s)] = fields
-        if set(s.refs) - set(given):
-            entry = {"refs": sorted(s.refs, key=fab_export._refkey), "given": sorted(given, key=fab_export._refkey)}
+        per_sym[id(s)] = dict(by_key.values())
+        # every ref on it gets every field: say so when that's more than was asked for any of them
+        if set(s.refs) - set(given) or any(len(want[r]) != len(by_key) for r in given):
+            entry = {"refs": sorted(s.refs, key=fab_export._refkey), "given": sorted(given, key=fab_export._refkey),
+                     "fields": sorted(n for n, _ in by_key.values())}
             if entry not in shared:
                 shared.append(entry)
     for s in syms:
@@ -321,9 +357,11 @@ def set_part_numbers(schematic: str, parts: dict, board: str | None = None, dry_
         if not fields:
             continue
         sh = sheet_of[s.file]
+        added = 0
         for n, v in fields.items():
             written, old, edits = _set(sh.text, s.node, n, v, board=False, version=_version(sh.root),
-                                       new_name=spelling(n))
+                                       new_name=spelling(n), added=added)
+            added += sum(1 for a, b, _ in edits if a == b)
             sh.edits += edits
             for r in s.refs:
                 written_as.setdefault(r, {})[n] = written
@@ -341,6 +379,7 @@ def set_part_numbers(schematic: str, parts: dict, board: str | None = None, dry_
     already -= set(changed)
 
     # the board beside the schematic: footprints by reference, the values each ref's symbol now has
+    ref_fields = {r: per_sym[id(s)] for s in syms if id(s) in per_sym for r in s.refs}  # units share them
     pcb = Path(board).expanduser() if board else sch.with_suffix(".kicad_pcb")
     board_out: dict = {}
     pcb_text = pcb_new = None
@@ -353,17 +392,18 @@ def set_part_numbers(schematic: str, parts: dict, board: str | None = None, dry_
         fps: dict[str, list[sexpr.Node]] = {}
         for fp in proot.children("footprint"):
             fps.setdefault(_prop_value(fp, "Reference"), []).append(fp)
-        ref_fields = {r: per_sym[id(s)] for s in syms if id(s) in per_sym for r in s.refs}  # units share them
         edits, bchanged, missing = [], {}, []
         for r, fields in ref_fields.items():
             if r not in fps:
                 missing.append(r)
                 continue
             for fp in fps[r]:
+                added = 0
                 for n, v in fields.items():
                     # the board's own spelling if it has one, else the schematic's, as Update PCB would add it
                     written, old, e = _set(pcb_text, fp, n, v, board=True, version=_version(proot),
-                                           new_name=written_as.get(r, {}).get(n, n))
+                                           new_name=written_as.get(r, {}).get(n, n), added=added)
+                    added += sum(1 for a, b, _ in e if a == b)
                     if e:
                         edits += e
                         bchanged.setdefault(r, {})[written] = {"from": old, "to": v}
@@ -385,13 +425,14 @@ def set_part_numbers(schematic: str, parts: dict, board: str | None = None, dry_
         old = sheet_of[f].root if f in sheet_of else sexpr.parse(pcb_text)
         new = sexpr.parse(text)
         ok = len(new.items) == len(old.items)
-        heads = ("symbol",) if f in sheet_of else ("footprint",)
-        for node in (n for h in heads for n in new.children(h)):
-            refs = [r for r in ref_of(node, f in sheet_of) if r in want and r not in skip]
-            for r in refs:
-                for n, v in want[r].items():
-                    t = _target(node, n)
-                    ok &= (t.atoms()[1:2] or [""])[0] == v if t is not None else not v
+        if f in sheet_of:
+            nodes = [(r, s.node) for s in _symbols([Sheet(f, text, new, sheet_of[f].paths)]) for r in s.refs]
+        else:
+            nodes = [(_prop_value(n, "Reference"), n) for n in new.children("footprint")]
+        for r, node in nodes:
+            for n, v in ref_fields.get(r, {}).items():
+                t = _target(node, n)
+                ok &= (t.atoms()[1:2] or [""])[0] == v if t is not None else not v
         if not ok:
             raise PartNumberError(f"editing {f.name} didn't come out as planned, so nothing was written (a cadmate bug: "
                                   "please report it)")
@@ -413,6 +454,8 @@ def set_part_numbers(schematic: str, parts: dict, board: str | None = None, dry_
                      "already_set": sorted(already, key=fab_export._refkey), "board": board_out}
     if unknown:
         result["unknown_refs"] = unknown
+        result["unknown_note"] = "not parts of the schematic, so nothing was set for them (a board-only part, such as " \
+                                 "a fiducial or a mounting hole, isn't in the BOM)"
     if shared:
         result["shared_symbols"] = shared
         result["shared_note"] = "these refs are one symbol on a sheet used more than once: setting one sets them all"
@@ -429,14 +472,31 @@ def set_part_numbers(schematic: str, parts: dict, board: str | None = None, dry_
         result["next"] = ("nothing to change" if not writes else "dry run: nothing written; call again without dry_run")
         return result
 
-    locked = [str(f.name) for f, _ in writes if _lock(f)]
+    # Eeschema locks only the root sheet while it has the hierarchy open, so check every file of the design
+    locked = [lk.name for f in [sh.path for sh in sheets] + ([pcb] if pcb.exists() else []) for lk in [_lock(f)] if lk]
     if locked:
-        raise PartNumberError(f"KiCad has {', '.join(locked)} open, so its next save would undo this: close the "
-                              "schematic and board in KiCad first (if KiCad isn't running, delete the stale ~*.lck "
-                              "file beside it)")
+        raise PartNumberError(f"KiCad has this design open ({', '.join(locked)}), so its next save would undo this: "
+                              "close the schematic and board in KiCad first (if KiCad isn't running, delete the stale "
+                              ".lck file)")
     kept = project.keep([f for f, _ in writes], "part-numbers")
-    for f, text in writes:
-        f.write_bytes(text.encode("utf-8"))
+    # each file to a temporary one beside it first, then all moved into place, so a failure leaves no half file
+    temps: list[tuple[Path, Path]] = []
+    done: list[str] = []
+    try:
+        for f, text in writes:
+            fd, tmp = tempfile.mkstemp(dir=f.parent, prefix=f".{f.name}.", suffix=".tmp")
+            temps.append((Path(tmp), f))
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(text.encode("utf-8"))
+            os.chmod(tmp, f.stat().st_mode & 0o7777)  # mkstemp makes it private; keep the file's own permissions
+        for tmp, f in temps:
+            os.replace(tmp, f)
+            done.append(str(f))
+    except OSError as e:
+        for tmp, _ in temps:
+            tmp.unlink(missing_ok=True)
+        raise PartNumberError(f"writing failed ({e}); " + (f"already written: {', '.join(done)}; " if done else
+                              "nothing was changed; ") + (f"the files as they were are in {kept}" if kept else "")) from None
     result["files_written"] = [str(f) for f, _ in writes]
     if kept:
         result["previous_kept"] = kept

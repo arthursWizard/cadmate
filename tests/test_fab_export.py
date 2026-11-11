@@ -70,10 +70,15 @@ def test_generic_pos_keeps_placed_parts_in_mm():
                        "R10,10k,R_0402,112.0000,-110.0000,180,bottom"]
 
 
-def _fake_cli(monkeypatch):
+def _fake_cli(monkeypatch, calls=None):
     def cli(*args, timeout=300):
         out = args[args.index("--output") + 1]
-        if "gerbers" in args or "drill" in args:
+        if calls is not None:
+            calls.append(args)
+        if "pdf" in args:
+            with open(out, "wb") as f:
+                f.write(b"%PDF-1.4\n")
+        elif "gerbers" in args or "drill" in args:
             from pathlib import Path
             Path(out, "board-F_Cu.gbr" if "gerbers" in args else "board.drl").write_text("G04*", encoding="utf-8")
         else:
@@ -89,7 +94,8 @@ def test_export_assumes_no_board_house(tmp_path, monkeypatch):
     pcb.write_text(MPN_BOARD, encoding="utf-8")
     r = fx.export(pcb, refill=False)
     names = sorted(p.name for p in (tmp_path / "fab" / "board").iterdir())
-    assert names == ["board-bom.csv", "board-gerbers.zip", "board-pos.csv", "export.json", "gerbers"]
+    assert names == ["board-assembly-bottom.pdf", "board-assembly-top.pdf", "board-bom.csv", "board-gerbers.zip",
+                     "board-pos.csv", "export.json", "gerbers"]
     # which state of the board the files are, so a release can tell they belong to it
     rec = json.loads((tmp_path / "fab/board/export.json").read_text())
     assert rec["board_sha256"] == hashlib.sha256(pcb.read_bytes()).hexdigest()
@@ -213,3 +219,67 @@ def test_kicad_cli_timeout_is_an_export_error(monkeypatch):
     monkeypatch.setattr(fx.subprocess, "run", slow)
     with pytest.raises(fx.ExportError, match="didn't finish in 10 min"):
         fx._cli("pcb", "export", "step", timeout=600)
+
+
+FAB_BOARD = BOARD.replace('(property "Value" "100n")', '(property "Value" "100n") (fp_line (start -1 -0.5) (end 1 -0.5) (layer "F.Fab"))') \
+    .replace('(property "Reference" "R10")', '(property "Reference" "R10" (at 0 0) (layer "B.Fab"))')
+
+
+def test_assembly_drawing_one_page_per_side_with_parts(tmp_path, monkeypatch):
+    calls = []
+    _fake_cli(monkeypatch, calls)
+    pcb = tmp_path / "board.kicad_pcb"
+    pcb.write_text(FAB_BOARD, encoding="utf-8")
+    r = fx.export(pcb, refill=False)
+    pdfs = [c for c in calls if "pdf" in c]
+    top, bottom = (next(c for c in pdfs if c[c.index("--output") + 1].endswith(f"-{s}.pdf")) for s in ("top", "bottom"))
+    assert all("--crossout-DNP-footprints-on-fab-layers" in c for c in pdfs)  # a DNP part mustn't look like one to place
+    assert top[top.index("--layers") + 1] == "F.Fab,Edge.Cuts" and "--mirror" not in top
+    assert bottom[bottom.index("--layers") + 1] == "B.Fab,Edge.Cuts" and "--mirror" in bottom  # seen from below
+    assert sorted(r["assembly_drawing"]) == ["bottom", "top"]
+    # R2 draws nothing on F.Fab: it would be blank on the drawing, so it's named
+    assert r["not_on_assembly_drawing"] == ["R2"] and "F.Fab" in r["assembly_drawing_note"]
+    # with nothing underneath any more, the old bottom page doesn't linger
+    pcb.write_text(FAB_BOARD.replace('(layer "B.Cu") (at 12 10)', '(layer "F.Cu") (at 12 10)'), encoding="utf-8")
+    r = fx.export(pcb, refill=False)
+    assert sorted(r["assembly_drawing"]) == ["top"] and not (tmp_path / "fab/board/board-assembly-bottom.pdf").exists()
+
+
+def test_houses_without_a_column_format_get_told_what_to_upload(tmp_path, monkeypatch):
+    _fake_cli(monkeypatch)
+    pcb = tmp_path / "board.kicad_pcb"
+    pcb.write_text(MPN_BOARD, encoding="utf-8")
+    assert "MPN field" in fx.export(pcb, refill=False, fab="AISLER")["note"]
+    assert "CPL" in fx.export(pcb, refill=False, fab="eurocircuits")["note"]
+    r = fx.export(pcb, refill=False, fab="OSH Park")
+    assert r["fab"]["fab"] == "oshpark" and "generic BOM" in r["note"] and "jlc_bom" not in r
+
+
+def test_assembly_drawing_skips_a_side_with_only_dnp_parts_and_hidden_text(tmp_path, monkeypatch):
+    calls = []
+    _fake_cli(monkeypatch, calls)
+    # R10 moves to the top: underneath only H1 (not placed) and TP1 (DNP) remain, so no bottom page
+    text = FAB_BOARD.replace('(layer "B.Cu") (at 12 10)', '(layer "F.Cu") (at 12 10)')
+    # R2's reference sits on F.Fab but hidden: it still draws nothing
+    text = text.replace('(property "Reference" "R2")', '(property "Reference" "R2" (at 0 0) (layer "F.Fab") (hide yes))')
+    pcb = tmp_path / "board.kicad_pcb"
+    pcb.write_text(text, encoding="utf-8")
+    r = fx.export(pcb, refill=False)
+    assert sorted(r["assembly_drawing"]) == ["top"] and len([c for c in calls if "pdf" in c]) == 1
+    assert r["not_on_assembly_drawing"] == ["R2", "R10"]
+
+
+def test_a_failed_assembly_drawing_doesnt_fail_the_export(tmp_path, monkeypatch):
+    _fake_cli(monkeypatch)
+    real = fx._cli
+
+    def cli(*args, timeout=300):
+        if "pdf" in args:
+            raise fx.ExportError("kicad-cli pcb export failed: unknown option")
+        return real(*args, timeout=timeout)
+    monkeypatch.setattr(fx, "_cli", cli)
+    pcb = tmp_path / "board.kicad_pcb"
+    pcb.write_text(FAB_BOARD, encoding="utf-8")
+    r = fx.export(pcb, refill=False)
+    assert r["ok"] and "unknown option" in r["assembly_drawing_error"] and "assembly_drawing" not in r
+    assert (tmp_path / "fab/board/board-gerbers.zip").exists() and (tmp_path / "fab/board/board-bom.csv").exists()

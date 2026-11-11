@@ -8,8 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from cadmate import apps, pcb_review, versions
+from cadmate import apps, kicad_live, pcb_review, versions
 from test_pcb_review import HEAD, footprint, pad
+from test_pictures import png_info
 
 CLI = apps.find_kicad_cli()
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -43,6 +44,18 @@ def test_symbol_svg_flags(tmp_path):
     assert list(tmp_path.glob("*.svg")), p.stderr or p.stdout
 
 
+@pytest.mark.parametrize("item, name", [("SOIC-8.kicad_mod", None),
+                                        ("Symbols.kicad_symdir/NE555D.kicad_sym", "NE555D")])
+def test_snapshot_png(tmp_path, item, name):
+    src = FIXTURES / item
+    path = tmp_path / src.name
+    path.write_bytes(src.read_bytes())
+    png = kicad_live.snapshot(str(path), name, width=600)
+    width, height, corner = png_info(png)
+    assert width == 600 and height > 50 and corner[:3] == (255, 255, 255)
+    assert png.stat().st_size > 2_000  # a drawing, not a blank page
+
+
 def test_drc_report_has_the_fields_cadmate_reads(tmp_path):
     part = footprint("Resistor_SMD:R_0603", "R1", "1k", 20, 20, [pad(1, -0.8, 0, "A"), pad(2, 0.8, 0, "B")])
     other = footprint("Resistor_SMD:R_0603", "R2", "1k", 40, 20, [pad(1, -0.8, 0, "A"), pad(2, 0.8, 0, "B")])
@@ -62,6 +75,18 @@ def test_pcb_svg_flags(tmp_path):
     svg = tmp_path / "t.svg"
     p = run(*versions.kicad_cli_args("pcb_svg"), "--layers", "F.Cu,Edge.Cuts", "--output", str(svg), str(f))
     assert svg.exists(), p.stderr or p.stdout
+
+
+@pytest.mark.parametrize("side", ["top", "bottom"])
+def test_assembly_drawing_pdf_flags(tmp_path, side):
+    part = footprint("Resistor_SMD:R_0603", "R1", "1k", 20, 20, [pad(1, -0.8, 0, "A"), pad(2, 0.8, 0, "B")])
+    f = tmp_path / "t.kicad_pcb"
+    f.write_text(HEAD + part + ")\n", encoding="utf-8", newline="\n")
+    pdf = tmp_path / f"t-{side}.pdf"
+    layers = "F.Fab,Edge.Cuts" if side == "top" else "B.Fab,Edge.Cuts"
+    mirror = ["--mirror"] if side == "bottom" else []
+    p = run(*versions.kicad_cli_args("pcb_pdf"), *mirror, "--layers", layers, "--output", str(pdf), str(f))
+    assert pdf.exists() and pdf.read_bytes().startswith(b"%PDF"), p.stderr or p.stdout
 
 
 def test_version_output_parses():

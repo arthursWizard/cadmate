@@ -39,15 +39,12 @@ Claude works on your design in three ways:
 
 What each OS has been tested with:
 
-- **macOS**: the only OS used day to day, with KiCad 10.0.4 and FreeCAD 1.1. Everything works, including pictures
-  (macOS has an SVG converter built in).
+- **macOS**: the only OS used day to day, with KiCad 10.0.4 and FreeCAD 1.1. Everything works.
 - **Linux**: CI runs the test suite, and runs cadmate's kicad-cli commands against a real KiCad 10. Nothing has been
-  used by hand yet. For pictures install `rsvg-convert` (`librsvg2-bin` on Debian and Ubuntu). Flatpak and AppImage
-  installs need a one-line wrapper script (see the README's Flatpak note).
+  used by hand yet. Flatpak and AppImage installs need a one-line wrapper script (see the README's Flatpak note).
 - **Windows**: CI runs the test suite without KiCad or FreeCAD installed. Nothing has been used by hand. The live FreeCAD
   bridge uses a localhost port with a token instead of a Unix socket and has only been tested in CI, without a real
-  FreeCAD. Known gaps: live KiCad editing reaches only the default KiCad instance, and pictures need `cairosvg`, which
-  the plugin doesn't install yet (step 2).
+  FreeCAD. Known gap: live KiCad editing reaches only the default KiCad instance.
 
 ### 2. Install the cadmate plugin
 
@@ -72,9 +69,8 @@ The ten skills are `cadmate-project` (where files go; read first), `kicad-symbol
 `kicad-3d-models`, `kicad-parts`, `kicad-schematics`, `kicad-pcb-live`, `kicad-pcb-route`, `kicad-pcb-review` and
 `protoboard`. They are what make Claude follow IPC, KLC and the routing order rather than improvise.
 
-**Pictures on Windows, or on Linux without `rsvg-convert`**, need `cairosvg` (and the cairo library itself), which
-the plugin doesn't install. On Linux, install `rsvg-convert` instead. On Windows, pictures don't work through the
-plugin yet.
+**Pictures** (snapshots, protoboard renders) need nothing extra on any OS: cadmate turns SVG into PNG with resvg,
+which comes with it.
 
 **Claude Desktop and other MCP clients** aren't a supported route yet. It should work by pointing the client at
 `uvx --from git+https://github.com/arthursWizard/cadmate cadmate` (full path to `uvx`), but nobody has tried it.
@@ -217,13 +213,13 @@ change. When you say good, Claude snapshots.
    Freerouting, and `finish_routing` cleans up after Freerouting. Inside a project each changes the board in place
    after a snapshot; reload the board in KiCad when Claude says so.
 6. **Review and DRC.** `review_pcb_layout` checks what a reviewer would (decap loops, crystal traces, return paths,
-   track width for the current, and your board house's limits when you've chosen one cadmate knows: JLCPCB or PCBWay)
+   track width for the current, and your board house's limits when you've chosen one cadmate knows: JLCPCB, PCBWay, OSH Park, AISLER or Eurocircuits)
    and runs KiCad's DRC, reported as errors, warnings, unconnected and parity. Fix, and review again.
 7. **Fab files.** Before ordering, "is it ready to order?": `check_ready_to_order` runs DRC with schematic parity,
    ERC, the layout review, part numbers, packages against footprints, the fab files' age and the brief's open items together, and says what blocks
    the order. Then `export_fab` writes the Gerber zip, a BOM (manufacturer and part number, plus any LCSC, DigiKey or
-   Mouser numbers) and a placement file into `fab/<board>/`, and lists the parts with no part number yet. With JLCPCB
-   as your board house it also writes JLCPCB's own BOM and CPL.
+   Mouser numbers), a placement file and an assembly drawing PDF into `fab/<board>/`, and lists the parts with no part
+   number yet. With JLCPCB as your board house it also writes JLCPCB's own BOM and CPL.
 8. **Enclosure.** `export_board_step` puts the board, with its parts' 3D models, into the FreeCAD part's `pcb-models/`
    and lists parts that have no model (they'd be missing from the collision check). Claude builds the case in FreeCAD, live in your window on macOS and Linux, or headless from a script.
    The openings you want and the heights from the brief go in `enclosure.json` beside the assembly, and `check_enclosure` reports

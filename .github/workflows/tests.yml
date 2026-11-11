@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Keeps main's KiCad cache (see kicad-cli) warm: GitHub evicts a cache unused for 7 days, and a PR's own cache is
+  # invisible to main and to other PRs. Run it by hand once after changing KICAD_SERIES.
+  schedule:
+    - cron: "17 4 * * 1,4"
+  workflow_dispatch:
 
 jobs:
   # The whole suite, without KiCad or FreeCAD, on each OS cadmate claims to support.
@@ -66,8 +71,9 @@ jobs:
             rm -rf "$DEBS" && mv "$new" "$DEBS"
           }
           flathub() {
-            sudo apt-get update || true
-            sudo apt-get install -y --no-install-recommends flatpak
+            local fast=(-o Acquire::Retries=0 -o Acquire::http::Timeout=15)  # no retries: with apt down, give up sooner
+            sudo apt-get "${fast[@]}" update || true
+            sudo apt-get "${fast[@]}" install -y --no-install-recommends flatpak
             flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
             flatpak install --user -y --noninteractive flathub org.kicad.KiCad
             # kicad-cli on PATH, seeing the checkout and /tmp (where the tests write)
@@ -78,6 +84,7 @@ jobs:
           if [ "$EXACT_HIT" = true ] && from_cache; then
             echo "KiCad installed from this month's cached .debs"
           elif ppa || { drop_ppa; sleep 20; ppa; }; then
+            echo "KiCad installed from its PPA; saving the .debs for later runs"
             echo "fresh=true" >> "$GITHUB_OUTPUT"
           else
             drop_ppa
@@ -88,7 +95,12 @@ jobs:
               flathub
             fi
           fi
-          kicad-cli version
+          version=$(kicad-cli version)
+          echo "kicad-cli $version"
+          case "$version" in
+            "$KICAD_SERIES".*) ;;
+            *) echo "::error::expected KiCad $KICAD_SERIES.x, got $version"; exit 1 ;;
+          esac
       - name: Save KiCad's .debs for later runs
         if: steps.install.outputs.fresh == 'true'
         uses: actions/cache/save@v4

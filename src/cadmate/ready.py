@@ -134,8 +134,9 @@ def check(path: str, fab: str | None = None, currents: dict | None = None, roles
             look.append(_item("bom", f"{len(missing)} part(s) without a {chosen['distributor']} number: {', '.join(missing[:20])}",
                               f"add the {chosen['distributor']} number, or buy those elsewhere"))
     # the package being bought against the footprint on the board (from a Package field, or packages {ref: text})
-    given = {p["ref"]: (packages or {}).get(p["ref"]) or p["package"] for p in parts}
-    unknown_refs = sorted(set(packages or {}) - set(given), key=fab_export._refkey)
+    packages = packages or {}
+    given = {p["ref"]: packages[p["ref"]] if p["ref"] in packages else p["package"] for p in parts}  # "" skips one
+    unknown_refs = sorted(set(packages) - set(given), key=fab_export._refkey)
     if unknown_refs:
         look.append(_item("package", f"packages given for parts not on the board: {', '.join(unknown_refs[:20])}",
                           "check the references"))

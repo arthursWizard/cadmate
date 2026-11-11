@@ -176,3 +176,6 @@ def test_package_bought_against_footprint(tmp_path, monkeypatch):
     assert not any(i["check"] == "package" for i in r["blocking"])
     assert "packages match their footprints (2 part(s) with a package to compare)" in r["passed"]
     assert any("not on the board: R9" in i["what"] for i in r["to_look_at"])
+    # an empty package skips a part whose Package field is wrong, rather than falling back to it
+    r = ready.check(str(pcb), packages={"R1": ""})
+    assert not any(i["check"] == "package" for i in r["blocking"])

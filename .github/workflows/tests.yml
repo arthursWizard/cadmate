@@ -37,7 +37,8 @@ jobs:
           }
           flathub() {
             echo "::warning::KiCad's PPA couldn't be reached; using KiCad's Flathub build"
-            sudo apt-get update
+            sudo rm -f /etc/apt/sources.list.d/kicad-ubuntu-kicad-10_0-releases-*  # a half-added PPA fails apt-get update
+            sudo apt-get update || true
             sudo apt-get install -y --no-install-recommends flatpak
             flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
             flatpak install --user -y --noninteractive flathub org.kicad.KiCad

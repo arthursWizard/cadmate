@@ -29,10 +29,10 @@ def clean():
     return {"objects": [
         obj("Params", "Spreadsheet::Sheet", parent=None),
         obj("Body", "PartDesign::Body", "base", parent=None, body={"group": ["Sketch", "Pad"], "tip": "Pad"}),
-        sketch("Sketch", "base-outline", dims=[dim(8, "width"), dim(9, "corner")],
-               expressions=[".Constraints.width"]),
-        obj("Pad", "PartDesign::Pad", "base-plate", props={"Length": 3.0, "Type": "Length"}, expressions=["Length"],
-            in_list=[["Body", "PartDesign::Body"]]),
+        sketch("Sketch", "base-outline", dims=[dim(8, "width"), dim(9, "height")],
+               expressions=[[".Constraints.width", "Params.width"], [".Constraints.height", "<<Params>>.depth"]]),
+        obj("Pad", "PartDesign::Pad", "base-plate", props={"Length": 3.0, "Type": "Length"},
+            expressions=[["Length", "Params.plate"]], in_list=[["Body", "PartDesign::Body"]], volume=3600.0),
     ]}
 
 
@@ -47,7 +47,7 @@ def checks(r, sev=None):
 def test_a_clean_part_passes():
     r = run(clean())
     assert r["ok"] and r["findings"] == []
-    assert r["summary"]["parameters"] == {"sources": ["Params"], "driving_values": 3, "bound": 2, "named_local": 1}
+    assert r["summary"]["parameters"] == {"sources": ["Params"], "driving_values": 3, "bound": 3, "named_local": 0}
     assert r["summary"]["bodies"] == [{"name": "Body", "label": "base", "features": 1, "sketches": 1, "tip": "base-plate"}]
 
 
@@ -102,14 +102,15 @@ def test_imported_solid_labels_are_not_default_names():
 
 def test_bare_numbers():
     f = clean()
-    f["objects"][3]["expressions"] = []
-    f["objects"][2]["sketch"]["dimensions"].append(dim(10))
-    f["objects"].append(obj("Fillet", "PartDesign::Fillet", "edge-round", props={"Radius": 1.0}))
+    f["objects"][3]["expressions"] = [["Length", "7"]]  # a constant typed as an expression is still a bare number
+    f["objects"][2]["sketch"]["dimensions"] += [dim(10), dim(11, "slot_r")]
+    f["objects"].append(obj("Fillet", "PartDesign::Fillet", "edge-round", props={"Radius": 1.0},
+                            expressions=[["Radius", "base_outline.Constraints.width / 40"]]))
     f["objects"].append(obj("Pocket", "PartDesign::Pocket", "port", props={"Length": 5.0, "Type": "ThroughAll"}))
     r = run(f)
     probs = [x["problem"] for x in r["findings"] if x["check"] == "parameters"]
-    assert any("1 bare dimension" in p for p in probs)
-    assert "base-plate: Length typed as a number" in probs and "edge-round: Radius typed as a number" in probs
+    assert any("1 bare dimension" in p for p in probs) and any("named local dimension(s): slot_r" in p for p in probs)
+    assert "base-plate: Length not from Params" in probs and "edge-round: Radius not from Params" in probs
     assert not any(p.startswith("port") for p in probs)  # a through-all pocket has no length in use
 
 
@@ -126,14 +127,17 @@ def test_dead_solids_tree_and_broken():
     f = clean()
     f["objects"].append(obj("Shape", "Part::Feature", "top-shell", parent=None))
     f["objects"].append(obj("Pocket", "PartDesign::Pocket", "vent", props={"Type": "ThroughAll"}, state=["Invalid"]))
-    f["objects"].append(obj("Chamfer", "PartDesign::Chamfer", "edge", props={"Size": 0.5}, expressions=["Size"],
-                            suppressed=True))
+    f["objects"].append(obj("Chamfer", "PartDesign::Chamfer", "edge", props={"Size": 0.5},
+                            expressions=[["Size", "Params.chamfer"]], suppressed=True))
     f["objects"][1]["body"]["group"] += ["Pocket", "Chamfer"]
     r = run(f)
     assert checks(r, "error") == ["broken"]
     assert "dead solids" in checks(r, "warning")
     tree = [x["problem"] for x in r["findings"] if x["check"] == "tree"]
     assert any("suppressed" in p for p in tree) and any("past its tip: vent, edge" in p for p in tree)
+
+
+SK = "Sketcher::SketchObject"
 
 
 def test_unused_sketch_is_info():
@@ -146,15 +150,82 @@ def test_long_tree():
     f = clean()
     for i in range(structure.LONG_TREE + 1):
         n = f"Fillet{i}"
-        f["objects"].append(obj(n, "PartDesign::Fillet", f"round-{i}", props={"Radius": 1.0}, expressions=["Radius"]))
+        f["objects"].append(obj(n, "PartDesign::Fillet", f"round-{i}", props={"Radius": 1.0},
+                                expressions=[["Radius", "Params.r"]]))
         f["objects"][1]["body"]["group"].append(n)
     f["objects"][1]["body"]["tip"] = n
     assert any("42 features" in x["problem"] for x in run(f)["findings"])
 
 
-def test_expression_paths_are_normalised():
-    o = {"expressions": [".Constraints.width", "Constraints[3]", "Length", ".Placement.Base.x"]}
-    assert structure._bound(o) == {"Constraints.width", "Constraints[3]", "Length", "Placement"}
+def test_expression_paths_are_normalised_and_must_read_params():
+    o = {"expressions": [[".Constraints.width", "Params.w"], ["Constraints[3]", "<<Params>>.h * 2"], ["Length", "7"],
+                         [".AttachmentOffset.Base.z", "-Params.d / 2"], ["Offset", "Paramsx.d"]]}
+    src = [{"name": "Spreadsheet", "label": "Params"}]
+    assert structure._bound(o, src) == {"Constraints.width", "Constraints[3]", "AttachmentOffset.Base.z"}
+    assert structure._is_bound("AttachmentOffset.Base.z", {"AttachmentOffset"})
+    assert not structure._is_bound("AttachmentOffset.Base.x", {"AttachmentOffset.Base.z"})
+
+
+def test_typed_attachment_offset_is_a_bare_number():
+    f = clean()
+    f["objects"][2]["offset"] = [0, 0, 5.0, 0]
+    f["objects"].append(sketch("Sketch001", "lid-lip", offset=[0, 0, 4.0, 0],
+                               expressions=[[".AttachmentOffset.Base.z", "Params.lid_z"]]))
+    probs = [x["problem"] for x in run(f)["findings"] if x["check"] == "parameters"]
+    assert probs == ["base-outline: AttachmentOffset.Base.z not from Params"]
+
+
+def test_external_geometry_and_binders_from_generated_geometry():
+    f = clean()
+    f["objects"].append(sketch("Sketch001", "boss", support=[["XY_Plane", "App::Plane", []]]))
+    f["objects"][-1]["sketch"]["external"] = [["Pad", "PartDesign::Pad", ["Edge4"]], ["Sketch", SK, ["Edge1"]]]
+    f["objects"].append(obj("Binder", "PartDesign::SubShapeBinder", "lid-outline",
+                            binder_source=[["Pad", "PartDesign::Pad", ["Face6"]]]))
+    f["objects"].append(obj("Binder001", "PartDesign::SubShapeBinder", "layout-copy",
+                            binder_source=[["Sketch", SK, []]]))
+    errs = [(x["check"], x["object"]) for x in run(f)["findings"] if x["severity"] == "error"]
+    assert errs == [("references", "boss"), ("references", "lid-outline")]
+
+
+def test_a_feature_that_changes_nothing_is_an_error():
+    f = clean()
+    f["objects"].append(obj("Pocket", "PartDesign::Pocket", "usb-port", props={"Type": "ThroughAll"},
+                            base_feature="Pad", volume=3600.0))
+    f["objects"].append(obj("Pocket001", "PartDesign::Pocket", "vent", props={"Type": "ThroughAll"},
+                            base_feature="Pocket", volume=3500.0))
+    f["objects"][1]["body"]["group"] += ["Pocket", "Pocket001"]
+    f["objects"][1]["body"]["tip"] = "Pocket001"
+    errs = [(x["check"], x["object"]) for x in run(f)["findings"] if x["severity"] == "error"]
+    assert errs == [("no effect", "usb-port")]
+
+
+def test_fillets_and_chamfers_come_last():
+    f = clean()
+    f["objects"].append(obj("Fillet", "PartDesign::Fillet", "edge-round", props={"Radius": 1.0},
+                            expressions=[["Radius", "Params.r"]]))
+    f["objects"].append(obj("Pocket", "PartDesign::Pocket", "port", props={"Type": "ThroughAll"}))
+    f["objects"][1]["body"]["group"] += ["Fillet", "Pocket"]
+    f["objects"][1]["body"]["tip"] = "Pocket"
+    order = [x["problem"] for x in run(f)["findings"] if x["check"] == "order"]
+    assert order == ["body base: port come(s) after the fillet or chamfer edge-round"]
+
+
+def test_threaded_holes_and_spacing_patterns_are_not_false_positives():
+    f = clean()
+    f["objects"].append(obj("Hole", "PartDesign::Hole", "m2-insert",
+                            props={"Diameter": 1.6, "Depth": 4.0, "DepthType": "Dimension", "Threaded": True,
+                                   "ThreadType": "ISOMetricProfile"}, expressions=[["Depth", "Params.insert_d"]]))
+    f["objects"].append(obj("LinearPattern", "PartDesign::LinearPattern", "vents",
+                            props={"Mode": "Spacing", "Length": 100.0, "Offset": 4.0, "Occurrences": 5.0},
+                            expressions=[["Offset", "Params.vent_pitch"], ["Occurrences", "Params.vents"]]))
+    assert [x for x in run(f)["findings"] if x["check"] == "parameters"] == []
+
+
+def test_part_workbench_csg_is_reported():
+    f = clean()
+    f["objects"].append(obj("Box", "Part::Box", "shell-block", parent=None, props={"Length": 10.0}))
+    f["objects"].append(obj("Cut", "Part::Cut", "shell", parent=None))
+    assert any(x["check"] == "part workbench" and "2 Part-workbench" in x["problem"] for x in run(f)["findings"])
 
 
 def test_live_report_only_for_a_saved_unchanged_document(tmp_path):
@@ -272,6 +343,13 @@ sk2.addGeometry(Part.Circle(V(0, 0, 0), V(0, 0, 1), 4), False)
 pocket = body.newObject("PartDesign::Pocket", "Pocket")
 pocket.Profile = sk2
 pocket.Length = 1
+sk3 = body.newObject("Sketcher::SketchObject", "Sketch002")
+sk3.AttachmentSupport = [(plane(body, "XY_Plane"), "")]
+sk3.MapMode = "FlatFace"
+rect(sk3, 4, 4)
+inside = body.newObject("PartDesign::Pad", "Pad001")  # inside the plate: adds nothing
+inside.Profile = sk3
+inside.Length = 1
 doc.addObject("Part::Feature", "Shape").Shape = Part.makeBox(5, 5, 5)
 doc.recompute()
 doc.saveAs(os.path.join(out, "messy.FCStd"))
@@ -299,5 +377,6 @@ def test_real_documents(tmp_path):
     assert ("attachment", "Sketch001") in errs
     assert ("constraints", "Sketch001") in errs  # the circle has no constraints
     assert ("parameters", None) in errs  # no Params at all
+    assert ("no effect", "Pad001") in errs
     warns = {f["check"] for f in bad["findings"] if f["severity"] == "warning"}
     assert {"names", "dead solids", "parameters"} <= warns

@@ -678,11 +678,13 @@ def freecad_live_export_step(
 
 @server.tool()
 def check_model_structure(path: str | None = None, doc: str | None = None) -> dict:
-    """Check how a FreeCAD part is built, so it stays easy to change: sketches and datums attached to faces or edges
-    the model generates (they move or break when that feature changes), sketches not fully constrained, sizes typed as
-    numbers instead of coming from one Params sheet (a sketch dimension local to its sketch may be named instead),
-    FreeCAD's default names (Sketch003, Pad001), features broken, suppressed or past the body's tip, unused sketches,
-    long trees, and solids with no history (Part::Feature) where a printed piece should be a PartDesign Body.
+    """Check how a FreeCAD part is built, so it stays easy to change: sketches, datums, external geometry and binders
+    that reference faces or edges the model generates (they move or break when that feature changes), sketches not
+    fully constrained, features that change nothing (a cut that misses the part), sizes and attachment offsets not
+    driven from one Params sheet (a constant typed as an expression still counts as typed; a sketch dimension local to
+    its sketch may be named instead), fillets or chamfers before other features, FreeCAD's default names, features
+    broken, suppressed or past the tip, unused sketches, and solids with no history or Part-workbench CSG where a
+    printed piece should be a PartDesign Body. It can't see a fix stacked on a feature that still changes the shape.
 
     path: a saved .FCStd, or the folder holding the only one; checked headless. Without path, the document open in
     the user's FreeCAD window (doc, default the active one) is read through the live bridge, as it is now, without

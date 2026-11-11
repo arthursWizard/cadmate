@@ -4,8 +4,8 @@
 # under-constrained sketches, default names, bare numbers, dead solids...).
 #
 # Headless: FreeCADCmd opens $CADMATE_DOC (an .FCStd), recomputes it and writes the facts as JSON to $CADMATE_OUT.
-# Live: the bridge runs this file's text in the user's window and calls collect(doc) without recomputing, so the
-# check reads the document as it is and changes nothing.
+# Live: the bridge runs this file's text in the user's window and calls collect(doc); the collector itself doesn't
+# recompute or change anything (the bridge recomputes touched documents after any run, which changes nothing here).
 import json
 import os
 
@@ -13,7 +13,8 @@ ORIGIN_TYPES = ("App::Origin", "App::Plane", "App::Line", "App::Point")
 # Values that size or place a feature; structure.py decides which of them are in use from the mode properties.
 VALUE_PROPS = ("Length", "Length2", "Angle", "Angle2", "Radius", "Radius2", "Size", "Size2", "Value", "Diameter", "Depth",
                "Occurrences", "Width", "Height", "Offset", "LengthFwd", "LengthRev", "Thickness")
-MODE_PROPS = ("Type", "DepthType", "ChamferType", "Mode")
+MODE_PROPS = ("Type", "DepthType", "ChamferType", "Mode", "ThreadType")
+BINDER_TYPES = ("PartDesign::ShapeBinder", "PartDesign::SubShapeBinder", "Part::SubShapeBinder")
 DIMENSIONS = ("Distance", "DistanceX", "DistanceY", "Radius", "Diameter", "Angle")
 
 
@@ -24,19 +25,31 @@ def _num(v):
     return float(v) if isinstance(v, (int, float)) else None
 
 
-def _support(o):
-    sup = None
-    for p in ("AttachmentSupport", "Support"):  # renamed in FreeCAD 1.0
-        if p in o.PropertiesList:
-            sup = getattr(o, p)
-            break
+def _links(value):
+    """[[target name, target type, [subelements]], ...] from a link-sub list property's value."""
     out = []
-    for item in sup or []:
+    if value is None:
+        return out
+    if not isinstance(value, (list, tuple)) or (
+            isinstance(value, tuple) and len(value) == 2 and hasattr(value[0], "TypeId") and not hasattr(value[1], "TypeId")):
+        value = [value]  # a single (object, subelements) pair, or a bare object
+    for item in value:
+        if hasattr(item, "TypeId"):
+            item = (item, ())
+        if not item or not hasattr(item[0], "TypeId"):
+            continue
         target, subs = item[0], item[1] if len(item) > 1 else ()
         if isinstance(subs, str):
             subs = (subs,)
-        out.append([target.Name, target.TypeId, [s for s in subs if s]])
+        out.append([target.Name, target.TypeId, [str(s) for s in subs if s]])
     return out
+
+
+def _support(o):
+    for p in ("AttachmentSupport", "Support"):  # renamed in FreeCAD 1.0
+        if p in o.PropertiesList:
+            return _links(getattr(o, p))
+    return []
 
 
 def _sketch(o):
@@ -47,8 +60,13 @@ def _sketch(o):
         dims.append({"index": i, "name": c.Name or "", "type": c.Type, "value": _num(c.Value),
                      "driving": bool(getattr(c, "Driving", True)), "active": bool(getattr(c, "IsActive", True))})
     fully = getattr(o, "FullyConstrained", None)
+    external = []
+    try:
+        external = _links(o.ExternalGeometry)
+    except Exception:
+        pass
     return {"fully_constrained": None if fully is None else bool(fully), "dimensions": dims,
-            "geometry": len(o.Geometry), "external": len(getattr(o, "ExternalGeometry", []) or [])}
+            "geometry": len(o.Geometry), "external": external}
 
 
 def _object(o):
@@ -62,11 +80,20 @@ def _object(o):
         "name": o.Name, "label": o.Label, "type": o.TypeId, "parent": parent,
         "state": [str(s) for s in getattr(o, "State", [])],
         "in_list": [[p.Name, p.TypeId] for p in o.InList],
-        "expressions": [str(path) for path, _ in getattr(o, "ExpressionEngine", [])],
+        "expressions": [[str(path), str(expr)] for path, expr in getattr(o, "ExpressionEngine", [])],
     }
     if "MapMode" in o.PropertiesList:
         out["map_mode"] = str(o.MapMode)
         out["support"] = _support(o)
+        off = getattr(o, "AttachmentOffset", None)
+        if off is not None:
+            out["offset"] = [round(off.Base.x, 6), round(off.Base.y, 6), round(off.Base.z, 6),
+                             round(off.Rotation.Angle * 57.29577951308232, 6)]
+    if o.TypeId in BINDER_TYPES and "Support" in o.PropertiesList:
+        try:
+            out["binder_source"] = _links(o.Support)
+        except Exception:
+            pass
     props = {}
     for p in VALUE_PROPS:
         if p in o.PropertiesList:
@@ -76,6 +103,8 @@ def _object(o):
     for p in MODE_PROPS:
         if p in o.PropertiesList:
             props[p] = str(getattr(o, p))
+    if "Threaded" in o.PropertiesList:
+        props["Threaded"] = bool(o.Threaded)
     if props:
         out["props"] = props
     if "Suppressed" in o.PropertiesList and getattr(o, "Suppressed"):
@@ -91,8 +120,13 @@ def _object(o):
     if shape is not None and hasattr(shape, "isNull"):
         try:
             out["solids"] = 0 if shape.isNull() else len(shape.Solids)
+            if out["solids"]:
+                out["volume"] = round(shape.Volume, 6)
         except Exception:
             pass
+    base = getattr(o, "BaseFeature", None) if o.TypeId.startswith("PartDesign::") else None
+    if base is not None and o.TypeId != "PartDesign::Body":
+        out["base_feature"] = base.Name
     return out
 
 

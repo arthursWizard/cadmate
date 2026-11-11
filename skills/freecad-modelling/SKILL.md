@@ -79,7 +79,8 @@ Also:
   `kicad-3d-models` applies: `freecad_live_state` first, keep `user_changes`, tidy the view once at the end of a round.
 
 In FreeCAD Python, a detail placed from Params, then measured. Plane normals aren't what you'd guess (in 1.1 the XZ
-plane's normal points to -Y, so a positive offset moves the sketch toward -Y), so the measurement is not optional:
+plane's normal points to -Y, so a positive offset moves the sketch toward -Y, and a pocket cuts against the normal),
+so the measurement is not optional:
 
 ```python
 import Sketcher
@@ -90,7 +91,7 @@ sk = body.newObject("Sketcher::SketchObject", "Sketch")
 sk.Label = "usb-cutout"
 sk.AttachmentSupport = [(xz, "")]                   # an origin plane, not (pad, "Face6")
 sk.MapMode = "FlatFace"
-sk.setExpression(".AttachmentOffset.Base.z", "Params.depth / 2 - Params.wall - 1")  # 1 mm inside the -Y wall
+sk.setExpression(".AttachmentOffset.Base.z", "Params.depth / 2 + 1")  # 1 mm outside the -Y wall (normal is -Y)
 # ... draw the cut-out's outline and constrain it, binding its sizes:
 i = sk.addConstraint(Sketcher.Constraint("DistanceX", 0, 1, 0, 2, 9.0))
 sk.renameConstraint(i, "usb_w")
@@ -98,7 +99,7 @@ sk.setExpression(".Constraints.usb_w", "Params.usb_w + 2 * Params.fit_gap")
 pocket = body.newObject("PartDesign::Pocket", "Pocket")
 pocket.Label = "usb-port"
 pocket.Profile = sk
-pocket.setExpression("Length", "Params.wall + 2")    # through this wall only, never ThroughAll across the case
+pocket.setExpression("Length", "Params.wall + 2")    # cuts against the normal (+Y): through this wall only, never ThroughAll
 doc.recompute()
 removed = pocket.BaseFeature.Shape.cut(pocket.Shape)  # what the pocket took away
 result = {"removed_mm3": removed.Volume, "where": [round(v, 2) for v in (removed.BoundBox.XMin, removed.BoundBox.YMin,

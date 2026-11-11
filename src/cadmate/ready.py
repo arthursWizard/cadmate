@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import apps, enclosure, fab_export, pcb_review, project, schematic_review
+from . import apps, enclosure, fab_export, package_match, pcb_review, project, schematic_review
 from . import fab as fabmod
 
 DRC_RULES = ("drc", "unconnected", "parity")  # pcb_review's findings that came from KiCad's DRC, counted from its summary
@@ -44,7 +44,7 @@ def _types(by_type: dict) -> str:
 
 
 def check(path: str, fab: str | None = None, currents: dict | None = None, roles: dict | None = None,
-          fab_dir: str | None = None) -> dict:
+          fab_dir: str | None = None, packages: dict[str, str] | None = None) -> dict:
     board = Path(path).expanduser()
     if not board.exists() or board.suffix != ".kicad_pcb":
         raise ReadyError(f"no .kicad_pcb at {board}")
@@ -133,6 +133,28 @@ def check(path: str, fab: str | None = None, currents: dict | None = None, roles
         if missing:
             look.append(_item("bom", f"{len(missing)} part(s) without a {chosen['distributor']} number: {', '.join(missing[:20])}",
                               f"add the {chosen['distributor']} number, or buy those elsewhere"))
+    # the package being bought against the footprint on the board (from a Package field, or packages {ref: text})
+    given = {p["ref"]: (packages or {}).get(p["ref"]) or p["package"] for p in parts}
+    unknown_refs = sorted(set(packages or {}) - set(given), key=fab_export._refkey)
+    if unknown_refs:
+        look.append(_item("package", f"packages given for parts not on the board: {', '.join(unknown_refs[:20])}",
+                          "check the references"))
+    compared, unread = 0, []
+    for p in sorted(parts, key=lambda p: fab_export._refkey(p["ref"])):
+        if not (given.get(p["ref"]) or "").strip():
+            continue
+        r = package_match.compare(given[p["ref"]], p["footprint"])
+        if r["result"] == "mismatch":
+            blocking.append(_item("package", f"{p['ref']} ({given[p['ref']]}) on footprint {p['footprint']}: " + "; ".join(r["why"]),
+                                  "the part won't fit its pads: change the footprint, or pick the part in this package"))
+        elif r["result"] == "unknown":
+            unread.append(p["ref"])
+        compared += r["result"] == "match"
+    if unread:
+        look.append(_item("package", f"couldn't compare the package with the footprint for {', '.join(unread[:20])}",
+                          "check those by eye against the datasheet's package drawing"))
+    if compared and not any(i["check"] == "package" for i in blocking):
+        passed.append(f"packages match their footprints ({compared} part(s) with a package to compare)")
     layers = len(fab_export.copper_layers(text))
     if chosen.get("layers") and layers and layers != chosen["layers"]:
         blocking.append(_item("layers", f"the board has {layers} copper layers; the project says {chosen['layers']}",

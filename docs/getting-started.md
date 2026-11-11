@@ -196,7 +196,9 @@ change. When you say good, Claude snapshots.
 1. **Parts.** cadmate doesn't search distributors. For stock and price, add a search tool for where you buy:
    jlc-mcp (from anthropics/ai-eda) for JLCPCB and LCSC, or DigiKey's or Mouser's own API with your key. Put the
    manufacturer part number (and any distributor number) on each part; `generate_part` and `generate_symbol` take them
-   as `fields`, and they end up in the BOM. For anything not in KiCad's libraries: "make the part for U3 from docs/xyz.pdf". `generate_part` writes
+   as `fields`, and they end up in the BOM. Add a `Package` field with the package as the distributor lists it
+   (`SOT-23-5`, `0805`, `QFN-32-EP(5x5)`), and `check_ready_to_order` checks it against the footprint, so a part
+   bought in a different package than the pads were drawn for is caught before the order. For anything not in KiCad's libraries: "make the part for U3 from docs/xyz.pdf". `generate_part` writes
    the symbol, footprint and 3D model, linked and checked together, into `kicad/lib/`. `generate_symbol`,
    `generate_footprint` and the 3D model flow do one at a time. For existing parts, `check_part`, `check_footprint` and
    `review_footprint` catch swapped pads, wrong courtyards and models that don't sit right. To edit a footprint or
@@ -218,7 +220,7 @@ change. When you say good, Claude snapshots.
    track width for the current, and your board house's limits when you've chosen one cadmate knows: JLCPCB or PCBWay)
    and runs KiCad's DRC, reported as errors, warnings, unconnected and parity. Fix, and review again.
 7. **Fab files.** Before ordering, "is it ready to order?": `check_ready_to_order` runs DRC with schematic parity,
-   ERC, the layout review, part numbers, the fab files' age and the brief's open items together, and says what blocks
+   ERC, the layout review, part numbers, packages against footprints, the fab files' age and the brief's open items together, and says what blocks
    the order. Then `export_fab` writes the Gerber zip, a BOM (manufacturer and part number, plus any LCSC, DigiKey or
    Mouser numbers) and a placement file into `fab/<board>/`, and lists the parts with no part number yet. With JLCPCB
    as your board house it also writes JLCPCB's own BOM and CPL.

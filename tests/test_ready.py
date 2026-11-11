@@ -163,3 +163,16 @@ def test_autoroute_uses_the_projects_board_house(tmp_path, monkeypatch):
     assert seen["lim"]["fab"] == "pcbway"
     pcb_flow.autoroute(str(pcb), out_path=str(tmp_path / "routed.kicad_pcb"), fab_name="none", neck_rules=False)  # an explicit "none" wins over the project
     assert seen["lim"] is None
+
+
+def test_package_bought_against_footprint(tmp_path, monkeypatch):
+    fake_kicad(monkeypatch)
+    pcb = write(tmp_path, resistor("R1", 20, '(property "MPN" "X1") (property "Package" "0805")'),
+                resistor("R2", 30, '(property "MPN" "X2")'))
+    r = ready.check(str(pcb))
+    assert any("R1 (0805) on footprint R_0603_1608Metric: the part is 0805" in i["what"] for i in r["blocking"])
+    # packages from a part search, without editing the schematic; the argument wins over the field
+    r = ready.check(str(pcb), packages={"R1": "0603", "R2": "0603 (1608 Metric)", "R9": "0402"})
+    assert not any(i["check"] == "package" for i in r["blocking"])
+    assert "packages match their footprints (2 part(s) with a package to compare)" in r["passed"]
+    assert any("not on the board: R9" in i["what"] for i in r["to_look_at"])

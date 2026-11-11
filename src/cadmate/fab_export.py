@@ -62,6 +62,7 @@ FIELDS = {
     "lcsc": ("lcsc", "lcscpart", "lcscpartnumber", "jlcpcbpart", "jlcpcbpartnumber", "jlcpcb"),
     "digikey": ("digikey", "digikeypartnumber", "digikeypn", "digikeypart"),
     "mouser": ("mouser", "mouserpartnumber", "mouserpn", "mouserpart"),
+    "package": ("package", "case", "packagecase", "casepackage", "pkg"),  # as the distributor lists it, e.g. SOT-23-5
 }
 DISTRIBUTORS = ("lcsc", "digikey", "mouser")
 
@@ -80,8 +81,8 @@ def _fields(fp: sexpr.Node) -> dict[str, str]:
 
 
 def footprints(text: str) -> list[dict]:
-    """Each footprint's reference, value, footprint name, part numbers (manufacturer, MPN, LCSC, DigiKey, Mouser), side,
-    and whether it goes in the BOM / CPL."""
+    """Each footprint's reference, value, footprint name, part numbers (manufacturer, MPN, LCSC, DigiKey, Mouser), the
+    package as the distributor lists it, side, and whether it goes in the BOM / CPL."""
     root = sexpr.parse(text)
     out = []
     for fp in root.children("footprint"):

@@ -88,7 +88,7 @@ Early. These workflows work end to end:
 | `check_protoboard` | Checks a perfboard design: leads off the board or sharing a hole, leads under bodies, bodies overlapping, bad nets; and for wires: shorts, jumpers over parts, which nets are done | nothing |
 | `place_protoboard` | Places the parts automatically, steered by hints (fixed, near a hole, a board region, an edge), routes several placements and keeps the best | nothing |
 | `route_protoboard` | Routes a perfboard design on the hole grid (bottom, top on unplated double-sided boards, jumpers), keeping wires already drawn; lists what stays open | nothing |
-| `render_protoboard` | Top and mirrored bottom views as PNG and SVG, plus a step-by-step build list | an SVG converter (rsvg-convert or cairosvg; macOS has one) |
+| `render_protoboard` | Top and mirrored bottom views as PNG and SVG, plus a step-by-step build list | nothing |
 | `project_init` | Makes a design folder a cadmate project with the fixed layout (flat for one tool, one board or one part); adds what's missing, moves nothing | nothing |
 | `project_add_tool` | Adds KiCad or FreeCAD to a one-tool project: snapshots it, then moves the existing files from the root into `kicad/` or `freecad/` | nothing |
 | `project_add_board`, `project_add_part`, `project_add_protoboard` | Add a second board, FreeCAD part or protoboard: snapshot, move the first one into a folder named for it (fixing a board's `${KIPRJMOD}` paths), make the new one's folder | nothing |
@@ -126,7 +126,7 @@ Everything tied to a version lives in `src/cadmate/versions.py`: the supported a
 | FreeCAD models (FreeCADCmd) | yes | yes | yes, untested by hand |
 | Live KiCad editing (IPC API) | yes | yes | the default KiCad instance only |
 | Live FreeCAD bridge | yes | yes | yes, over a localhost port; CI only, untested by hand |
-| Snapshots (SVG to PNG) | built in | needs `rsvg-convert` (librsvg), or the `snapshots` extra | needs the `snapshots` extra and a cairo DLL |
+| Snapshots (SVG to PNG) | built in | built in | built in; CI only, untested by hand |
 | Freerouting | yes | yes | yes, untested by hand |
 
 CI runs the test suite on all three without KiCad or FreeCAD installed, and runs cadmate's kicad-cli commands against a real KiCad 10 on Linux. Day-to-day use so far has been on macOS only; Linux and Windows haven't been used by hand, and neither has Claude Desktop.
@@ -148,9 +148,6 @@ marketplace in `/plugin`. Start a new session after installing or updating.
 `cadmate@cadmate` is the latest release. To try what is merged on `main` but not released, install `cadmate-dev@cadmate`
 from the same marketplace and disable `cadmate@cadmate`; keep only one of the two enabled. See
 [Getting started](docs/getting-started.md#trying-unreleased-changes) and [Releasing](docs/releasing.md).
-
-For pictures on Linux, install `rsvg-convert` (macOS has a converter built in). The plugin doesn't install
-`cairosvg`, so pictures on Windows don't work through it yet.
 
 Claude Desktop and other MCP clients aren't a supported route yet; pointing one at
 `uvx --from git+https://github.com/arthursWizard/cadmate cadmate` should work but hasn't been tried.

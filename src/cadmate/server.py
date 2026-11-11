@@ -968,6 +968,18 @@ def export_fab(path: str, out_dir: str | None = None, fab: str | None = None) ->
 
 
 @server.tool()
+def export_board_step(path: str, out: str | None = None, part: str | None = None) -> dict:
+    """The board as a STEP with its parts' 3D models (kicad-cli, DNP parts left out), to fit an enclosure around it in
+    FreeCAD. In a cadmate project with FreeCAD it goes to the FreeCAD part's pcb-models/<board>.step (part names which,
+    when there are several); otherwise beside the board, or to out. no_3d_model lists parts without a model: they're
+    missing from the STEP and from check_enclosure's collisions. Re-export after the board changes."""
+    try:
+        return fab_export.export_step(Path(path), Path(out) if out else None, part)
+    except (fab_export.ExportError, OSError, ValueError) as e:
+        return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
+
+
+@server.tool()
 def check_ready_to_order(path: str, fab: str | None = None, currents: dict[str, float] | None = None,
                          roles: dict[str, str] | None = None, fab_dir: str | None = None) -> dict:
     """Before a board is ordered: every check it needs, in one call, sorted into what blocks the order (blocking), what

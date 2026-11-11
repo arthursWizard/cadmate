@@ -113,3 +113,37 @@ def test_export_follows_the_project_choice(tmp_path, monkeypatch):
 def test_jlcpcb_part_number_field_is_an_lcsc_number():
     other = BOARD.replace('(property "LCSC" "C25744")', '(property "JLCPCB Part #" "C25744")', 1)
     assert fx.footprints(other)[0]["lcsc"] == "C25744"
+
+
+def test_board_step_goes_to_the_parts_pcb_models(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from cadmate import project
+
+    def cli(*args, timeout=300):
+        Path(args[args.index("--output") + 1]).write_text("ISO-10303-21;\n", encoding="utf-8")
+        return ""
+    monkeypatch.setattr(fx, "_cli", cli)
+    # KiCad only, or outside a project: beside the board
+    pcb = tmp_path / "loose" / "main.kicad_pcb"
+    pcb.parent.mkdir()
+    pcb.write_text(BOARD, encoding="utf-8")
+    assert fx.step_target(pcb) == pcb.with_suffix(".step")
+    # KiCad and FreeCAD, one part: its pcb-models/
+    root = tmp_path / "demo"
+    project.init(root, tools=["kicad", "freecad"], parts=["enclosure"])
+    pcb = root / "kicad" / "main.kicad_pcb"
+    pcb.write_text(BOARD, encoding="utf-8")
+    r = fx.export_step(pcb)
+    assert Path(r["step"]) == root / "freecad" / "pcb-models" / "main.step"
+    # every footprint in BOARD lacks a model link; the reply says so
+    assert r["no_3d_model"] == ["C1", "H1", "R2", "R10", "TP1"]
+    # two parts: say which
+    (root / "freecad" / "enclosure").mkdir()
+    (root / "freecad" / "enclosure" / "enclosure.FCStd").write_bytes(b"")
+    (root / "freecad" / "knob").mkdir()
+    (root / "freecad" / "knob" / "knob.FCStd").write_bytes(b"")
+    import pytest
+    with pytest.raises(fx.ExportError, match="which FreeCAD part"):
+        fx.step_target(pcb)
+    assert fx.step_target(pcb, "enclosure") == root / "freecad" / "enclosure" / "pcb-models" / "main.step"

@@ -67,3 +67,12 @@ def test_pcb_svg_flags(tmp_path):
 def test_version_output_parses():
     p = run(*versions.kicad_cli_args("version"))
     assert versions.parse(p.stdout) is not None, p.stdout
+
+
+def test_board_step_flags(tmp_path):
+    part = footprint("Resistor_SMD:R_0603", "R1", "1k", 20, 20, [pad(1, -0.8, 0, "A"), pad(2, 0.8, 0, "B")])
+    f = tmp_path / "t.kicad_pcb"
+    f.write_text(HEAD + part + ")\n", encoding="utf-8", newline="\n")
+    step = tmp_path / "t.step"
+    p = run(*versions.kicad_cli_args("pcb_step"), "--output", str(step), str(f))
+    assert step.exists() and step.read_text(encoding="utf-8", errors="replace").startswith("ISO-10303-21"), p.stderr or p.stdout

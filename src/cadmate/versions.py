@@ -38,6 +38,8 @@ KICAD_CLI = {
     "pcb_drill": ["pcb", "export", "drill", "--format", "excellon", "--excellon-separate-th", "--generate-map",
                   "--map-format", "gerberx2"],
     "pcb_pos": ["pcb", "export", "pos", "--format", "csv", "--units", "mm", "--side", "both"],
+    # the board with its parts' 3D models, for the enclosure: DNP parts left out, VRML-only models swapped for STEP
+    "pcb_step": ["pcb", "export", "step", "--force", "--subst-models", "--no-dnp"],
 }
 
 

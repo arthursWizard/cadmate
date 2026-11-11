@@ -219,7 +219,8 @@ change. When you say good, Claude snapshots.
    the order. Then `export_fab` writes the Gerber zip, a BOM (manufacturer and part number, plus any LCSC, DigiKey or
    Mouser numbers) and a placement file into `fab/<board>/`, and lists the parts with no part number yet. With JLCPCB
    as your board house it also writes JLCPCB's own BOM and CPL.
-8. **Enclosure.** Claude builds the case in FreeCAD, live in your window on macOS and Linux, or headless from a script.
+8. **Enclosure.** `export_board_step` puts the board, with its parts' 3D models, into the FreeCAD part's `pcb-models/`
+   and lists parts that have no model (they'd be missing from the collision check). Claude builds the case in FreeCAD, live in your window on macOS and Linux, or headless from a script.
    The openings you want and the heights from the brief go in `enclosure.json` beside the assembly, and `check_enclosure` reports
    collisions with the board and parts, openings nobody declared, and seams with a gap or a step. Fixing the case is a
    conversation in FreeCAD, not one tool.

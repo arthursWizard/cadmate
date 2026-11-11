@@ -259,3 +259,55 @@ def placeholder_any(number: str) -> bool:
     """An empty or unfinished distributor number (TBD, with a question mark)."""
     n = number.strip()
     return not n or "?" in n or n.lower() in ("tbd", "todo", "n/a", "na", "-")
+
+
+def step_target(board: Path, part: str | None = None) -> Path:
+    """Where a board's STEP goes. In a cadmate project with FreeCAD: <part>/pcb-models/<board>.step, for the part
+    named, or the only one there is; with KiCad only, or outside a project: beside the board."""
+    from . import project
+
+    root = project.find_root(board)
+    sh = project.shape(root) if root else None
+    if not root or "freecad" not in sh.tools:
+        return board.with_suffix(".step")
+    area = root / sh.dir("freecad")
+    here, folders = project.units(root, sh, "freecad")
+    if part and folders:
+        if not (area / part).is_dir():
+            raise ExportError(f"no FreeCAD part {part!r}; parts: {', '.join(f.name for f in folders)}")
+        dest = area / part
+    elif part:
+        dest = area  # one part sits directly in the FreeCAD area
+    elif len(folders) > 1:
+        raise ExportError(f"which FreeCAD part is the board for? pass part: one of {', '.join(f.name for f in folders)}")
+    else:
+        dest = folders[0] if folders else area
+    return dest / "pcb-models" / f"{board.stem}.step"
+
+
+def export_step(board: Path, out: Path | None = None, part: str | None = None) -> dict:
+    """The board as a STEP with its parts' 3D models, for fitting the enclosure in FreeCAD. Written to out, else
+    step_target's place. Parts without a 3D model are listed: they'd be missing from any collision check."""
+    board = board.expanduser()
+    if not board.exists():
+        raise ExportError(f"no board at {board}")
+    dest = out.expanduser() if out else step_target(board, part)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    _cli(*versions.kicad_cli_args("pcb_step"), "--output", str(dest), str(board), timeout=600)
+    if not dest.exists():
+        raise ExportError(f"kicad-cli wrote no STEP at {dest}")
+    root = sexpr.parse(board.read_text(encoding="utf-8", errors="replace"))
+    no_model = []
+    for fp in root.children("footprint"):
+        ref = _prop(fp, "Reference")
+        attr = fp.child("attr")
+        flags = set(attr.atoms()) if attr is not None else set()
+        if fp.child("model") is None and "board_only" not in flags and ref and not ref.startswith("#"):
+            no_model.append(ref)
+    reply = {"ok": True, "step": str(dest), "size_kb": round(dest.stat().st_size / 1024),
+             "next": "bring it into the assembly beside the case parts, then check_enclosure for collisions and fit"}
+    if no_model:
+        reply["no_3d_model"] = sorted(no_model, key=_refkey)
+        reply["note"] = ("these parts have no 3D model, so they're missing from the STEP and from any collision check; "
+                         "make one with the kicad-3d-models flow if the part is tall or near the case")
+    return reply

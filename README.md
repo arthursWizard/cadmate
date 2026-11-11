@@ -107,7 +107,7 @@ cadmate requires **KiCad 10** and **FreeCAD 1.1** or later, and follows new rele
 - **KiCad files** are read directly: footprints from KiCad 5 (`module`) to current (`footprint`) formats, symbol libraries from KiCad 6 on, including KiCad 10's one-file-per-symbol `.kicad_symdir` folders. They are written in KiCad 10's format, as KiCad's own editors write it. No KiCad install is needed for footprint or symbol work.
 - **`kicad-cli`** for DRC, ERC, pictures and fab exports (Gerbers, drill, positions).
 - **KiCad IPC API** (through `kicad-python`, pinned to the release that matches KiCad 10) only for live editing, switched on when present.
-- **FreeCAD** through `FreeCADCmd`, using the Part API that is stable across 0.20 to 1.1. Headless builds keep their colours on FreeCAD 1.0 and later; with 0.20 and 0.21 the STEP is grey.
+- **FreeCAD** through `FreeCADCmd`, using the Part API that is stable across 0.20 to 1.1. Headless builds keep their colours on FreeCAD 1.0 and later; with 0.20 and 0.21 the STEP is grey. The enclosure check also needs scipy in FreeCAD's Python: the official installers include it, but a conda-forge FreeCAD needs `scipy` installed alongside.
 
 Everything tied to a version lives in `src/cadmate/versions.py`: the supported and tested versions, the file format numbers cadmate writes, and the kicad-cli arguments it uses. When a new KiCad or FreeCAD comes out, start there. CI runs cadmate's kicad-cli commands against a real KiCad (`tests/test_kicad_cli.py`), so a renamed flag or a changed report shows up as a failing check.
 

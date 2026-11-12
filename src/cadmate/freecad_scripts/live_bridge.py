@@ -704,17 +704,25 @@ class Bridge:
             except Exception as e:
                 gone = name is not None and not alive()
                 end_transaction(abort=True)
-                kept = self._undo_after_close(step, undo_before, name) if gone else []
-                what = (f"failed after closing {name}, which can't be undone" if gone else "failed and was undone") + (
-                    f"; its changes to {', '.join(kept)} could not be undone and are still there" if kept else
-                    "; the rest was undone" if gone else "")
-                self._say(f"{label} {what}: {e}", error=True)
                 reply = {"ok": False, "error": str(e), "traceback": traceback.format_exc(),
                          "stdout": out.getvalue()[-4000:]}
-                if gone:
-                    reply |= {"closed": name, "note": f"the edit {what}"}
-                    if kept:
-                        reply["not_undone"] = kept
+                if not gone:
+                    self._say(f"{label} failed and was undone: {e}", error=True)
+                    return reply
+                # FreeCAD can't roll back an edit that closed a document, so say what may be left instead
+                steps, others = self._left_after_close(step, undo_before, name)
+                note = f"the edit failed after closing {name}, which can't be undone"
+                if steps:
+                    note += (f"; it left changes in {', '.join(steps)}, recorded there as the undo step {step!r}, "
+                             "which Edit > Undo in that document takes back")
+                if others:
+                    note += f"; {', '.join(others)} may still have changes it made, with no undo step: check them"
+                self._say(f"{label}: {note}: {e}", error=True)
+                reply |= {"closed": name, "note": note}
+                if steps:
+                    reply["undo_step_left"] = steps
+                if others:
+                    reply["check"] = others
                 return reply
             finally:
                 self.in_call = False
@@ -737,24 +745,24 @@ class Bridge:
             reply["origins_shown"] = turned_on
         return reply
 
-    def _undo_after_close(self, step: str, undo_before: dict, name: str) -> list[str]:
-        """After code that closed its target and then failed: FreeCAD 1.1 commits the open transaction when the
-        document that opened it closes, so the other documents the code changed already hold the step. Undo it in each
-        one where it is the one new entry; return the changed documents where it can't be undone that way."""
+    def _left_after_close(self, step: str, undo_before: dict, name: str) -> tuple[list[str], list[str]]:
+        """After code that closed its target and then failed, what it may have left in the other documents it changed.
+        FreeCAD 1.1 commits the open transaction when the document that opened it closes, so changes made before the
+        close are already an undo step there, and changes made after it belong to no transaction at all. Neither can
+        be taken back cleanly from here (undoing leaves the failed edit in the user's redo list), so they're reported:
+        (documents with a step named step on top of their undo list, other documents the code changed)."""
         App = self.App
-        kept = []
+        steps, others = [], []
         for n in sorted(self.call_docs - {name}):
             x = App.listDocuments().get(n)
             if x is None:
                 continue
             try:
-                if n in undo_before and x.UndoCount == undo_before[n] + 1 and list(x.UndoNames)[:1] == [step]:
-                    x.undo()
-                    continue
+                grew = n in undo_before and x.UndoCount > undo_before[n] and list(x.UndoNames)[:1] == [step]
             except Exception:
-                pass
-            kept.append(n)
-        return kept
+                grew = False
+            (steps if grew else others).append(n)
+        return steps, others
 
     def op_read(self, code, label="read", doc=None):
         """Run code that only reads: no transaction, no recompute, so the user's undo list and modified flags stay as

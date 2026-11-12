@@ -20,7 +20,7 @@ import sys
 # Placeholder names used in docs and tests, and CI runners' own home folders.
 ALLOWED_USERS = {"me", "you", "user", "username", "name", "runner", "<name>", "...", "…", "*"}
 ALLOWED_EMAIL = re.compile(
-    r"(@users\.noreply\.github\.com|^noreply@(github|anthropic)\.com|@example\.(com|org|net)|@localhost)$", re.I)
+    r"(@users\.noreply\.github\.com|^noreply@(github|anthropic)\.com|^git@github\.com|@example\.(com|org|net)|@localhost)$", re.I)
 SKIP_FILES = {"uv.lock", ".github/check_public.py"}
 
 HOME = re.compile(r"(?:/Users/|/home/|[A-Za-z]:\\\\?Users\\\\?)([^/\\\s\"'`)|]+)")
@@ -30,8 +30,13 @@ SECRET = re.compile(
     r"|\bsk-[A-Za-z0-9_-]{20,}|\bAKIA[0-9A-Z]{16}\b|\bxox[abpr]-[A-Za-z0-9-]{10,}|\bpypi-[A-Za-z0-9_-]{40,}")
 
 
+def _norm(text: str) -> str:
+    """Lower case, with -, _, . and runs of spaces as one space, so port-centre also finds port_centre."""
+    return re.sub(r"[-_.\s]+", " ", text.lower())
+
+
 def private_terms() -> list[str]:
-    return [t.strip().lower() for t in os.environ.get("CADMATE_PRIVATE_TERMS", "").splitlines() if t.strip()]
+    return [_norm(t).strip() for t in os.environ.get("CADMATE_PRIVATE_TERMS", "").splitlines() if t.strip()]
 
 
 def problems(text: str, terms: list[str]) -> list[str]:
@@ -44,7 +49,7 @@ def problems(text: str, terms: list[str]) -> list[str]:
             found.append(f"email address ({m.group(0)})")
     if SECRET.search(text):
         found.append("what looks like a key or token")
-    low = text.lower()
+    low = _norm(text)
     if any(t in low for t in terms):
         found.append("a private term (from CADMATE_PRIVATE_TERMS)")
     return found
@@ -61,12 +66,16 @@ def main() -> int:
         if not path or path in SKIP_FILES:
             continue
         for p in problems(path, terms):
-            bad.append(f"{path}: file name has {p}")
+            # Don't print a path that holds a private term: the log is public.
+            bad.append(f"a tracked file's name has {p}" if "private term" in p else f"{path}: file name has {p}")
         try:
-            with open(path, encoding="utf-8") as f:
-                lines = f.readlines()
-        except (UnicodeDecodeError, IsADirectoryError, FileNotFoundError):
-            continue  # binary files and submodules
+            with open(path, "rb") as f:
+                data = f.read()
+        except (IsADirectoryError, FileNotFoundError):
+            continue  # submodules, deleted files
+        if b"\0" in data:
+            continue  # binary
+        lines = data.decode("utf-8", errors="replace").splitlines()
         for n, line in enumerate(lines, 1):
             for p in problems(line, terms):
                 bad.append(f"{path}:{n}: {p}")

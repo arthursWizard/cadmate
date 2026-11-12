@@ -8,6 +8,22 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Nothing private in this public repo (CLAUDE.md, "This repo is public"): home-folder paths, emails other than
+  # noreply ones, keys and tokens, in the tree and in the new commits. Design and project names come from the
+  # CADMATE_PRIVATE_TERMS secret (one per line) so they are never written here; without it, review covers them.
+  # Fork PRs get no secrets, so they are checked for the patterns only.
+  public:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check for private material
+        env:
+          CADMATE_PRIVATE_TERMS: ${{ secrets.CADMATE_PRIVATE_TERMS }}
+          RANGE: ${{ github.event_name == 'pull_request' && format('{0}..{1}', github.event.pull_request.base.sha, github.event.pull_request.head.sha) || (github.event_name == 'push' && !startsWith(github.event.before, '0000000') && format('{0}..{1}', github.event.before, github.sha)) || '' }}
+        run: python3 .github/check_public.py $RANGE
+
   # The whole suite, without KiCad or FreeCAD, on each OS cadmate claims to support.
   unit:
     strategy:

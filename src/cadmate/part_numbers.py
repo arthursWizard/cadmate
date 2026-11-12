@@ -162,6 +162,42 @@ def _board_ref(fp: sexpr.Node, by_path: dict[str, str], value_of: dict[str, str]
     return ref if not want or _fp_name((fp.atoms() or [""])[0]) == want else None
 
 
+def _linked(fp: sexpr.Node) -> bool:
+    p = fp.child("path")
+    return p is not None and bool(p.atoms())
+
+
+def _interchangeable(fps: dict[str, list[sexpr.Node]], ref_fields: dict[str, dict[str, str]],
+                     by_ref: dict[str, list[Sym]]) -> list[dict]:
+    """Footprints matched without a link (by reference, value and footprint name) that could be each other's part.
+    Two unlinked footprints with the same value and footprint name look the same to every check: after a
+    re-annotation the board's R1 may be the schematic's R2, and the files don't say. Such a group is safe to write
+    only when every part in it ends up with the same numbers, as then it doesn't matter which is which; otherwise
+    it's returned, to be left alone and reported. Nothing else in the files tells them apart: a footprint's own uuid
+    and position aren't related to its symbol's, and the sheet name and file a footprint can carry are written by
+    Update PCB from Schematic together with the link, so a footprint without the link doesn't have them either."""
+    groups: dict[tuple[str, str], set[str]] = {}
+    for r, nodes in fps.items():
+        for fp in nodes:
+            if not _linked(fp):
+                groups.setdefault((_prop_value(fp, "Value"), _fp_name((fp.atoms() or [""])[0])), set()).add(r)
+    out = []
+    for (value, name), refs in groups.items():
+        if len(refs) < 2 or not refs & set(ref_fields):
+            continue
+        names = {_key(n): n for r in refs for n in ref_fields.get(r, {})}
+
+        def after(r: str, key: str) -> str:  # the field's value in the schematic once this call has run
+            mine = {_key(n): v for n, v in ref_fields.get(r, {}).items()}
+            if key in mine:
+                return mine[key]
+            t = _target(by_ref[r][0].node, names[key]) if by_ref.get(r) else None
+            return (t.atoms()[1:2] or [""])[0] if t is not None else ""
+        if any(len({after(r, k) for r in refs}) > 1 for k in names):
+            out.append({"refs": sorted(refs, key=fab_export._refkey), "value": value, "footprint": name})
+    return sorted(out, key=lambda g: fab_export._refkey(g["refs"][0]))
+
+
 def ref_of(node: sexpr.Node, sch: bool) -> list[str]:
     """Every reference a placed symbol (any instance listed) or a footprint names, hierarchy not checked."""
     refs = [_prop_value(node, "Reference")]
@@ -415,6 +451,7 @@ def set_part_numbers(schematic: str, parts: dict, board: str | None = None, dry_
     pcb = Path(board).expanduser() if board else sch.with_suffix(".kicad_pcb")
     board_out: dict = {}
     pcb_text = pcb_new = None
+    held: set[str] = set()  # refs whose unlinked footprints are left alone (see _interchangeable)
     if pcb.exists():
         pcb_text = pcb.read_bytes().decode("utf-8")
         try:
@@ -436,12 +473,16 @@ def set_part_numbers(schematic: str, parts: dict, board: str | None = None, dry_
                 stale.add(by_path[p.atoms()[0]])
         edits, bchanged, missing = [], {}, []
         stale -= set(fps)  # a part found on the board isn't out of date because another footprint carries its old name
+        ambiguous = _interchangeable(fps, ref_fields, by_ref)
+        held = {r for g in ambiguous for r in g["refs"]}
         for r, fields in ref_fields.items():
             if r not in fps:
                 if r not in stale:
                     missing.append(r)
                 continue
             for fp in fps[r]:
+                if r in held and not _linked(fp):
+                    continue
                 added = 0
                 for n, v in fields.items():
                     # the board's own spelling if it has one, else the schematic's, as Update PCB would add it
@@ -461,6 +502,13 @@ def set_part_numbers(schematic: str, parts: dict, board: str | None = None, dry_
                                             "nothing was written to it: Update PCB from Schematic in KiCad, then run " \
                                             "this again. Until then DRC's schematic parity check also reports these " \
                                             "parts' new fields as missing from their footprints"
+        if ambiguous:
+            board_out["ambiguous"] = ambiguous
+            board_out["ambiguous_note"] = "these footprints aren't linked to their schematic symbols and share a value " \
+                                          "and footprint name, so nothing on the board says which part is which (the " \
+                                          "schematic may have been re-annotated since). They'd get different numbers, " \
+                                          "so nothing was written to them: Update PCB from Schematic in KiCad links " \
+                                          "each footprint to its symbol, then run this again"
         if missing:
             board_out["not_on_board"] = sorted(missing, key=fab_export._refkey)
             board_out["not_on_board_note"] = "parts in the schematic with no footprint on the board: Update PCB from " \
@@ -479,7 +527,8 @@ def set_part_numbers(schematic: str, parts: dict, board: str | None = None, dry_
         if f in sheet_of:
             nodes = [(r, s.node) for s in _symbols([Sheet(f, text, new, sheet_of[f].paths)]) for r in s.refs]
         else:
-            nodes = [(_board_ref(n, by_path, value_of, footprint_of), n) for n in new.children("footprint")]
+            nodes = [(r, n) for n in new.children("footprint") for r in [_board_ref(n, by_path, value_of, footprint_of)]
+                     if not (r in held and not _linked(n))]
         for r, node in nodes:
             for n, v in ref_fields.get(r, {}).items():
                 t = _target(node, n)

@@ -631,13 +631,17 @@ class Bridge:
         App.setActiveDocument(d.Name)
         return prev.Name, view
 
-    def _restore_active(self, d, prev: str, view):
-        """Give the user back the document and view they had, unless the edit's code chose another on purpose."""
+    def _restore_active(self, name: str, prev: str, view):
+        """Give the user back the document and view they had, unless the edit's code chose another on purpose. When the
+        code closed the target, FreeCAD picked the next active document itself, so the user's comes back too."""
         App = self.App
         try:
-            if prev not in App.listDocuments() or App.ActiveDocument is None or App.ActiveDocument.Name != d.Name:
+            docs = App.listDocuments()
+            if prev not in docs:
                 return
-        except Exception:  # d was closed by the code
+            if name in docs and (App.ActiveDocument is None or App.ActiveDocument.Name != name):
+                return
+        except Exception:
             return
         App.setActiveDocument(prev)
         if view is not None:
@@ -652,6 +656,18 @@ class Bridge:
         import Part
 
         d = self._doc(doc) if doc or App.ActiveDocument else None
+        # By name from here on: the code may close d, and a closed document's Python object raises on any use.
+        name = d.Name if d is not None else None
+
+        def open_still() -> bool:
+            return name is not None and name in App.listDocuments()
+
+        def end_transaction(abort: bool):
+            if open_still():
+                (d.abortTransaction if abort else d.commitTransaction)()
+            elif name is not None:  # closed by the code: end what it left open in other documents (app-wide in 1.1)
+                with contextlib.suppress(Exception):
+                    App.closeActiveTransaction(abort)
         before = self.seq
         origins_before = {x.Name: set(shown_origins(x)) for x in App.listDocuments().values()}
         ns = {"App": App, "FreeCAD": App, "Gui": Gui, "FreeCADGui": Gui, "Part": Part, "V": App.Vector, "doc": d, "result": None}
@@ -674,22 +690,20 @@ class Bridge:
                 with contextlib.redirect_stdout(out):
                     exec(compile(code, f"<cadmate: {label}>", "exec"), ns)
                 docs = App.listDocuments()
-                for name in sorted(self.call_docs | ({d.Name} if d is not None else set())):
-                    if name in docs:  # the code may have closed it
-                        docs[name].recompute()
+                for n in sorted(self.call_docs | ({name} if name is not None else set())):
+                    if n in docs:  # the code may have closed it
+                        docs[n].recompute()
             except Exception as e:
-                if d is not None:
-                    d.abortTransaction()
+                end_transaction(abort=True)
                 self._say(f"{label} failed and was undone: {e}", error=True)
                 return {"ok": False, "error": str(e), "traceback": traceback.format_exc(),
                         "stdout": out.getvalue()[-4000:]}
             finally:
                 self.in_call = False
-            if d is not None:
-                d.commitTransaction()
+            end_transaction(abort=False)
         finally:
             if switched is not None:
-                self._restore_active(d, *switched)
+                self._restore_active(name, *switched)
         touched = sorted({e["object"] for e in self.events if e["seq"] > before and e["object"]})
         active = App.ActiveDocument
         reply = {"result": _jsonable(ns.get("result")), "stdout": out.getvalue()[-4000:], "touched": touched,
@@ -697,6 +711,8 @@ class Bridge:
         turned_on = {x.Name: sorted(set(shown_origins(x)) - origins_before.get(x.Name, set()))
                      for x in App.listDocuments().values()}
         turned_on = {k: v for k, v in turned_on.items() if v}
+        if name is not None and not open_still():
+            reply["closed"] = name  # the code closed the document it was given; the close is the edit
         if turned_on:  # the usual way origins end up on: code that shows every object in doc.Objects
             reply["origins_shown"] = turned_on
         return reply

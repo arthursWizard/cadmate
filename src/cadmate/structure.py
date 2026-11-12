@@ -201,8 +201,8 @@ def evaluate(facts: dict) -> dict:
 
     # Broken, suppressed, no effect
     for o in objs:
-        solver = (o.get("sketch") or {}).get("solver") or {}
-        if any(solver.values()):
+        sk = o.get("sketch") or {}
+        if any((sk.get("solver") or {}).values()) or sk.get("references_ok") is False:
             continue  # the sketch's own finding below says which constraints are wrong
         if any(s in ("Invalid", "Error") for s in o.get("state", [])):
             found.append(_finding("error", "broken", o["label"], f"{o['label']} ({_short(o['type'])}) is in error",
@@ -280,7 +280,14 @@ def evaluate(facts: dict) -> dict:
         def named(nums: list[int]) -> str:
             return ", ".join(f"{n} ({types[n - 1]})" if 0 < n <= len(types) else str(n) for n in nums)
 
-        if solver.get("conflicting"):
+        if sk.get("references_ok") is False:
+            broken = sk.get("dangling") or []
+            found.append(_finding("error", "constraints", o["label"],
+                                  f"sketch {o['label']} has constraints on geometry that no longer exists"
+                                  + (f": {named(broken)}" if broken else ""),
+                                  "delete those constraints (Sketch > Validate sketch... > Invalid constraints > Fix "
+                                  "removes them), then constrain the sketch again; adding constraints can't fix it"))
+        elif solver.get("conflicting"):
             found.append(_finding("error", "constraints", o["label"],
                                   f"sketch {o['label']} has conflicting constraints: {named(solver['conflicting'])}",
                                   "remove or correct one of them (constraint numbers as FreeCAD's constraint list "

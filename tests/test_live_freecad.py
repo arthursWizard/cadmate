@@ -53,9 +53,13 @@ out = {"fillet_before": list(fillet.State), "app_wide": app_wide}
 
 def call(label, doc, code):
     before = bridge.seq
-    r = bridge._handle({"op": "run", "label": label, "doc": doc, "code": code})
+    try:
+        r = bridge._handle({"op": "run", "label": label, "doc": doc, "code": code})
+    except Exception as e:  # the bridge's queue turns this into an error reply, so it counts as one
+        r = {"ok": False, "error": f"bridge raised {type(e).__name__}: {e}"}
     docs = sorted({e["doc"] for e in bridge.events if e["seq"] > before})
-    return {"ok": r.get("ok"), "error": r.get("error"), "touched": r.get("touched"), "event_docs": docs}
+    return {"ok": r.get("ok"), "error": r.get("error"), "touched": r.get("touched"), "event_docs": docs,
+            "doc": r.get("doc"), "closed": r.get("closed")}
 
 App.setActiveDocument("work")
 out["edits"] = [call(f"edit {i}", "work", f"b = doc.addObject('Part::Box', 'B{i}'); b.Length = {i + 1}")
@@ -80,6 +84,24 @@ App.setActiveDocument("work")
 out["failed"] = call("failed", "other", "doc.addObject('Part::Box', 'Q'); raise ValueError('nope')")
 out["active_after_failed"] = App.ActiveDocument.Name
 out["failed_undo"] = {d.Name: list(d.UndoNames) for d in (other, work)}
+# Code that closes the document it was given: the close is what was asked, so it's a success.
+for name in ("scratch", "scratch_active", "scratch_failed"):
+    App.newDocument(name).UndoMode = 1
+App.setActiveDocument("work")
+work_undo = list(work.UndoNames)
+out["close"] = call("close", "scratch", "App.closeDocument(doc.Name)")
+out["close_after"] = {"active": App.ActiveDocument.Name, "documents": sorted(App.listDocuments()),
+                      "work_undo_same": list(work.UndoNames) == work_undo}
+App.setActiveDocument("scratch_active")
+out["close_active"] = call("close active", "scratch_active",
+                           "App.getDocument('other').addObject('Part::Box', 'R'); App.closeDocument(doc.Name)")
+out["close_active_after"] = {"documents": sorted(App.listDocuments()),
+                             "other_box_state": list(other.getObject("R").State) if other.getObject("R") else None}
+App.setActiveDocument("work")
+out["close_failed"] = call("close failed", "scratch_failed", "App.closeDocument(doc.Name); raise ValueError('after close')")
+out["close_failed_after"] = {"active": App.ActiveDocument.Name, "documents": sorted(App.listDocuments())}
+out["close_then_edit"] = call("after close", "work", "doc.addObject('Part::Box', 'Z')")
+out["close_then_edit_undo"] = list(work.UndoNames)[:1]
 App.removeDocumentObserver(bridge.observer)
 json.dump(out, open(os.environ["CADMATE_OUT"], "w"))
 '''
@@ -138,3 +160,28 @@ def test_active_document_after_a_switch_or_a_failed_edit(run):
     assert run["active_after_failed"] == "work"
     assert not [n for n in run["failed_undo"]["work"] if n.startswith("->")], run
     assert "cadmate: failed" not in run["failed_undo"]["other"]
+
+
+@pytest.mark.skipif(not HAS_FREECAD, reason="needs FreeCAD")
+def test_edit_whose_code_closes_its_own_document(run):
+    """Closing the target document is something an edit may ask for: it succeeds, says so, and leaves the rest as an
+    edit would, with no transaction left open behind it."""
+    close, after = run["close"], run["close_after"]
+    assert close["ok"], close
+    assert close["closed"] == "scratch" and close["doc"] == "work", close
+    assert "scratch" not in after["documents"] and after["active"] == "work" and after["work_undo_same"], after
+
+    # the active document closed, after the code changed another one: that one is still recomputed
+    assert run["close_active"]["ok"], run["close_active"]
+    assert run["close_active"]["closed"] == "scratch_active"
+    assert "scratch_active" not in run["close_active_after"]["documents"]
+    assert "Touched" not in run["close_active_after"]["other_box_state"], run["close_active_after"]
+
+    # code that closes its document and then fails reports its own error, not one about the closed document
+    failed = run["close_failed"]
+    assert failed["ok"] is False and "after close" in failed["error"], failed
+    assert run["close_failed_after"]["active"] == "work"
+
+    # and the next edit is its own undo step as usual
+    assert run["close_then_edit"]["ok"], run["close_then_edit"]
+    assert run["close_then_edit_undo"] == ["cadmate: after close"]

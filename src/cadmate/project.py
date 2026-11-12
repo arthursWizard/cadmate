@@ -83,6 +83,8 @@ Follow cadmate's project rules (the cadmate-project skill). In short:
   bracket/). Adding the second tool, board or part: `project_add_tool`, `project_add_board`, `project_add_part`.
   Never move them by hand. This project: {layout}.
 - Scratch goes in .cadmate/work/ and is deleted when done.
+- FreeCAD parts are built as the freecad-modelling skill says: one Body per piece, sizes in one Params sheet, sketches
+  on origin or datum planes, named; change the feature, don't stack a fix. Run `check_model_structure` after each round.
 - Never rename a KiCad project; never move tools/ out: the scripts are the design's source.
 - docs/brief.md holds every requirement the user stated. Add to it when they state one; re-read it before each stage
   and before showing a result; tick an item only once checked. `project_check` lists what is still open.
@@ -957,8 +959,9 @@ def check(path: str | Path) -> dict:
     for t in ("freecad", "protoboard"):
         if t in sh.tools and (root / sh.dir(t)).exists():
             found += _check_units(root, sh, t)
-    from . import enclosure, release  # they import this module
+    from . import enclosure, release, structure  # they import this module
     found += enclosure.project_findings(root)
+    found += structure.project_findings(root)
     found += release.project_findings(root)
     work = root / WORK
     if work.exists() and any(work.iterdir()):

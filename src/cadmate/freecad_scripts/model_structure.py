@@ -68,6 +68,18 @@ def _sketch(o):
             solver[key] = [int(i) for i in getattr(o, prop, []) or []]
         except Exception:
             pass
+    # Constraints that name geometry no longer in the sketch (deleted under them): the solver ignores them and sets
+    # no flag, so the sketch only reads as not fully constrained. evaluateConstraints() finds them without solving.
+    refs_ok, dangling = None, []
+    try:
+        refs_ok = bool(o.evaluateConstraints())
+    except Exception:
+        pass
+    if refs_ok is False:
+        n = len(o.Geometry)
+        for i, c in enumerate(o.Constraints, 1):  # 1-based, as FreeCAD's constraint list shows them
+            if any(getattr(c, a, -1) >= n for a in ("First", "Second", "Third")):  # negative: axes and external
+                dangling.append(i)
     external = []
     try:
         external = _links(o.ExternalGeometry)
@@ -75,7 +87,7 @@ def _sketch(o):
         pass
     types = [c.Type for c in o.Constraints]
     return {"fully_constrained": None if fully is None else bool(fully), "dimensions": dims, "solver": solver,
-            "constraint_types": types,
+            "constraint_types": types, "references_ok": refs_ok, "dangling": dangling,
             "geometry": len(o.Geometry), "external": external}
 
 

@@ -588,7 +588,8 @@ def freecad_live_edit(code: str, label: str, doc: str | None = None) -> dict:
     App, Gui, Part, V (App.Vector) and doc (the document); set `result` to
     return a value. The document, and any other the code changed, is
     recomputed afterwards; other open documents are left alone. If the code raises,
-    the whole step is undone and the error comes back. origins_shown in the
+    the whole step is undone and the error comes back. If the code closes
+    the document, the reply names it under closed. origins_shown in the
     reply lists origins (Part and Body axes and planes) the code made visible,
     such as by showing every object in doc.Objects; hide them again unless the
     user asked for them. label is short and says what changed ("move USB-C

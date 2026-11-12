@@ -440,3 +440,65 @@ def test_over_constrained_and_conflicting_sketches_say_which_constraints():
     sk["sketch"]["solver"] = {"redundant": [], "conflicting": [5, 6]}
     errs = [x["problem"] for x in run(f)["findings"] if x["severity"] == "error"]
     assert errs == ["sketch base-outline has conflicting constraints: 5 (Horizontal), 6 (Vertical)"]
+
+
+def test_constraints_on_geometry_that_is_gone_are_named_not_called_under_constrained():
+    """A constraint left pointing at deleted geometry: FreeCAD sets no solver flag for it and the sketch reads as
+    not fully constrained, but constraining more points can't fix it. Say what's wrong instead."""
+    f = clean()
+    sk = f["objects"][2]
+    sk["sketch"] |= {"fully_constrained": False, "references_ok": False, "dangling": [4, 9],
+                     "solver": {"redundant": [], "conflicting": [], "malformed": []},
+                     "constraint_types": ["Coincident"] * 4 + ["Horizontal"] * 2 + ["Vertical"] * 2 + ["DistanceX"]}
+    errs = [(x["problem"], x["fix"]) for x in run(f)["findings"] if x["severity"] == "error"]
+    assert len(errs) == 1, errs
+    problem, fix = errs[0]
+    assert problem == ("sketch base-outline has constraints on geometry that no longer exists: 4 (Coincident), "
+                       "9 (DistanceX)")
+    assert "Validate sketch" in fix and "constrain every point" not in fix
+    sk["sketch"]["dangling"] = []  # FreeCAD says some are broken but they can't be pinned down
+    (problem,) = [x["problem"] for x in run(f)["findings"] if x["severity"] == "error"]
+    assert problem == "sketch base-outline has constraints on geometry that no longer exists"
+    del sk["sketch"]["references_ok"], sk["sketch"]["dangling"]  # a report from before this was collected
+    (problem,) = [x["problem"] for x in run(f)["findings"] if x["severity"] == "error"]
+    assert problem == "sketch base-outline isn't fully constrained"
+
+
+DANGLING = r'''
+import json, os
+import FreeCAD as App
+import Part
+import Sketcher
+
+V = App.Vector
+doc = App.newDocument("dangling")
+sk = doc.addObject("Sketcher::SketchObject", "Sketch")
+pts = [V(0, 0, 0), V(10, 0, 0), V(10, 10, 0), V(0, 10, 0)]
+for i in range(4):
+    sk.addGeometry(Part.LineSegment(pts[i], pts[(i + 1) % 4]), False)
+for i in range(4):
+    sk.addConstraint(Sketcher.Constraint("Coincident", i, 2, (i + 1) % 4, 1))
+sk.addConstraint(Sketcher.Constraint("Horizontal", 0))
+sk.addConstraint(Sketcher.Constraint("Vertical", 3))
+doc.recompute()
+sk.Geometry = sk.Geometry[:2]  # the last two lines go; constraints 2, 3, 4 and 6 still name them
+doc.recompute()
+ns = {"__name__": "collector"}
+exec(open(os.environ["CADMATE_COLLECTOR"]).read(), ns)
+with open(os.environ["CADMATE_OUT"], "w") as f:
+    json.dump({"evaluate": bool(sk.evaluateConstraints()), "constraints": len(sk.Constraints),
+               "facts": ns["collect"](doc)}, f)
+'''
+
+
+@pytest.mark.skipif(not HAS_FREECAD, reason="needs FreeCAD")
+def test_real_sketch_with_constraints_on_deleted_geometry(tmp_path):
+    script = tmp_path / "dangling.py"
+    script.write_text(DANGLING)
+    out = apps.run_freecad_script(script, env={"CADMATE_COLLECTOR": str(structure.SCRIPT)})
+    assert out["evaluate"] is False and out["constraints"] == 6, out  # FreeCAD kept the broken constraints
+    (sk,) = [o for o in out["facts"]["objects"] if o["name"] == "Sketch"]
+    assert sk["sketch"]["references_ok"] is False and sk["sketch"]["dangling"] == [2, 3, 4, 6], sk["sketch"]
+    problems = [f["problem"] for f in structure.evaluate(out["facts"])["findings"] if f["check"] == "constraints"]
+    assert problems == ["sketch Sketch has constraints on geometry that no longer exists: 2 (Coincident), "
+                        "3 (Coincident), 4 (Coincident), 6 (Vertical)"], problems

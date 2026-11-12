@@ -399,3 +399,35 @@ def test_a_part_whose_footprint_still_has_its_old_reference_is_out_of_date(desig
     r = pn.set_part_numbers(str(sch), {"R5": {"MPN": "A"}})
     assert r["board"]["out_of_date"] == ["R5"] and "not_on_board" not in r["board"]
     assert "parity" in r["board"]["out_of_date_note"]
+
+
+def test_unlinked_footprints_that_could_be_each_other_are_left_alone(design):
+    """Two footprints with no link to their symbols, the same value and the same footprint name: nothing on the board
+    says which is which (the schematic may have been re-annotated since), so they're written only when both would
+    get the same numbers, and otherwise left alone and named."""
+    sch, pcb = design / "main.kicad_sch", design / "main.kicad_pcb"
+    top = "/" + ROOT_UUID
+    text = sch.read_text(encoding="utf-8")
+    i = text.index("\t(sheet\n")
+    sch.write_text(text[:i] + symbol(7, "Device:R", "10k", "Resistor_SMD:R_0603", [(top, "R2")]) + text[i:],
+                   encoding="utf-8", newline="\n")
+    board = pcb.read_text(encoding="utf-8").replace(f'\t\t(path "/{sym_uuid(1)}")\n', "")
+    board = board[:board.rindex(")")] + footprint("R2", "R_0603", value="10k") + ")\n"
+    pcb.write_text(board, encoding="utf-8", newline="\n")
+
+    r = pn.set_part_numbers(str(sch), {"R1": {"MPN": "A"}, "R2": {"MPN": "B"}})
+    assert r["board"]["changed"] == {} and pcb.read_text(encoding="utf-8") == board
+    assert r["board"]["ambiguous"] == [{"refs": ["R1", "R2"], "value": "10k", "footprint": "R_0603"}]
+    assert "Update PCB from Schematic" in r["board"]["ambiguous_note"]
+    assert [f[MPN] for f in fields(sch, "R1")] == ["A"] and [f[MPN] for f in fields(sch, "R2")] == ["B"]
+
+    # R2 now has B in the schematic: R1 alone getting B leaves both the same, so it doesn't matter which is which
+    r = pn.set_part_numbers(str(sch), {"R1": {"MPN": "B"}})
+    assert set(r["board"]["changed"]) == {"R1"} and "ambiguous" not in r["board"]
+    # one of them asked for alone, the other different: left alone
+    r = pn.set_part_numbers(str(sch), {"R1": {"MPN": "C"}})
+    assert r["board"]["changed"] == {} and r["board"]["ambiguous"][0]["refs"] == ["R1", "R2"]
+    # the same numbers for both: written, whichever is which
+    r = pn.set_part_numbers(str(sch), {"R1,R2": {"MPN": "D", "LCSC": "C25804"}})
+    assert set(r["board"]["changed"]) == {"R1", "R2"} and "ambiguous" not in r["board"]
+    assert [f[MPN] for f in fields(pcb, "R1")] == ["D"] and [f[MPN] for f in fields(pcb, "R2")] == ["D"]

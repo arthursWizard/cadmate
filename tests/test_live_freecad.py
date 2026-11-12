@@ -53,9 +53,14 @@ out = {"fillet_before": list(fillet.State), "app_wide": app_wide}
 
 def call(label, doc, code):
     before = bridge.seq
-    r = bridge._handle({"op": "run", "label": label, "doc": doc, "code": code})
+    try:
+        r = bridge._handle({"op": "run", "label": label, "doc": doc, "code": code})
+    except Exception as e:  # the bridge's queue turns this into an error reply, so it counts as one
+        r = {"ok": False, "error": f"bridge raised {type(e).__name__}: {e}"}
     docs = sorted({e["doc"] for e in bridge.events if e["seq"] > before})
-    return {"ok": r.get("ok"), "error": r.get("error"), "touched": r.get("touched"), "event_docs": docs}
+    return {"ok": r.get("ok"), "error": r.get("error"), "touched": r.get("touched"), "event_docs": docs,
+            "doc": r.get("doc"), "closed": r.get("closed"), "reopened": r.get("reopened"), "note": r.get("note"),
+            "undo_step_left": r.get("undo_step_left"), "check": r.get("check")}
 
 App.setActiveDocument("work")
 out["edits"] = [call(f"edit {i}", "work", f"b = doc.addObject('Part::Box', 'B{i}'); b.Length = {i + 1}")
@@ -80,6 +85,42 @@ App.setActiveDocument("work")
 out["failed"] = call("failed", "other", "doc.addObject('Part::Box', 'Q'); raise ValueError('nope')")
 out["active_after_failed"] = App.ActiveDocument.Name
 out["failed_undo"] = {d.Name: list(d.UndoNames) for d in (other, work)}
+# Code that closes the document it was given: the close is what was asked, so it's a success.
+for name in ("scratch", "scratch_active", "scratch_failed"):
+    App.newDocument(name).UndoMode = 1
+App.setActiveDocument("work")
+work_undo = list(work.UndoNames)
+out["close"] = call("close", "scratch", "App.closeDocument(doc.Name)")
+out["close_after"] = {"active": App.ActiveDocument.Name, "documents": sorted(App.listDocuments()),
+                      "work_undo_same": list(work.UndoNames) == work_undo}
+App.setActiveDocument("scratch_active")
+out["close_active"] = call("close active", "scratch_active",
+                           "App.getDocument('other').addObject('Part::Box', 'R'); App.closeDocument(doc.Name)")
+out["close_active_after"] = {"documents": sorted(App.listDocuments()),
+                             "other_box_state": list(other.getObject("R").State) if other.getObject("R") else None}
+App.setActiveDocument("work")
+other_undo = list(other.UndoNames)
+out["close_failed"] = call("close failed", "scratch_failed", "App.getDocument('other').addObject('Part::Box', 'S'); "
+                           "App.closeDocument(doc.Name); raise ValueError('after close')")
+out["close_failed_after"] = {"active": App.ActiveDocument.Name, "documents": sorted(App.listDocuments()),
+                             "other_box": other.getObject("S") is not None,
+                             "other_undo_new": list(other.UndoNames)[:len(other.UndoNames) - len(other_undo)],
+                             "other_redo": list(other.RedoNames)}
+# A reload from disk: the code closes its document and opens the saved file again, under the same name.
+saved = App.newDocument("saved")
+saved.UndoMode = 1
+saved.addObject("Part::Box", "Kept")
+saved.recompute()
+saved.saveAs(os.path.join(os.environ["CADMATE_TMP"], "saved.FCStd"))
+saved.clearUndos()
+App.setActiveDocument("work")
+work_undo = list(work.UndoNames)
+out["reload"] = call("reload", "saved", "path = doc.FileName; App.closeDocument(doc.Name); App.openDocument(path)")
+out["reload_after"] = {"active": App.ActiveDocument.Name, "work_undo_same": list(work.UndoNames) == work_undo,
+                       "objects": [o.Name for o in App.getDocument("saved").Objects],
+                       "undo": list(App.getDocument("saved").UndoNames)}
+out["close_then_edit"] = call("after close", "work", "doc.addObject('Part::Box', 'Z')")
+out["close_then_edit_undo"] = list(work.UndoNames)[:1]
 App.removeDocumentObserver(bridge.observer)
 json.dump(out, open(os.environ["CADMATE_OUT"], "w"))
 '''
@@ -89,7 +130,7 @@ json.dump(out, open(os.environ["CADMATE_OUT"], "w"))
 def run(tmp_path_factory):
     script = tmp_path_factory.mktemp("bridge") / "edits.py"
     script.write_text(SCRIPT)
-    return apps.run_freecad_script(script, env={"CADMATE_BRIDGE": str(BRIDGE)})
+    return apps.run_freecad_script(script, env={"CADMATE_BRIDGE": str(BRIDGE), "CADMATE_TMP": str(script.parent)})
 
 
 @pytest.mark.skipif(not HAS_FREECAD, reason="needs FreeCAD")
@@ -138,3 +179,117 @@ def test_active_document_after_a_switch_or_a_failed_edit(run):
     assert run["active_after_failed"] == "work"
     assert not [n for n in run["failed_undo"]["work"] if n.startswith("->")], run
     assert "cadmate: failed" not in run["failed_undo"]["other"]
+
+
+@pytest.mark.skipif(not HAS_FREECAD, reason="needs FreeCAD")
+def test_edit_whose_code_closes_its_own_document(run):
+    """Closing the target document is something an edit may ask for: it succeeds, says so, and leaves the rest as an
+    edit would, with no transaction left open behind it."""
+    close, after = run["close"], run["close_after"]
+    assert close["ok"], close
+    assert close["closed"] == "scratch" and close["doc"] == "work", close
+    assert "scratch" not in after["documents"] and after["active"] == "work" and after["work_undo_same"], after
+
+    # the active document closed, after the code changed another one: that one is still recomputed
+    assert run["close_active"]["ok"], run["close_active"]
+    assert run["close_active"]["closed"] == "scratch_active"
+    assert "scratch_active" not in run["close_active_after"]["documents"]
+    assert "Touched" not in run["close_active_after"]["other_box_state"], run["close_active_after"]
+
+    # code that changes another document, closes its own and then fails. The close can't be rolled back, and on 1.1 it
+    # already committed the change in the other document, so the reply says what's left there instead of undoing it
+    # (an undo would leave the failed edit in the user's redo list)
+    failed, after = run["close_failed"], run["close_failed_after"]
+    assert failed["ok"] is False and "after close" in failed["error"], failed
+    assert failed["closed"] == "scratch_failed" and "can't be undone" in failed["note"], failed
+    assert after["active"] == "work" and after["other_redo"] == [], after
+    if after["other_box"]:  # left in place: named, as an undo step where FreeCAD recorded one
+        if after["other_undo_new"] == ["cadmate: close failed"]:
+            assert failed["undo_step_left"] == ["other"] and not failed["check"], (failed, after)
+        else:
+            assert after["other_undo_new"] == [] and failed["check"] == ["other"], (failed, after)
+
+    # a reload from disk: same name, a new document; the edit succeeds and says so
+    reload, after = run["reload"], run["reload_after"]
+    assert reload["ok"], reload
+    assert reload["closed"] == "saved" and reload["reopened"] == "saved", reload
+    assert after["objects"] == ["Kept"] and after["undo"] == [], after
+    assert after["active"] == "work" and after["work_undo_same"], after
+
+    # and the next edit is its own undo step as usual
+    assert run["close_then_edit"]["ok"], run["close_then_edit"]
+    assert run["close_then_edit_undo"] == ["cadmate: after close"]
+
+
+
+# Code that closes its target and then fails, in the orders a review tried on FreeCAD 1.1.3. FreeCAD commits the open
+# transaction when its document closes and cancels some changes made after that itself, so the bridge doesn't try to
+# roll anything back: it must not add undo or redo entries anywhere, must not say anything was undone, and must name
+# every document that still holds a change.
+CLOSE_THEN_FAIL = r"""
+import importlib.util, json, os
+import FreeCAD as App
+
+spec = importlib.util.spec_from_file_location("live_bridge", os.environ["CADMATE_BRIDGE"])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+bridge = mod.Bridge(App, "unix")
+App.addDocumentObserver(bridge.observer)
+G = "App.getDocument"
+CASES = {
+    "before": f"{G}('o1').addObject('Part::Box', 'K'); App.closeDocument(doc.Name); raise ValueError('boom')",
+    "after": f"App.closeDocument(doc.Name); {G}('o1').addObject('Part::Box', 'K'); raise ValueError('boom')",
+    "mixed": f"{G}('o1').addObject('Part::Box', 'K'); App.closeDocument(doc.Name); {G}('o2').addObject('Part::Box', 'K'); "
+             f"{G}('o1').addObject('Part::Box', 'K2'); raise ValueError('boom')",
+}
+out = {}
+for case, code in CASES.items():
+    for n in list(App.listDocuments()):
+        App.closeDocument(n)
+    for n in ("user", "o1", "o2", "t"):
+        App.newDocument(n).UndoMode = 1
+    App.getDocument("o1").openTransaction("user box")  # the user's own history, which must stay as it was
+    App.getDocument("o1").addObject("Part::Box", "U")
+    App.getDocument("o1").commitTransaction()
+    App.setActiveDocument("user")
+    r = bridge._handle({"op": "run", "label": case, "doc": "t", "code": code})
+    docs = App.listDocuments()
+    out[case] = {"reply": {k: r.get(k) for k in ("ok", "error", "closed", "note", "undo_step_left", "check")},
+                 "active": App.ActiveDocument.Name,
+                 "undo": {n: list(d.UndoNames) for n, d in docs.items()},
+                 "redo": {n: list(d.RedoNames) for n, d in docs.items()},
+                 "objects": {n: [o.Name for o in d.Objects] for n, d in docs.items()}}
+App.removeDocumentObserver(bridge.observer)
+json.dump(out, open(os.environ["CADMATE_OUT"], "w"))
+"""
+
+
+@pytest.fixture(scope="module")
+def close_then_fail(tmp_path_factory):
+    script = tmp_path_factory.mktemp("bridge") / "close_then_fail.py"
+    script.write_text(CLOSE_THEN_FAIL)
+    return apps.run_freecad_script(script, env={"CADMATE_BRIDGE": str(BRIDGE)})
+
+
+@pytest.mark.skipif(not HAS_FREECAD, reason="needs FreeCAD")
+@pytest.mark.parametrize("case", ["before", "after", "mixed"])
+def test_code_that_closes_its_target_then_fails_is_reported_not_rolled_back(close_then_fail, case):
+    run = close_then_fail[case]
+    r = run["reply"]
+    assert r["ok"] is False and "boom" in r["error"] and r["closed"] == "t", r
+    assert "can't be undone" in r["note"] and "was undone" not in r["note"], r
+    assert run["active"] == "user", run
+    assert all(redo == [] for redo in run["redo"].values()), run  # nothing for the user to redo by mistake
+    named = set(r["undo_step_left"] or []) | set(r["check"] or [])
+    for n in ("o1", "o2"):
+        left = [o for o in run["objects"][n] if o != "U"]
+        if left:  # every document still holding a change is named
+            assert n in named, (n, run)
+        undo = run["undo"][n]
+        if n == "o1":
+            assert undo[-1] == "user box", run  # the user's own history is still there
+        if n in (r["undo_step_left"] or []):  # and an undo step the reply points to is really there, on top
+            assert undo[0] == f"cadmate: {case}" and left, run
+    if case == "mixed":  # o1 changed both before and after the close: its undo step doesn't cover K2, so it's checked
+        assert "o1" in (r["check"] or []) and "o2" in (r["check"] or []), r
+        assert "before the close" in r["note"] or not r["undo_step_left"], r

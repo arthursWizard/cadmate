@@ -290,3 +290,6 @@ def test_code_that_closes_its_target_then_fails_is_reported_not_rolled_back(clos
             assert undo[-1] == "user box", run  # the user's own history is still there
         if n in (r["undo_step_left"] or []):  # and an undo step the reply points to is really there, on top
             assert undo[0] == f"cadmate: {case}" and left, run
+    if case == "mixed":  # o1 changed both before and after the close: its undo step doesn't cover K2, so it's checked
+        assert "o1" in (r["check"] or []) and "o2" in (r["check"] or []), r
+        assert "before the close" in r["note"] or not r["undo_step_left"], r

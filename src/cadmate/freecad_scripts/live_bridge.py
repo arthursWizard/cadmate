@@ -377,6 +377,8 @@ class Bridge:
         self.seq = 0
         self.in_call = False
         self.call_docs: set[str] = set()  # documents changed during the current request
+        self.target_open = None  # during an edit: whether its target is still open, so changes after a close are known
+        self.after_close: set[str] = set()  # documents changed after the edit's code closed its target
         self.running = True
         self.timer = None
         self.observer = _Observer(self)
@@ -546,6 +548,8 @@ class Bridge:
     def _log(self, kind: str, doc, obj=None, prop: str | None = None):
         if self.in_call and doc is not None:
             self.call_docs.add(doc.Name)
+            if self.target_open is not None and not self.target_open():
+                self.after_close.add(doc.Name)
         if prop in QUIET_PROPERTIES or (prop or "").startswith("_"):
             return
         self.seq += 1
@@ -692,7 +696,8 @@ class Bridge:
                 # with a feature that won't recompute (a failed fillet) changes on every recompute, which would fill
                 # its undo list with cadmate's edits and mark it unsaved.
                 d.openTransaction(step)
-            self.call_docs = set()
+            self.call_docs, self.after_close = set(), set()
+            self.target_open = alive if d is not None else None
             self.in_call = True
             try:
                 with contextlib.redirect_stdout(out):
@@ -713,8 +718,8 @@ class Bridge:
                 steps, others = self._left_after_close(step, undo_before, name)
                 note = f"the edit failed after closing {name}, which can't be undone"
                 if steps:
-                    note += (f"; it left changes in {', '.join(steps)}, recorded there as the undo step {step!r}, "
-                             "which Edit > Undo in that document takes back")
+                    note += (f"; changes it made before the close are in {', '.join(steps)} as the undo step "
+                             f"{step!r}, which Edit > Undo in that document takes back")
                 if others:
                     note += f"; {', '.join(others)} may still have changes it made, with no undo step: check them"
                 self._say(f"{label}: {note}: {e}", error=True)
@@ -726,6 +731,7 @@ class Bridge:
                 return reply
             finally:
                 self.in_call = False
+                self.target_open = None
             end_transaction(abort=False)
         finally:
             if switched is not None:
@@ -750,7 +756,8 @@ class Bridge:
         FreeCAD 1.1 commits the open transaction when the document that opened it closes, so changes made before the
         close are already an undo step there, and changes made after it belong to no transaction at all. Neither can
         be taken back cleanly from here (undoing leaves the failed edit in the user's redo list), so they're reported:
-        (documents with a step named step on top of their undo list, other documents the code changed)."""
+        (documents with a step named step on top of their undo list, documents that may hold changes with no undo
+        step: the others the code changed, and those of the first it changed again after the close)."""
         App = self.App
         steps, others = [], []
         for n in sorted(self.call_docs - {name}):
@@ -761,7 +768,10 @@ class Bridge:
                 grew = n in undo_before and x.UndoCount > undo_before[n] and list(x.UndoNames)[:1] == [step]
             except Exception:
                 grew = False
-            (steps if grew else others).append(n)
+            if grew:
+                steps.append(n)
+            if not grew or n in self.after_close:  # changed after the close too: those changes aren't in the step
+                others.append(n)
         return steps, others
 
     def op_read(self, code, label="read", doc=None):

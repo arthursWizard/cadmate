@@ -4,8 +4,8 @@
 # under-constrained sketches, default names, bare numbers, dead solids...).
 #
 # Headless: FreeCADCmd opens $CADMATE_DOC (an .FCStd), recomputes it and writes the facts as JSON to $CADMATE_OUT.
-# Live: the bridge runs this file's text in the user's window and calls collect(doc); the collector itself doesn't
-# recompute or change anything (the bridge recomputes touched documents after any run, which changes nothing here).
+# Live: the bridge's read op runs this file's text in the user's window and calls collect(doc), with no transaction
+# and no recompute, so the check reads the document as it is and changes nothing.
 import json
 import os
 

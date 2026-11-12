@@ -59,9 +59,9 @@ once the model does change:
 - **The face is generated.** `Face6` is whatever the pad produced last time. Add a wall, a fillet or a draft upstream
   and the numbering can shift; FreeCAD 1.x follows most of these changes, but not all, and when it gets one wrong the
   sketch silently lands on another face or breaks.
-- **The intent is lost.** A sketch on a face measures from that face's own corner. Make the part wider and a cut-out
-  that should stay centred stays where it was. A sketch on a plane bound to Params (`Params.depth / 2` for the -Y
-  wall, `0` for centred) moves with the wall, because both read the same number.
+- **The position depends on finding the face.** A sketch on a plane reads its position from Params
+  (`Params.depth / 2` for the -Y wall), so it moves with the wall, because both read the same number. A sketch on a
+  face is placed wherever that face is found after each change, so it's only as reliable as the face lookup.
 - **Order is locked.** A feature sketched on a face can't move above the feature that made the face.
 
 So "a USB cut-out in the front wall" is written as: a sketch on the XZ plane, offset to the wall by the same Params

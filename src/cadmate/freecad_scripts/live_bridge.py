@@ -223,6 +223,104 @@ def hide_origins(doc) -> list[str]:
     return shown
 
 
+# What a PartDesign body is built from rather than what it builds: sketches (the layout sketch too), datum planes,
+# lines, points and coordinate systems, and binders. FreeCAD's own commands hide them once a feature uses them; code
+# that adds features doesn't, so after a scripted round they cover the part (a datum plane is a sheet across it).
+HELPER_TYPES = ("Sketcher::SketchObject", "PartDesign::Plane", "PartDesign::Line", "PartDesign::Point",
+                "PartDesign::CoordinateSystem", "PartDesign::ShapeBinder", "PartDesign::SubShapeBinder")
+
+
+def _is(o, types) -> bool:
+    if getattr(o, "TypeId", None) in types:
+        return True
+    for t in types:
+        with contextlib.suppress(Exception):
+            if o.isDerivedFrom(t):
+                return True
+    return False
+
+
+def _shown(o) -> bool:
+    vo = getattr(o, "ViewObject", None)
+    return vo is not None and bool(vo.Visibility)
+
+
+def _show(o, on: bool) -> None:
+    vo = getattr(o, "ViewObject", None)
+    if vo is not None and bool(vo.Visibility) != on:
+        vo.Visibility = on
+
+
+def _has_solid(o) -> bool:
+    shape = getattr(o, "Shape", None)
+    return shape is not None and not shape.isNull() and bool(shape.Solids)
+
+
+def _profile(feature):
+    """The sketch a pad, pocket or other profile feature is made from, or None."""
+    link = getattr(feature, "Profile", None)
+    if isinstance(link, (tuple, list)):
+        link = link[0] if link else None
+    return link
+
+
+def bodies(doc) -> list:
+    return [o for o in doc.Objects if _is(o, ("PartDesign::Body",))]
+
+
+def broken_tips(doc) -> list[dict]:
+    """Bodies whose tip feature has no solid (it failed, or came out empty), with the last feature before it that has
+    one. Such a body shows nothing but its sketches, though the part up to that feature is fine."""
+    out = []
+    for body in bodies(doc):
+        tip = getattr(body, "Tip", None)
+        if tip is None or _has_solid(tip):
+            continue
+        good, f, seen = None, getattr(tip, "BaseFeature", None), set()
+        while f is not None and f.Name not in seen:
+            seen.add(f.Name)
+            if _has_solid(f):
+                good = f
+                break
+            f = getattr(f, "BaseFeature", None)
+        out.append({"body": body, "tip": tip, "good": good})
+    return out
+
+
+def hide_helpers(doc, keep=()) -> list[str]:
+    """Hide the sketches, datums and binders inside each PartDesign body, except those in keep; returns the names of
+    those that were showing. Sketches outside a body are the user's own and stay as they are."""
+    hidden = []
+    for body in bodies(doc):
+        for o in getattr(body, "Group", None) or []:
+            if o.Name not in keep and _is(o, HELPER_TYPES) and _shown(o):
+                _show(o, False)
+                hidden.append(o.Name)
+    return hidden
+
+
+def show_last_good(doc, broken=None) -> list[dict]:
+    """For each body whose tip has no solid, show the last feature that has one, and the failing feature's sketch so
+    the user sees where it goes. The tip stays where it is: this changes what is shown, not the model."""
+    out = []
+    for b in broken_tips(doc) if broken is None else broken:
+        body, tip, good = b["body"], b["tip"], b["good"]
+        if good is not None:
+            for o in getattr(body, "Group", None) or []:
+                if o is not good and not _is(o, HELPER_TYPES):
+                    _show(o, False)
+            _show(good, True)
+        _show(body, True)
+        sketch = _profile(tip)
+        if sketch is not None:
+            _show(sketch, True)
+        out.append({"body": body.Name, "tip": tip.Name, "tip_label": tip.Label,
+                    "showing": good.Name if good is not None else None,
+                    "showing_label": good.Label if good is not None else None,
+                    "sketch_shown": sketch.Name if sketch is not None else None})
+    return out
+
+
 def _placement(p) -> dict:
     yaw, pitch, roll = p.Rotation.getYawPitchRoll()
     return {"position": _jsonable(p.Base), "ypr": [round(yaw, 6), round(pitch, 6), round(roll, 6)]}
@@ -521,6 +619,7 @@ class Bridge:
         import Part
 
         d = self._doc(doc) if doc or App.ActiveDocument else None
+        name = d.Name if d is not None else None  # read now: the code may close the document
         ns = {"App": App, "FreeCAD": App, "Gui": Gui, "FreeCADGui": Gui, "Part": Part, "V": App.Vector, "doc": d, "result": None}
         out = io.StringIO()
         self.in_call = True
@@ -532,8 +631,7 @@ class Bridge:
             return {"ok": False, "error": str(e), "traceback": traceback.format_exc(), "stdout": out.getvalue()[-4000:]}
         finally:
             self.in_call = False
-        return {"result": _jsonable(ns.get("result")), "stdout": out.getvalue()[-4000:], "doc": d.Name if d else None,
-                "seq": self.seq}
+        return {"result": _jsonable(ns.get("result")), "stdout": out.getvalue()[-4000:], "doc": name, "seq": self.seq}
 
     def op_open(self, path, doc=None):
         import FreeCAD as App
@@ -561,8 +659,9 @@ class Bridge:
         finally:
             self.in_call = False
         App.setActiveDocument(d.Name)
-        # A saved .FCStd keeps the origins its owner left on; imports and build scripts are cadmate's to tidy.
-        tidy = self._tidy(d, view="isometric", fit=True, origins=suffix != ".fcstd")
+        # A saved .FCStd keeps the origins and sketches its owner left on; imports and build scripts are cadmate's to
+        # tidy. A body whose tip failed shows its last good solid either way.
+        tidy = self._tidy(d, view="isometric", fit=True, origins=suffix != ".fcstd", helpers=suffix != ".fcstd")
         return {"doc": d.Name, "seq": self.seq} | tidy
 
     def op_save(self, doc=None, path=None):
@@ -630,14 +729,20 @@ class Bridge:
                 v.setAnimationEnabled(True)
         return {"file": str(p)}
 
-    def op_tidy_view(self, doc=None, view="isometric", fit=True, hide_origins=True):
-        """Leave the document's view presentable: a standard view, the model fitted, origins and axis cross off."""
-        return self._tidy(self._doc(doc), view=view, fit=fit, origins=hide_origins)
+    def op_tidy_view(self, doc=None, view="isometric", fit=True, hide_origins=True, hide_helpers=True):
+        """Leave the document's view presentable: a standard view, the model fitted, origins and axis cross off,
+        the sketches and datums inside bodies off, and the last good solid of a body whose tip failed."""
+        return self._tidy(self._doc(doc), view=view, fit=fit, origins=hide_origins, helpers=hide_helpers)
 
-    def _tidy(self, d, view="isometric", fit=True, origins=True) -> dict:
+    def _tidy(self, d, view="isometric", fit=True, origins=True, helpers=True) -> dict:
         if view and view not in VIEWS:
             raise ValueError(f"view {view!r} isn't one of {', '.join(VIEWS)}")
         out = {"doc": d.Name, "origins_hidden": hide_origins(d) if origins else []}
+        broken = broken_tips(d)
+        if helpers:  # the failing feature's sketch stays on: it's where the missing material should be
+            out["helpers_hidden"] = hide_helpers(d, keep={s.Name for s in map(_profile, (b["tip"] for b in broken)) if s})
+        if broken:
+            out["no_solid"] = show_last_good(d, broken)
         if not self.App.GuiUp:
             return out
         import FreeCADGui as Gui

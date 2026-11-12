@@ -95,6 +95,9 @@ Also:
   wrong place still changes something; look at where.
 - Live in the user's window (`freecad_live_edit`): one change per step, labelled with what changed. "Working live" in
   `kicad-3d-models` applies: `freecad_live_state` first, keep `user_changes`, tidy the view once at the end of a round.
+  Code that adds features doesn't hide the sketches and datum planes the way FreeCAD's own commands do; the tidy hides
+  them (the layout sketch and Params stay in the tree). If the tidy reports `no_solid`, the tip feature failed and the
+  window is showing the last good feature: say which feature failed and fix that feature, don't build on top of it.
 
 In FreeCAD Python, a detail placed from Params, then measured. Plane normals aren't what you'd guess (in 1.1 the XZ
 plane's normal points to -Y, so a positive offset moves the sketch toward -Y, and a pocket cuts against the normal),

@@ -132,7 +132,9 @@ jobs:
       - uses: mamba-org/setup-micromamba@v2
         with:
           environment-name: freecad
-          create-args: freecad>=1.1 scipy  # the enclosure check uses scipy; FreeCAD's own installers bundle it, conda-forge's freecad doesn't
+          # freecad=1.1 is any 1.1.x: the release people run, not conda-forge's newer dev builds (2026.x).
+          # The enclosure check uses scipy; FreeCAD's own installers bundle it, conda-forge's freecad doesn't.
+          create-args: freecad=1.1 scipy
           cache-environment: true
       - name: Find freecadcmd
         run: |
@@ -143,7 +145,7 @@ jobs:
         with:
           python-version: "3.13"
       - run: uv sync
-      - run: uv run pytest -q -rs tests/test_enclosure.py tests/test_structure.py tests/test_part.py tests/test_review.py tests/test_apps.py
+      - run: uv run pytest -q -rs tests/test_enclosure.py tests/test_structure.py tests/test_part.py tests/test_review.py tests/test_apps.py tests/test_live_freecad.py
         env:
           CADMATE_REQUIRE_FREECAD: "1"
 

@@ -376,6 +376,7 @@ class Bridge:
         self.events: list[dict] = []
         self.seq = 0
         self.in_call = False
+        self.call_docs: set[str] = set()  # documents changed during the current request
         self.running = True
         self.timer = None
         self.observer = _Observer(self)
@@ -543,6 +544,8 @@ class Bridge:
         return doc
 
     def _log(self, kind: str, doc, obj=None, prop: str | None = None):
+        if self.in_call and doc is not None:
+            self.call_docs.add(doc.Name)
         if prop in QUIET_PROPERTIES or (prop or "").startswith("_"):
             return
         self.seq += 1
@@ -622,13 +625,20 @@ class Bridge:
         ns = {"App": App, "FreeCAD": App, "Gui": Gui, "FreeCADGui": Gui, "Part": Part, "V": App.Vector, "doc": d, "result": None}
         out = io.StringIO()
         if d is not None:
+            # FreeCAD's transaction is application-wide: any open document that changes before the commit gets an
+            # undo step of this name. So only recompute what this edit is about, never every open document: one with
+            # a feature that won't recompute (a failed fillet) changes on every recompute, which would fill its undo
+            # list with cadmate's edits and mark it unsaved.
             d.openTransaction(f"cadmate: {label}")
+        self.call_docs = set()
         self.in_call = True
         try:
             with contextlib.redirect_stdout(out):
                 exec(compile(code, f"<cadmate: {label}>", "exec"), ns)
-            for x in App.listDocuments().values():
-                x.recompute()
+            docs = App.listDocuments()
+            for name in sorted(self.call_docs | ({d.Name} if d is not None else set())):
+                if name in docs:  # the code may have closed it
+                    docs[name].recompute()
         except Exception as e:
             if d is not None:
                 d.abortTransaction()

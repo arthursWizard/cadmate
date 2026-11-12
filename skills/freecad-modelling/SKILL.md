@@ -51,6 +51,23 @@ Each body's tree, top to bottom, in RMS's groups:
 7. **Finish**: fillets and chamfers, last. Nothing builds on a rounded edge. Prefer rounded corners drawn in a sketch
    over a fillet on a vertical edge.
 
+### Why not sketch on the face?
+
+Sketching on a face is common in commercial CAD, and it's fine for a model nobody will change. It costs three things
+once the model does change:
+
+- **The face is generated.** `Face6` is whatever the pad produced last time. Add a wall, a fillet or a draft upstream
+  and the numbering can shift; FreeCAD 1.x follows most of these changes, but not all, and when it gets one wrong the
+  sketch silently lands on another face or breaks.
+- **The intent is lost.** A sketch on a face measures from that face's own corner. Make the part wider and a cut-out
+  that should stay centred stays where it was. A sketch on a plane bound to Params (`Params.depth / 2` for the -Y
+  wall, `0` for centred) moves with the wall, because both read the same number.
+- **Order is locked.** A feature sketched on a face can't move above the feature that made the face.
+
+So "a USB cut-out in the front wall" is written as: a sketch on the XZ plane, offset to the wall by the same Params
+entry that places the wall, and a pocket a little deeper than the wall (see the example below). It reads the same in
+the tree and keeps working when the case changes.
+
 Also:
 
 - **One PartDesign Body per printed piece**, named for the piece (`top`, `base`), the same names as the STEP pieces

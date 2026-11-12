@@ -631,15 +631,15 @@ class Bridge:
         App.setActiveDocument(d.Name)
         return prev.Name, view
 
-    def _restore_active(self, name: str, prev: str, view):
+    def _restore_active(self, name: str, prev: str, view, gone: bool = False):
         """Give the user back the document and view they had, unless the edit's code chose another on purpose. When the
-        code closed the target, FreeCAD picked the next active document itself, so the user's comes back too."""
+        code closed the target (gone, even if it reopened one of the same name), FreeCAD picked the next active document
+        itself, so the user's comes back too."""
         App = self.App
         try:
-            docs = App.listDocuments()
-            if prev not in docs:
+            if prev not in App.listDocuments():
                 return
-            if name in docs and (App.ActiveDocument is None or App.ActiveDocument.Name != name):
+            if not gone and (App.ActiveDocument is None or App.ActiveDocument.Name != name):
                 return
         except Exception:
             return
@@ -656,18 +656,26 @@ class Bridge:
         import Part
 
         d = self._doc(doc) if doc or App.ActiveDocument else None
-        # By name from here on: the code may close d, and a closed document's Python object raises on any use.
+        # The code may close d (and may open another document under its name, as a reload from disk does); a closed
+        # document's Python object raises on any use. So d is used only while alive() says it is still open.
         name = d.Name if d is not None else None
+        step = f"cadmate: {label}"
 
-        def open_still() -> bool:
-            return name is not None and name in App.listDocuments()
+        def alive() -> bool:
+            if d is None:
+                return False
+            try:
+                return d.Name == name and name in App.listDocuments()
+            except Exception:
+                return False
 
         def end_transaction(abort: bool):
-            if open_still():
+            if alive():
                 (d.abortTransaction if abort else d.commitTransaction)()
-            elif name is not None:  # closed by the code: end what it left open in other documents (app-wide in 1.1)
+            elif name is not None:  # closed by the code: end anything still open (FreeCAD 1.1 commits it on the close)
                 with contextlib.suppress(Exception):
                     App.closeActiveTransaction(abort)
+        undo_before = {n: x.UndoCount for n, x in App.listDocuments().items()}
         before = self.seq
         origins_before = {x.Name: set(shown_origins(x)) for x in App.listDocuments().values()}
         ns = {"App": App, "FreeCAD": App, "Gui": Gui, "FreeCADGui": Gui, "Part": Part, "V": App.Vector, "doc": d, "result": None}
@@ -683,27 +691,37 @@ class Bridge:
                 # undo step of this name. So only recompute what this edit is about, never every open document: one
                 # with a feature that won't recompute (a failed fillet) changes on every recompute, which would fill
                 # its undo list with cadmate's edits and mark it unsaved.
-                d.openTransaction(f"cadmate: {label}")
+                d.openTransaction(step)
             self.call_docs = set()
             self.in_call = True
             try:
                 with contextlib.redirect_stdout(out):
                     exec(compile(code, f"<cadmate: {label}>", "exec"), ns)
                 docs = App.listDocuments()
-                for n in sorted(self.call_docs | ({name} if name is not None else set())):
-                    if n in docs:  # the code may have closed it
+                for n in sorted(self.call_docs | ({name} if alive() else set())):
+                    if n in docs and (n != name or alive()):  # closed, or reopened fresh from disk: left as it is
                         docs[n].recompute()
             except Exception as e:
+                gone = name is not None and not alive()
                 end_transaction(abort=True)
-                self._say(f"{label} failed and was undone: {e}", error=True)
-                return {"ok": False, "error": str(e), "traceback": traceback.format_exc(),
-                        "stdout": out.getvalue()[-4000:]}
+                kept = self._undo_after_close(step, undo_before, name) if gone else []
+                what = (f"failed after closing {name}, which can't be undone" if gone else "failed and was undone") + (
+                    f"; its changes to {', '.join(kept)} could not be undone and are still there" if kept else
+                    "; the rest was undone" if gone else "")
+                self._say(f"{label} {what}: {e}", error=True)
+                reply = {"ok": False, "error": str(e), "traceback": traceback.format_exc(),
+                         "stdout": out.getvalue()[-4000:]}
+                if gone:
+                    reply |= {"closed": name, "note": f"the edit {what}"}
+                    if kept:
+                        reply["not_undone"] = kept
+                return reply
             finally:
                 self.in_call = False
             end_transaction(abort=False)
         finally:
             if switched is not None:
-                self._restore_active(name, *switched)
+                self._restore_active(name, *switched, gone=name is not None and not alive())
         touched = sorted({e["object"] for e in self.events if e["seq"] > before and e["object"]})
         active = App.ActiveDocument
         reply = {"result": _jsonable(ns.get("result")), "stdout": out.getvalue()[-4000:], "touched": touched,
@@ -711,11 +729,32 @@ class Bridge:
         turned_on = {x.Name: sorted(set(shown_origins(x)) - origins_before.get(x.Name, set()))
                      for x in App.listDocuments().values()}
         turned_on = {k: v for k, v in turned_on.items() if v}
-        if name is not None and not open_still():
-            reply["closed"] = name  # the code closed the document it was given; the close is the edit
+        if name is not None and not alive():  # the code closed the document it was given; the close is the edit
+            reply["closed"] = name
+            if name in App.listDocuments():
+                reply["reopened"] = name  # a document of that name is open again, as after a reload from disk
         if turned_on:  # the usual way origins end up on: code that shows every object in doc.Objects
             reply["origins_shown"] = turned_on
         return reply
+
+    def _undo_after_close(self, step: str, undo_before: dict, name: str) -> list[str]:
+        """After code that closed its target and then failed: FreeCAD 1.1 commits the open transaction when the
+        document that opened it closes, so the other documents the code changed already hold the step. Undo it in each
+        one where it is the one new entry; return the changed documents where it can't be undone that way."""
+        App = self.App
+        kept = []
+        for n in sorted(self.call_docs - {name}):
+            x = App.listDocuments().get(n)
+            if x is None:
+                continue
+            try:
+                if n in undo_before and x.UndoCount == undo_before[n] + 1 and list(x.UndoNames)[:1] == [step]:
+                    x.undo()
+                    continue
+            except Exception:
+                pass
+            kept.append(n)
+        return kept
 
     def op_read(self, code, label="read", doc=None):
         """Run code that only reads: no transaction, no recompute, so the user's undo list and modified flags stay as

@@ -25,5 +25,11 @@ PR titles and descriptions, review comments. Deleting it later doesn't unpublish
 - **Keep the MIT license intact.** Don't change LICENSE, and keep `license = "MIT"` in pyproject.toml and
   .claude-plugin/plugin.json.
 - **Before you push**, read your own diff for the above, and check where every new binary or fixture file came from.
-  A quick scan of the added lines:
-  `git diff origin/main | grep -nE '^\+.*(/Users/|/home/|Users\\|@[a-z0-9-]+\.(com|net|org)|token|secret|password)'`
+  `python .github/check_public.py origin/main..HEAD` checks the tree and your commits for home-folder paths, emails
+  other than noreply ones, and keys or tokens.
+- **CI enforces the patterns.** The `public` job in tests.yml runs that check on every pull request and push to
+  `main`. Design and project names can't be listed in a public file without publishing them, so CI reads them from
+  the `CADMATE_PRIVATE_TERMS` repository secret (one per line) and reports a hit by file and line only.
+- **Every review checks this.** A review verdict covers the diff, the commit messages and the PR description against
+  this section, including names from a user's own designs that no pattern or secret catches. Say so in the verdict;
+  a privacy finding blocks the merge like a bug does.

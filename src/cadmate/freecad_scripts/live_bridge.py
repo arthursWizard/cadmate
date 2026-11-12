@@ -773,6 +773,18 @@ class Bridge:
         return self._tidy(self._doc(doc), view=view, fit=fit, origins=hide_origins, helpers=hide_helpers)
 
     def _tidy(self, d, view="isometric", fit=True, origins=True, helpers=True) -> dict:
+        """Tidy the view. What is shown is presentation, like the camera: a document that had no unsaved changes
+        before still has none after, so closing it doesn't ask to save a visibility change."""
+        gui = self._gui_doc(d)
+        clean = gui is not None and not getattr(gui, "Modified", True)
+        try:
+            return self._tidy_view(d, view=view, fit=fit, origins=origins, helpers=helpers)
+        finally:
+            if clean:
+                with contextlib.suppress(Exception):
+                    gui.Modified = False
+
+    def _tidy_view(self, d, view="isometric", fit=True, origins=True, helpers=True) -> dict:
         if view and view not in VIEWS:
             raise ValueError(f"view {view!r} isn't one of {', '.join(VIEWS)}")
         out = {"doc": d.Name, "origins_hidden": hide_origins(d) if origins else []}

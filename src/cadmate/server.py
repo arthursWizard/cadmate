@@ -638,8 +638,9 @@ def freecad_live_tidy_view(doc: str | None = None, view: str = "isometric", fit:
     but the tip still has its last shape, that shape stays shown and the
     entry has stale: the part on screen is from before the failure; say so.
     With showing null and sketch_empty, nothing builds and the
-    sketch can't be drawn either: say the view is empty and why. Visibility
-    changes mark a saved document as modified (no undo step). Returns what it
+    sketch can't be drawn either: say the view is empty and why. A document
+    with no unsaved changes before is still unsaved-free after (visibility is
+    presentation, like the camera). Returns what it
     hid and no_solid.
     """
     return _live("tidy_view", doc=doc, view=view, fit=fit, hide_origins=hide_origins, hide_helpers=hide_helpers)

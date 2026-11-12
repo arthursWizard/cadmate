@@ -623,6 +623,29 @@ def test_a_failed_fillet_keeps_the_part_on_screen_and_says_it_is_stale():
         del FakeApp.GuiUp
 
 
+def test_tidy_leaves_a_saved_document_without_unsaved_changes():
+    b = load_bridge()
+    bridge = b.Bridge(FakeApp, "unix")
+    gui = type("GuiDoc", (), {"Modified": False})()
+    bridge._gui_doc = lambda d: gui
+    inner = bridge._tidy_view
+
+    def showing_marks_it_modified(*a, **kw):
+        gui.Modified = True  # what FreeCAD does when a visibility changes
+        return inner(*a, **kw)
+
+    bridge._tidy_view = showing_marks_it_modified
+    FakeApp.GuiUp = False
+    try:
+        bridge._tidy(_body_doc(boss_solids=0))
+        assert gui.Modified is False
+        gui.Modified = True  # real unsaved changes stay flagged
+        bridge._tidy(_body_doc(boss_solids=0))
+        assert gui.Modified is True
+    finally:
+        del FakeApp.GuiUp
+
+
 def test_a_hidden_body_and_a_face_profile_are_left_alone():
     b = load_bridge()
     d = _body_doc(boss_solids=0)

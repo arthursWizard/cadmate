@@ -76,6 +76,12 @@ def _norm(name: str) -> str:
     return re.sub(r"[\s._#-]", "", name.lower())
 
 
+def field_kind(name: str) -> str | None:
+    """Which part-number field a field name is (manufacturer, mpn, lcsc, digikey, mouser, package), or None."""
+    n = _norm(name)
+    return next((k for k, names in FIELDS.items() if n in names), None)
+
+
 def _fields(fp: sexpr.Node) -> dict[str, str]:
     props = {}
     for p in fp.children("property"):

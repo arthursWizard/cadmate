@@ -13,7 +13,7 @@ from pathlib import Path
 
 from mcp.server.mcpserver import Image, MCPServer
 
-from . import (apps, check, enclosure, fab_export, footprint, freerouting, generate, ipc, kicad_live, kicad_pcb_live, live, model, packages, part, pcb_flow, pcb_place, pcb_review, pcb_write, ready,
+from . import (apps, check, enclosure, fab_export, footprint, freerouting, generate, ipc, kicad_live, kicad_pcb_live, live, model, packages, part, part_numbers, pcb_flow, pcb_place, pcb_review, pcb_write, ready,
                pcb_route, project, protoboard, release, protoboard_place, protoboard_render, review, schematic_review, schematic_write, structure, symbol, symbol_check, symbol_generate)
 from .footprint import read as _read_footprint  # generate_symbol's footprint argument shadows the module
 
@@ -1116,6 +1116,31 @@ def check_ready_to_order(path: str, fab: str | None = None, currents: dict[str, 
     try:
         return ready.check(path, fab=fab, currents=currents, roles=roles, fab_dir=fab_dir, packages=packages)
     except (ready.ReadyError, pcb_review.ReviewError, OSError, ValueError) as e:
+        return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
+
+
+@server.tool()
+def set_part_numbers(schematic: str, parts: dict[str, dict[str, str]], board: str | None = None,
+                     dry_run: bool = False) -> dict:
+    """Write part numbers onto parts already in a schematic, many at once, and onto the board beside it: for a sheet
+    drawn with generic symbols (an R with a value) that needs numbers before it's ordered.
+
+    parts: {ref: {field: value}}, a key may list refs that get the same part ("R1,R2,R7"), e.g.
+    {"R1,R2": {"Manufacturer": "Yageo", "MPN": "RC0603FR-0710KL", "LCSC": "C98220"}}. Any field but Reference, Value
+    and Footprint; "" empties one. Part-number fields (Manufacturer, MPN, LCSC, DigiKey, Mouser, Package) are matched
+    however the sheet spells them (MFR Part Number, LCSC Part #): an existing one is updated where it is, a new one takes
+    the spelling the sheet already uses, else the plain name. schematic is the root .kicad_sch; parts on sub-sheets are
+    found through the hierarchy, and every unit of a part gets the fields. A sheet used more than once shares one set
+    of fields, so a ref there sets its copies too (shared_symbols), and different numbers for them are refused
+    (conflicts). board defaults to the .kicad_pcb beside the schematic; footprints get the same fields, so export_fab
+    and check_ready_to_order see them without an Update PCB. Only the named fields change; every other byte of the
+    files stays. The old files are kept first (a snapshot in history/ inside a project, else .bak). Refused while KiCad
+    has a file open. changed gives each part's value and footprint beside its new fields: check them against what was
+    picked. dry_run shows the changes without writing. cadmate doesn't search distributors: find the parts with the
+    user's search tool, agree the picks with the user, then set them here."""
+    try:
+        return part_numbers.set_part_numbers(schematic, parts, board=board, dry_run=dry_run)
+    except (part_numbers.PartNumberError, OSError, UnicodeDecodeError) as e:
         return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
 
 

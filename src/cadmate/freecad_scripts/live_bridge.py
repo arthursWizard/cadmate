@@ -223,6 +223,142 @@ def hide_origins(doc) -> list[str]:
     return shown
 
 
+# What a PartDesign body is built from rather than what it builds: sketches (the layout sketch too), datum planes,
+# lines, points and coordinate systems, and binders. FreeCAD's own commands hide them once a feature uses them; code
+# that adds features doesn't, so after a scripted round they cover the part (a datum plane is a sheet across it).
+HELPER_TYPES = ("Sketcher::SketchObject", "PartDesign::Plane", "PartDesign::Line", "PartDesign::Point",
+                "PartDesign::CoordinateSystem", "PartDesign::ShapeBinder", "PartDesign::SubShapeBinder")
+
+
+def _is(o, types) -> bool:
+    if getattr(o, "TypeId", None) in types:
+        return True
+    for t in types:
+        with contextlib.suppress(Exception):
+            if o.isDerivedFrom(t):
+                return True
+    return False
+
+
+def _shown(o) -> bool:
+    vo = getattr(o, "ViewObject", None)
+    return vo is not None and bool(vo.Visibility)
+
+
+def _show(o, on: bool) -> None:
+    vo = getattr(o, "ViewObject", None)
+    if vo is not None and bool(vo.Visibility) != on:
+        vo.Visibility = on
+
+
+def _has_solid(o) -> bool:
+    shape = getattr(o, "Shape", None)
+    return shape is not None and not shape.isNull() and bool(shape.Solids)
+
+
+def _profile(feature):
+    """The sketch (or datum or binder) a pad, pocket or other profile feature is made from, or None. A profile that is
+    a face of an earlier feature isn't one: that is a solid, not something to show in the failed feature's place."""
+    link = getattr(feature, "Profile", None)
+    if isinstance(link, (tuple, list)):
+        link = link[0] if link else None
+    return link if link is not None and _is(link, HELPER_TYPES) else None
+
+
+def _bad(o) -> bool:
+    with contextlib.suppress(Exception):
+        return "Invalid" in o.State or "Error" in o.State
+    return False
+
+
+def _cause(f):
+    """Why feature f didn't build, or None if it did: the sketch, datum or binder it uses that is in error (the feature
+    itself then keeps its last shape and reads as fine), or the feature itself (in error, or no solid)."""
+    for x in getattr(f, "OutList", None) or []:
+        if _is(x, HELPER_TYPES) and _bad(x):
+            return x
+    if _bad(f) or not _has_solid(f):
+        return f
+    return None
+
+
+def bodies(doc) -> list:
+    return [o for o in doc.Objects if _is(o, ("PartDesign::Body",))]
+
+
+def body_status(body) -> dict | None:
+    """For a shown body: its tip, the first feature up to the tip that didn't build and why, and the feature before
+    that which did. A broken sketch makes everything after it fail or go stale, so the first failure is the one to
+    fix. None for a body the user hid or one with no tip."""
+    tip = getattr(body, "Tip", None)
+    if tip is None or not _shown(body):
+        return None
+    features = [o for o in getattr(body, "Group", None) or [] if not _is(o, HELPER_TYPES)]
+    upto = features[:features.index(tip) + 1] if tip in features else [tip]
+    failed = cause = good = None
+    for f in upto:
+        c = _cause(f)
+        if c is not None:
+            failed, cause = f, c
+            break
+        good = f
+    return {"body": body, "tip": tip, "features": features, "failed": failed, "cause": cause, "good": good}
+
+
+def _sketch_of(st):
+    """What to leave showing where the failed feature should be: the broken sketch or datum, else its profile."""
+    cause = st["cause"]
+    if cause is not None and cause is not st["failed"]:
+        return cause
+    return _profile(st["failed"])
+
+
+def hide_helpers(doc, keep=()) -> list[str]:
+    """Hide the sketches, datums and binders inside each PartDesign body, except those in keep; returns the names of
+    those that were showing. Sketches outside a body are the user's own and stay as they are."""
+    hidden = []
+    for body in bodies(doc):
+        for o in getattr(body, "Group", None) or []:
+            if o.Name not in keep and _is(o, HELPER_TYPES) and _shown(o):
+                _show(o, False)
+                hidden.append(o.Name)
+    return hidden
+
+
+def present(st) -> dict | None:
+    """Show one solid per body, as FreeCAD does: the tip when everything up to it built, otherwise the last feature
+    that built, plus the broken sketch (or the failed feature's profile). The tip is never moved: this changes what is
+    shown, not the model. Returns what failed, or None."""
+    failed = st["failed"]
+    sketch = _sketch_of(st) if failed is not None else None
+    # A failed feature with nothing to outline (a fillet, a pattern) that still has its last shape: falling back to
+    # an earlier feature would look like work was lost, with nothing on screen pointing at why. Keep the tip's shape
+    # and say it's stale.
+    stale = failed is not None and sketch is None and _has_solid(st["tip"])
+    show = st["tip"] if failed is None or stale else st["good"]
+    for f in st["features"]:
+        if f is not show:
+            _show(f, False)
+    if show is not None:
+        _show(show, True)
+    if failed is None:
+        return None
+    if sketch is not None:
+        _show(sketch, True)
+    shape = getattr(sketch, "Shape", None)
+    entry = {"body": st["body"].Name, "tip": st["tip"].Name, "tip_label": st["tip"].Label,
+             "failed": failed.Name, "failed_label": failed.Label,
+             "cause": st["cause"].Name, "cause_label": st["cause"].Label,
+             "showing": show.Name if show is not None else None,
+             "showing_label": show.Label if show is not None else None,
+             "sketch_shown": sketch.Name if sketch is not None else None}
+    if stale:
+        entry["stale"] = True  # the shape shown is from before the failure
+    if sketch is not None and (shape is None or shape.isNull()):
+        entry["sketch_empty"] = True  # nothing of it to see either
+    return entry
+
+
 def _placement(p) -> dict:
     yaw, pitch, roll = p.Rotation.getYawPitchRoll()
     return {"position": _jsonable(p.Base), "ypr": [round(yaw, 6), round(pitch, 6), round(roll, 6)]}
@@ -531,6 +667,7 @@ class Bridge:
         import Part
 
         d = self._doc(doc) if doc or App.ActiveDocument else None
+        name = d.Name if d is not None else None  # read now: the code may close the document
         ns = {"App": App, "FreeCAD": App, "Gui": Gui, "FreeCADGui": Gui, "Part": Part, "V": App.Vector, "doc": d, "result": None}
         out = io.StringIO()
         self.in_call = True
@@ -542,8 +679,7 @@ class Bridge:
             return {"ok": False, "error": str(e), "traceback": traceback.format_exc(), "stdout": out.getvalue()[-4000:]}
         finally:
             self.in_call = False
-        return {"result": _jsonable(ns.get("result")), "stdout": out.getvalue()[-4000:], "doc": d.Name if d else None,
-                "seq": self.seq}
+        return {"result": _jsonable(ns.get("result")), "stdout": out.getvalue()[-4000:], "doc": name, "seq": self.seq}
 
     def op_open(self, path, doc=None):
         import FreeCAD as App
@@ -571,8 +707,9 @@ class Bridge:
         finally:
             self.in_call = False
         App.setActiveDocument(d.Name)
-        # A saved .FCStd keeps the origins its owner left on; imports and build scripts are cadmate's to tidy.
-        tidy = self._tidy(d, view="isometric", fit=True, origins=suffix != ".fcstd")
+        # A saved .FCStd keeps the origins and sketches its owner left on; imports and build scripts are cadmate's to
+        # tidy. A body whose tip failed shows its last good solid either way.
+        tidy = self._tidy(d, view="isometric", fit=True, origins=suffix != ".fcstd", helpers=suffix != ".fcstd")
         return {"doc": d.Name, "seq": self.seq} | tidy
 
     def op_save(self, doc=None, path=None):
@@ -640,14 +777,34 @@ class Bridge:
                 v.setAnimationEnabled(True)
         return {"file": str(p)}
 
-    def op_tidy_view(self, doc=None, view="isometric", fit=True, hide_origins=True):
-        """Leave the document's view presentable: a standard view, the model fitted, origins and axis cross off."""
-        return self._tidy(self._doc(doc), view=view, fit=fit, origins=hide_origins)
+    def op_tidy_view(self, doc=None, view="isometric", fit=True, hide_origins=True, hide_helpers=True):
+        """Leave the document's view presentable: a standard view, the model fitted, origins and axis cross off,
+        the sketches and datums inside bodies off, and the last good solid of a body whose tip failed."""
+        return self._tidy(self._doc(doc), view=view, fit=fit, origins=hide_origins, helpers=hide_helpers)
 
-    def _tidy(self, d, view="isometric", fit=True, origins=True) -> dict:
+    def _tidy(self, d, view="isometric", fit=True, origins=True, helpers=True) -> dict:
+        """Tidy the view. What is shown is presentation, like the camera: a document that had no unsaved changes
+        before still has none after, so closing it doesn't ask to save a visibility change."""
+        gui = self._gui_doc(d)
+        clean = gui is not None and not getattr(gui, "Modified", True)
+        try:
+            return self._tidy_view(d, view=view, fit=fit, origins=origins, helpers=helpers)
+        finally:
+            if clean:
+                with contextlib.suppress(Exception):
+                    gui.Modified = False
+
+    def _tidy_view(self, d, view="isometric", fit=True, origins=True, helpers=True) -> dict:
         if view and view not in VIEWS:
             raise ValueError(f"view {view!r} isn't one of {', '.join(VIEWS)}")
         out = {"doc": d.Name, "origins_hidden": hide_origins(d) if origins else []}
+        status = [st for st in map(body_status, bodies(d)) if st is not None]
+        if helpers:  # the failed feature's sketch stays on: it's where the missing material should be
+            keep = {k.Name for k in (_sketch_of(st) for st in status if st["failed"] is not None) if k is not None}
+            out["helpers_hidden"] = hide_helpers(d, keep=keep)
+        failed = [e for e in map(present, status) if e is not None]
+        if failed:
+            out["no_solid"] = failed
         if not self.App.GuiUp:
             return out
         import FreeCADGui as Gui

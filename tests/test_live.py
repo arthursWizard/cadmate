@@ -446,7 +446,7 @@ class _VO:
 
 class _Obj:
     def __init__(self, name, type_id="Part::Feature", visible=True, features=()):
-        self.Name, self.TypeId, self.ViewObject = name, type_id, _VO(visible)
+        self.Name, self.Label, self.TypeId, self.ViewObject = name, name, type_id, _VO(visible)
         if features:
             self.OriginFeatures = list(features)
 
@@ -481,7 +481,7 @@ def test_tidy_hides_the_origins_and_leaves_everything_else():
     FakeApp.GuiUp = False
     try:
         r = bridge._tidy(d)
-        assert r == {"doc": "D", "origins_hidden": ["Origin", "X_Axis", "XY_Plane"]}
+        assert r == {"doc": "D", "origins_hidden": ["Origin", "X_Axis", "XY_Plane"], "helpers_hidden": []}
         assert b.shown_origins(d) == []
         assert all(o.ViewObject.Visibility for o in d.Objects if o.Name in ("Body", "Box", "LCS"))
         assert bridge._tidy(d)["origins_hidden"] == []  # nothing left to hide
@@ -490,6 +490,175 @@ def test_tidy_hides_the_origins_and_leaves_everything_else():
         assert b.shown_origins(d2) == ["Origin", "X_Axis", "XY_Plane"]
         with pytest.raises(ValueError, match="sideways"):
             bridge._tidy(d2, view="sideways")
+    finally:
+        del FakeApp.GuiUp
+
+
+class _Shape:
+    def __init__(self, solids, null=None):
+        self.Solids, self.null = [object()] * solids, (not solids) if null is None else null
+
+    def isNull(self):
+        return self.null
+
+
+def _feature(name, base=None, solids=1, profile=None, type_id="PartDesign::Pad"):
+    f = _Obj(name, type_id)
+    f.Label, f.BaseFeature, f.Shape = name, base, _Shape(solids)
+    if profile is not None:
+        f.Profile = (profile, [""])
+    f.OutList = [x for x in (profile, base) if x is not None]
+    return f
+
+
+def _body_doc(boss_solids=1):
+    """A case built the freecad-modelling way: Params, a layout sketch, a datum plane, a shell and a boss on top."""
+    layout, outline = _Obj("layout", "Sketcher::SketchObject"), _Obj("outline", "Sketcher::SketchObject")
+    lid = _Obj("lid_plane", "PartDesign::Plane")
+    boss_sketch = _Obj("boss_sketch", "Sketcher::SketchObject")
+    for sk in (layout, outline, boss_sketch):
+        sk.Shape = _Shape(0, null=False)  # a sketch that solved: wires, no solid
+    shell = _feature("shell", profile=outline)
+    boss = _feature("boss", base=shell, solids=boss_solids, profile=boss_sketch)
+    shell.ViewObject.Visibility = False  # FreeCAD shows only the newest feature of a body
+    body = _Obj("base", "PartDesign::Body")
+    body.Group, body.Tip, body.Label = [layout, lid, outline, shell, boss_sketch, boss], boss, "base"
+    loose = _Obj("notes", "Sketcher::SketchObject")  # a sketch outside any body is the user's own
+    return _Doc("C", [_Obj("Params", "Spreadsheet::Sheet"), body, *body.Group, loose])
+
+
+def _visible(d):
+    return [o.Name for o in d.Objects if o.ViewObject.Visibility]
+
+
+def test_tidy_hides_sketches_and_datums_inside_bodies():
+    b = load_bridge()
+    d = _body_doc()
+    bridge = b.Bridge(FakeApp, "unix")
+    FakeApp.GuiUp = False
+    try:
+        r = bridge._tidy(d)
+        assert r["helpers_hidden"] == ["layout", "lid_plane", "outline", "boss_sketch"] and "no_solid" not in r
+        assert _visible(d) == ["Params", "base", "boss", "notes"]
+        d2 = _body_doc()
+        assert "helpers_hidden" not in bridge._tidy(d2, helpers=False)
+        assert "layout" in _visible(d2)  # the user asked for sketches on
+    finally:
+        del FakeApp.GuiUp
+
+
+def test_tidy_shows_the_last_good_solid_when_the_tip_failed():
+    b = load_bridge()
+    d = _body_doc(boss_solids=0)  # a pad on an over-constrained sketch: an empty shape
+    bridge = b.Bridge(FakeApp, "unix")
+    FakeApp.GuiUp = False
+    try:
+        r = bridge._tidy(d)
+        assert r["no_solid"] == [{"body": "base", "tip": "boss", "tip_label": "boss", "failed": "boss",
+                                  "failed_label": "boss", "cause": "boss", "cause_label": "boss", "showing": "shell",
+                                  "showing_label": "shell", "sketch_shown": "boss_sketch"}]
+        assert _visible(d) == ["Params", "base", "shell", "boss_sketch", "notes"]
+        body = d.Objects[1]
+        assert body.Tip.Name == "boss"  # what's shown changes, not the model
+        body.Group[3].Shape = _Shape(0)  # the shell fails too: it is the one to fix, and nothing builds
+        r = bridge._tidy(d)
+        e = r["no_solid"][0]
+        assert (e["failed"], e["showing"], e["sketch_shown"]) == ("shell", None, "outline") and "sketch_empty" not in e
+        assert _visible(d) == ["Params", "base", "outline", "notes"]
+        body.Group[2].Shape = _Shape(0, null=True)  # and its sketch didn't solve either: say the view is empty
+        assert bridge._tidy(d)["no_solid"][0]["sketch_empty"] is True
+    finally:
+        del FakeApp.GuiUp
+
+
+def test_a_tip_that_failed_after_working_counts_as_failed_though_it_keeps_its_old_solid():
+    b = load_bridge()
+    d = _body_doc()
+    boss = d.Objects[1].Tip
+    boss.State = ["Invalid", "Touched"]  # FreeCAD keeps the last good shape when a recompute fails
+    bridge = b.Bridge(FakeApp, "unix")
+    FakeApp.GuiUp = False
+    try:
+        assert bridge._tidy(d)["no_solid"][0]["showing"] == "shell"
+        assert "boss" not in _visible(d)
+    finally:
+        del FakeApp.GuiUp
+
+
+def test_a_broken_sketch_is_found_though_its_feature_still_reads_as_fine():
+    b = load_bridge()
+    d = _body_doc()
+    body = d.Objects[1]
+    outline = body.Group[2]
+    outline.State = ["Touched", "Invalid"]  # the pad on it stays Up-to-date and keeps its old solid
+    bridge = b.Bridge(FakeApp, "unix")
+    FakeApp.GuiUp = False
+    try:
+        e = bridge._tidy(d)["no_solid"][0]
+        assert (e["failed"], e["cause"], e["showing"], e["sketch_shown"]) == ("shell", "outline", None, "outline")
+        assert _visible(d) == ["Params", "base", "outline", "notes"]  # no stale solid on screen
+        outline.State = []  # fixed: the next tidy shows the tip again, not the last view
+        r = bridge._tidy(d)
+        assert "no_solid" not in r and _visible(d) == ["Params", "base", "boss", "notes"]
+    finally:
+        del FakeApp.GuiUp
+
+
+def test_a_failed_fillet_keeps_the_part_on_screen_and_says_it_is_stale():
+    b = load_bridge()
+    d = _body_doc()
+    body = d.Objects[1]
+    fillet = _feature("fillet", base=body.Tip, type_id="PartDesign::Fillet")
+    fillet.State = ["Touched", "Invalid"]  # FreeCAD keeps its old shape, and nothing to outline
+    body.Group.append(fillet)
+    body.Tip = fillet
+    d.Objects.insert(-1, fillet)
+    bridge = b.Bridge(FakeApp, "unix")
+    FakeApp.GuiUp = False
+    try:
+        e = bridge._tidy(d)["no_solid"][0]
+        assert (e["failed"], e["showing"], e["sketch_shown"], e["stale"]) == ("fillet", "fillet", None, True)
+        assert "fillet" in _visible(d) and "boss" not in _visible(d)
+    finally:
+        del FakeApp.GuiUp
+
+
+def test_tidy_leaves_a_saved_document_without_unsaved_changes():
+    b = load_bridge()
+    bridge = b.Bridge(FakeApp, "unix")
+    gui = type("GuiDoc", (), {"Modified": False})()
+    bridge._gui_doc = lambda d: gui
+    inner = bridge._tidy_view
+
+    def showing_marks_it_modified(*a, **kw):
+        gui.Modified = True  # what FreeCAD does when a visibility changes
+        return inner(*a, **kw)
+
+    bridge._tidy_view = showing_marks_it_modified
+    FakeApp.GuiUp = False
+    try:
+        bridge._tidy(_body_doc(boss_solids=0))
+        assert gui.Modified is False
+        gui.Modified = True  # real unsaved changes stay flagged
+        bridge._tidy(_body_doc(boss_solids=0))
+        assert gui.Modified is True
+    finally:
+        del FakeApp.GuiUp
+
+
+def test_a_hidden_body_and_a_face_profile_are_left_alone():
+    b = load_bridge()
+    d = _body_doc(boss_solids=0)
+    body, boss = d.Objects[1], d.Objects[1].Tip
+    bridge = b.Bridge(FakeApp, "unix")
+    FakeApp.GuiUp = False
+    try:
+        boss.Profile = (body.Group[3], ["Face6"])  # sketchless: a pad from the shell's top face
+        r = bridge._tidy(d)
+        assert r["no_solid"][0]["sketch_shown"] is None and "boss_sketch" not in _visible(d)
+        d2 = _body_doc(boss_solids=0)
+        d2.Objects[1].ViewObject.Visibility = False  # the user hid this body
+        assert "no_solid" not in bridge._tidy(d2) and "shell" not in _visible(d2)
     finally:
         del FakeApp.GuiUp
 

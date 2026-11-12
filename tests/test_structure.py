@@ -237,10 +237,39 @@ def test_live_report_only_for_a_saved_unchanged_document(tmp_path):
     assert r["report"] == str(tmp_path / "bracket-structure.json") and r["ok"]
 
 
-def test_live_code_reads_and_leaves_no_undo_step():
+def test_live_code_compiles_and_only_collects():
     code = structure.live_code()
-    assert "result = collect(doc)" in code and code.rstrip().endswith("doc.abortTransaction()")
+    assert code.rstrip().endswith("result = collect(doc)") and "Transaction" not in code
     compile(code, "<live>", "exec")
+
+
+def test_bridge_read_op_runs_code_without_transaction_or_recompute(monkeypatch):
+    """The live check must not add an undo step or recompute anything, even with a broken document open."""
+    import sys
+    import types
+
+    from test_live import FakeApp, load_bridge
+
+    calls = []
+
+    class Doc:
+        Name = "case"
+
+        def __getattr__(self, n):  # openTransaction, recompute, commitTransaction... any call is recorded
+            return lambda *a, **k: calls.append(n)
+
+    d = Doc()
+    fc = types.SimpleNamespace(ActiveDocument=d, Vector=lambda *a: a, getDocument=lambda n: d,
+                               listDocuments=lambda: {"case": d})
+    monkeypatch.setitem(sys.modules, "FreeCAD", fc)
+    monkeypatch.setitem(sys.modules, "FreeCADGui", types.SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "Part", types.SimpleNamespace())
+    bridge = load_bridge().Bridge(FakeApp, "unix")
+    monkeypatch.setattr(bridge, "_doc", lambda name: d)
+    r = bridge._handle({"op": "read", "code": "result = {'doc': doc.Name}", "label": "read model structure"})
+    assert r["ok"] and r["result"] == {"doc": "case"} and calls == []
+    bad = bridge._handle({"op": "read", "code": "raise ValueError('nope')"})
+    assert bad["ok"] is False and "nope" in bad["error"] and calls == []
 
 
 def test_project_check_flags_missing_stale_and_failing_reports(tmp_path):
@@ -350,6 +379,14 @@ rect(sk3, 4, 4)
 inside = body.newObject("PartDesign::Pad", "Pad001")  # inside the plate: adds nothing
 inside.Profile = sk3
 inside.Length = 1
+sk4 = body.newObject("Sketcher::SketchObject", "Sketch003")  # over-constrained: the symmetry already makes it level
+sk4.AttachmentSupport = [(plane(body, "XY_Plane"), "")]
+sk4.MapMode = "FlatFace"
+rect(sk4, 6, 6)
+sk4.addConstraint(Sketcher.Constraint("Symmetric", 0, 1, 0, 2, -2))
+empty = body.newObject("PartDesign::Pad", "Pad002")
+empty.Profile = sk4
+empty.Length = 2
 doc.addObject("Part::Feature", "Shape").Shape = Part.makeBox(5, 5, 5)
 doc.recompute()
 doc.saveAs(os.path.join(out, "messy.FCStd"))
@@ -378,5 +415,28 @@ def test_real_documents(tmp_path):
     assert ("constraints", "Sketch001") in errs  # the circle has no constraints
     assert ("parameters", None) in errs  # no Params at all
     assert ("no effect", "Pad001") in errs
+    over = [f["problem"] for f in bad["findings"] if f["object"] == "Sketch003" and f["check"] == "constraints"]
+    assert over and ("over-constrained" in over[0] or "conflicting" in over[0]), over
+    assert ("broken", "Pad002") in errs  # produced no solid, though FreeCAD only marks it Touched
     warns = {f["check"] for f in bad["findings"] if f["severity"] == "warning"}
     assert {"names", "dead solids", "parameters"} <= warns
+
+
+def test_a_feature_with_no_solid_is_an_error():
+    f = clean()
+    f["objects"][3]["solids"] = 0
+    f["objects"][3]["state"] = ["Touched"]
+    assert [(x["check"], x["object"]) for x in run(f)["findings"] if x["severity"] == "error"] == [("broken", "base-plate")]
+
+
+def test_over_constrained_and_conflicting_sketches_say_which_constraints():
+    f = clean()
+    sk = f["objects"][2]
+    sk["state"] = ["Touched", "Invalid"]
+    sk["sketch"] |= {"fully_constrained": False, "solver": {"redundant": [5], "conflicting": [], "malformed": []},
+                     "constraint_types": ["Coincident"] * 4 + ["Horizontal", "Vertical"]}
+    errs = [x["problem"] for x in run(f)["findings"] if x["severity"] == "error"]
+    assert errs == ["sketch base-outline is over-constrained: 5 (Horizontal) is redundant or malformed"]
+    sk["sketch"]["solver"] = {"redundant": [], "conflicting": [5, 6]}
+    errs = [x["problem"] for x in run(f)["findings"] if x["severity"] == "error"]
+    assert errs == ["sketch base-outline has conflicting constraints: 5 (Horizontal), 6 (Vertical)"]

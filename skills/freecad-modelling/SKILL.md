@@ -40,8 +40,9 @@ Each body's tree, top to bottom, in RMS's groups:
    vertex of a feature; FreeCAD 1.x mitigates renumbered faces but doesn't remove the problem.
 3. **Layout** (construction): a master sketch first, on an origin plane, with the shape's skeleton: the board outline,
    screw and key positions, the port centres. Other sketches take positions from it as external geometry, or from
-   Params. A piece that must fit another uses the same Params entries, or a SubShapeBinder of the other piece's layout
-   sketch (never of its faces).
+   Params. FreeCAD can't use construction lines as external geometry: draw the layout's lines as normal geometry
+   (the layout isn't padded, so they never become solid), or reference its points. A piece that must fit another
+   uses the same Params entries, or a SubShapeBinder of the other piece's layout sketch (never of its faces).
 4. **Core**: the main solid from the outline. Core features depend only on the reference planes, the layout and
    Params.
 5. **Detail**: cut-outs, bosses, ribs, ports. Each depends on the core, the layout and Params, never on another

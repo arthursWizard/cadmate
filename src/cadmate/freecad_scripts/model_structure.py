@@ -60,12 +60,22 @@ def _sketch(o):
         dims.append({"index": i, "name": c.Name or "", "type": c.Type, "value": _num(c.Value),
                      "driving": bool(getattr(c, "Driving", True)), "active": bool(getattr(c, "IsActive", True))})
     fully = getattr(o, "FullyConstrained", None)
+    # 1-based constraint numbers, as FreeCAD sets them on recompute; never call solve() first, it clears them.
+    solver = {}
+    for key, prop in (("redundant", "RedundantConstraints"), ("conflicting", "ConflictingConstraints"),
+                      ("malformed", "MalformedConstraints")):
+        try:
+            solver[key] = [int(i) for i in getattr(o, prop, []) or []]
+        except Exception:
+            pass
     external = []
     try:
         external = _links(o.ExternalGeometry)
     except Exception:
         pass
-    return {"fully_constrained": None if fully is None else bool(fully), "dimensions": dims,
+    types = [c.Type for c in o.Constraints]
+    return {"fully_constrained": None if fully is None else bool(fully), "dimensions": dims, "solver": solver,
+            "constraint_types": types,
             "geometry": len(o.Geometry), "external": external}
 
 

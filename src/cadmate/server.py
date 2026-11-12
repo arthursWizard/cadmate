@@ -698,7 +698,7 @@ def check_model_structure(path: str | None = None, doc: str | None = None) -> di
             return _with_offer(structure.check(path))
         except (structure.StructureError, RuntimeError, OSError, ValueError) as e:
             return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
-    r = _live("run", code=structure.live_code(), label="read model structure", doc=doc)
+    r = _live("read", code=structure.live_code(), label="read model structure", doc=doc)
     if not isinstance(r.get("result"), dict):
         return r
     return structure.from_live(r["result"]) | {k: v for k, v in r.items() if k in ("user_changes", "freecad_bridge")}

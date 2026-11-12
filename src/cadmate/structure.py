@@ -201,6 +201,9 @@ def evaluate(facts: dict) -> dict:
 
     # Broken, suppressed, no effect
     for o in objs:
+        solver = (o.get("sketch") or {}).get("solver") or {}
+        if any(solver.values()):
+            continue  # the sketch's own finding below says which constraints are wrong
         if any(s in ("Invalid", "Error") for s in o.get("state", [])):
             found.append(_finding("error", "broken", o["label"], f"{o['label']} ({_short(o['type'])}) is in error",
                                   "fix it before anything else: open it, read the error in the Report view, and repair "
@@ -210,6 +213,11 @@ def evaluate(facts: dict) -> dict:
             found.append(_finding("warning", "tree", o["label"], f"{o['label']} is suppressed",
                                   "delete it, or unsuppress it if it's meant to be there; a suppressed feature is a "
                                   "change nobody finished"))
+            continue
+        if (o["type"].startswith("PartDesign::") and o["type"] not in NOT_FEATURES and o.get("solids") == 0):
+            found.append(_finding("error", "broken", o["label"], f"{o['label']} produced no solid",
+                                  "its profile or input is broken (often an over- or under-constrained sketch, or a "
+                                  "profile that isn't closed); fix the sketch it uses, then recompute"))
             continue
         base = by_name.get(o.get("base_feature") or "")
         if base and o.get("volume") is not None and base.get("volume") is not None:
@@ -267,7 +275,24 @@ def evaluate(facts: dict) -> dict:
         sk = o.get("sketch")
         if not sk:
             continue
-        if sk.get("fully_constrained") is False:
+        solver, types = sk.get("solver") or {}, sk.get("constraint_types") or []
+
+        def named(nums: list[int]) -> str:
+            return ", ".join(f"{n} ({types[n - 1]})" if 0 < n <= len(types) else str(n) for n in nums)
+
+        if solver.get("conflicting"):
+            found.append(_finding("error", "constraints", o["label"],
+                                  f"sketch {o['label']} has conflicting constraints: {named(solver['conflicting'])}",
+                                  "remove or correct one of them (constraint numbers as FreeCAD's constraint list "
+                                  "shows them); features using the sketch can't be trusted until it solves"))
+        elif solver.get("redundant") or solver.get("malformed"):
+            nums = (solver.get("redundant") or []) + (solver.get("malformed") or [])
+            found.append(_finding("error", "constraints", o["label"],
+                                  f"sketch {o['label']} is over-constrained: {named(nums)} "
+                                  f"{'is' if len(nums) == 1 else 'are'} redundant or malformed",
+                                  "delete the redundant constraint (another already fixes the same thing); a "
+                                  "feature on an over-constrained sketch can come out empty without an error"))
+        elif sk.get("fully_constrained") is False:
             found.append(_finding("error", "constraints", o["label"], f"sketch {o['label']} isn't fully constrained",
                                   "constrain every point (to the origin, the axes, the layout sketch, or "
                                   "Params-driven dimensions) until FreeCAD shows it fully constrained"))
@@ -440,8 +465,8 @@ def check(path: str | Path) -> dict:
 
 def live_code() -> str:
     """What the bridge runs in the user's window: the collector, then collect() on the document it was given."""
-    # A read changes nothing: drop the bridge's transaction so the user's undo list doesn't get an empty step.
-    return SCRIPT.read_text(encoding="utf-8") + "\nresult = collect(doc)\ndoc.abortTransaction()\n"
+    # Run with the bridge's read op: no transaction and no recompute, so nothing lands in any document's undo list.
+    return SCRIPT.read_text(encoding="utf-8") + "\nresult = collect(doc)\n"
 
 
 def from_live(facts: dict) -> dict:

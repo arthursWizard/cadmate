@@ -513,6 +513,28 @@ class Bridge:
             reply["origins_shown"] = turned_on
         return reply
 
+    def op_read(self, code, label="read", doc=None):
+        """Run code that only reads: no transaction, no recompute, so the user's undo list and modified flags stay as
+        they were, even when an open document has a feature that won't recompute. The code sets `result`."""
+        import FreeCAD as App
+        import FreeCADGui as Gui
+        import Part
+
+        d = self._doc(doc) if doc or App.ActiveDocument else None
+        ns = {"App": App, "FreeCAD": App, "Gui": Gui, "FreeCADGui": Gui, "Part": Part, "V": App.Vector, "doc": d, "result": None}
+        out = io.StringIO()
+        self.in_call = True
+        try:
+            with contextlib.redirect_stdout(out):
+                exec(compile(code, f"<cadmate: {label}>", "exec"), ns)
+        except Exception as e:
+            self._say(f"{label} failed: {e}", error=True)
+            return {"ok": False, "error": str(e), "traceback": traceback.format_exc(), "stdout": out.getvalue()[-4000:]}
+        finally:
+            self.in_call = False
+        return {"result": _jsonable(ns.get("result")), "stdout": out.getvalue()[-4000:], "doc": d.Name if d else None,
+                "seq": self.seq}
+
     def op_open(self, path, doc=None):
         import FreeCAD as App
 

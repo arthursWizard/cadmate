@@ -67,6 +67,19 @@ out["other_box_state"] = list(other.getObject("O").State)
 out["fix"] = call("fix", "broken", "doc.getObject('Fillet').Radius = 1")
 out["fillet_fixed"] = list(fillet.State)
 out["after_all"] = {d.Name: list(d.UndoNames) for d in (broken, other, work)}
+out["active_after_fix"] = App.ActiveDocument.Name
+# The user undoes cadmate's last edit in their document, then cadmate edits another one in the background.
+work.undo()
+out["background"] = call("background", "other", "doc.addObject('Part::Box', 'P')")
+out["active_after_background"] = App.ActiveDocument.Name
+out["background_undo"] = {d.Name: {"undo": list(d.UndoNames), "redo": list(d.RedoNames)} for d in (other, work)}
+# Code that makes another document active on purpose keeps it that way.
+out["switch"] = call("switch", "other", "App.setActiveDocument('broken')")
+out["active_after_switch"] = App.ActiveDocument.Name
+App.setActiveDocument("work")
+out["failed"] = call("failed", "other", "doc.addObject('Part::Box', 'Q'); raise ValueError('nope')")
+out["active_after_failed"] = App.ActiveDocument.Name
+out["failed_undo"] = {d.Name: list(d.UndoNames) for d in (other, work)}
 App.removeDocumentObserver(bridge.observer)
 json.dump(out, open(os.environ["CADMATE_OUT"], "w"))
 '''
@@ -103,3 +116,25 @@ def test_edit_recomputes_every_document_its_code_changed(run):
     assert run["after_all"]["other"] == (["cadmate: both"] if run["app_wide"] else []), run
     assert run["after_all"]["broken"] == ["cadmate: fix"]  # an edit aimed at the broken document still lands there
     assert "Invalid" not in run["fillet_fixed"], run
+
+
+@pytest.mark.skipif(not HAS_FREECAD, reason="needs FreeCAD")
+def test_background_edit_leaves_no_entry_in_the_active_document(run):
+    """FreeCAD 1.1 marks the active document's undo list ("-> cadmate: ...") when another document opens a
+    transaction. An edit to a document in the background must leave the user's own undo and redo lists as they were."""
+    assert run["active_after_fix"] == "work"
+    assert run["background"]["ok"], run["background"]
+    assert run["active_after_background"] == "work"
+    work = run["background_undo"]["work"]
+    assert not [n for n in work["undo"] + run["after_all"]["work"] if n.startswith("->")], run
+    assert work["redo"] == ["cadmate: both"]  # the user's undo is still there to redo
+    assert run["background_undo"]["other"]["undo"][0] == "cadmate: background"
+
+
+@pytest.mark.skipif(not HAS_FREECAD, reason="needs FreeCAD")
+def test_active_document_after_a_switch_or_a_failed_edit(run):
+    assert run["switch"]["ok"] and run["active_after_switch"] == "broken"  # the code's own choice stands
+    assert run["failed"]["ok"] is False and "nope" in run["failed"]["error"]
+    assert run["active_after_failed"] == "work"
+    assert not [n for n in run["failed_undo"]["work"] if n.startswith("->")], run
+    assert "cadmate: failed" not in run["failed_undo"]["other"]

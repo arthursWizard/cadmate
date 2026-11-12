@@ -614,6 +614,38 @@ class Bridge:
     def op_changes(self, since=0):
         return {"seq": self.seq, "events": [e for e in self.events if e["seq"] > since]}
 
+    def _activate(self, d):
+        """Make d the active document for an edit. Returns what to restore, or None when nothing changed."""
+        App = self.App
+        prev = App.ActiveDocument
+        if d is None or prev is None or prev.Name == d.Name:
+            return None
+        view = None
+        if App.GuiUp:
+            with contextlib.suppress(Exception):
+                from PySide import QtWidgets
+                import FreeCADGui as Gui
+
+                mdi = Gui.getMainWindow().findChild(QtWidgets.QMdiArea)
+                view = (mdi, mdi.activeSubWindow())
+        App.setActiveDocument(d.Name)
+        return prev.Name, view
+
+    def _restore_active(self, d, prev: str, view):
+        """Give the user back the document and view they had, unless the edit's code chose another on purpose."""
+        App = self.App
+        try:
+            if prev not in App.listDocuments() or App.ActiveDocument is None or App.ActiveDocument.Name != d.Name:
+                return
+        except Exception:  # d was closed by the code
+            return
+        App.setActiveDocument(prev)
+        if view is not None:
+            mdi, window = view
+            with contextlib.suppress(Exception):
+                if window is not None and window in mdi.subWindowList():
+                    mdi.setActiveSubWindow(window)
+
     def op_run(self, code, label="edit", doc=None):
         import FreeCAD as App
         import FreeCADGui as Gui
@@ -624,30 +656,40 @@ class Bridge:
         origins_before = {x.Name: set(shown_origins(x)) for x in App.listDocuments().values()}
         ns = {"App": App, "FreeCAD": App, "Gui": Gui, "FreeCADGui": Gui, "Part": Part, "V": App.Vector, "doc": d, "result": None}
         out = io.StringIO()
-        if d is not None:
-            # FreeCAD's transaction is application-wide: any open document that changes before the commit gets an
-            # undo step of this name. So only recompute what this edit is about, never every open document: one with
-            # a feature that won't recompute (a failed fillet) changes on every recompute, which would fill its undo
-            # list with cadmate's edits and mark it unsaved.
-            d.openTransaction(f"cadmate: {label}")
-        self.call_docs = set()
-        self.in_call = True
+        # FreeCAD 1.1 puts a "-> <name>" entry in the active document's undo list when another document opens a
+        # transaction, so an edit to a document in the background would leave one of cadmate's entries among the
+        # user's own, taking one of their undo slots. So the target is the active document while the edit runs, and
+        # the user's own active document and view come back afterwards.
+        switched = self._activate(d)
         try:
-            with contextlib.redirect_stdout(out):
-                exec(compile(code, f"<cadmate: {label}>", "exec"), ns)
-            docs = App.listDocuments()
-            for name in sorted(self.call_docs | ({d.Name} if d is not None else set())):
-                if name in docs:  # the code may have closed it
-                    docs[name].recompute()
-        except Exception as e:
             if d is not None:
-                d.abortTransaction()
-            self._say(f"{label} failed and was undone: {e}", error=True)
-            return {"ok": False, "error": str(e), "traceback": traceback.format_exc(), "stdout": out.getvalue()[-4000:]}
+                # FreeCAD's transaction is application-wide: any open document that changes before the commit gets an
+                # undo step of this name. So only recompute what this edit is about, never every open document: one
+                # with a feature that won't recompute (a failed fillet) changes on every recompute, which would fill
+                # its undo list with cadmate's edits and mark it unsaved.
+                d.openTransaction(f"cadmate: {label}")
+            self.call_docs = set()
+            self.in_call = True
+            try:
+                with contextlib.redirect_stdout(out):
+                    exec(compile(code, f"<cadmate: {label}>", "exec"), ns)
+                docs = App.listDocuments()
+                for name in sorted(self.call_docs | ({d.Name} if d is not None else set())):
+                    if name in docs:  # the code may have closed it
+                        docs[name].recompute()
+            except Exception as e:
+                if d is not None:
+                    d.abortTransaction()
+                self._say(f"{label} failed and was undone: {e}", error=True)
+                return {"ok": False, "error": str(e), "traceback": traceback.format_exc(),
+                        "stdout": out.getvalue()[-4000:]}
+            finally:
+                self.in_call = False
+            if d is not None:
+                d.commitTransaction()
         finally:
-            self.in_call = False
-        if d is not None:
-            d.commitTransaction()
+            if switched is not None:
+                self._restore_active(d, *switched)
         touched = sorted({e["object"] for e in self.events if e["seq"] > before and e["object"]})
         active = App.ActiveDocument
         reply = {"result": _jsonable(ns.get("result")), "stdout": out.getvalue()[-4000:], "touched": touched,

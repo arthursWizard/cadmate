@@ -567,6 +567,37 @@ def test_tidy_shows_the_last_good_solid_when_the_tip_failed():
         del FakeApp.GuiUp
 
 
+def test_a_tip_that_failed_after_working_counts_as_failed_though_it_keeps_its_old_solid():
+    b = load_bridge()
+    d = _body_doc()
+    boss = d.Objects[1].Tip
+    boss.State = ["Invalid", "Touched"]  # FreeCAD keeps the last good shape when a recompute fails
+    bridge = b.Bridge(FakeApp, "unix")
+    FakeApp.GuiUp = False
+    try:
+        assert bridge._tidy(d)["no_solid"][0]["showing"] == "shell"
+        assert "boss" not in _visible(d)
+    finally:
+        del FakeApp.GuiUp
+
+
+def test_a_hidden_body_and_a_face_profile_are_left_alone():
+    b = load_bridge()
+    d = _body_doc(boss_solids=0)
+    body, boss = d.Objects[1], d.Objects[1].Tip
+    bridge = b.Bridge(FakeApp, "unix")
+    FakeApp.GuiUp = False
+    try:
+        boss.Profile = (body.Group[3], ["Face6"])  # sketchless: a pad from the shell's top face
+        r = bridge._tidy(d)
+        assert r["no_solid"][0]["sketch_shown"] is None and "boss_sketch" not in _visible(d)
+        d2 = _body_doc(boss_solids=0)
+        d2.Objects[1].ViewObject.Visibility = False  # the user hid this body
+        assert "no_solid" not in bridge._tidy(d2) and "shell" not in _visible(d2)
+    finally:
+        del FakeApp.GuiUp
+
+
 def test_tool_against_an_older_bridge_says_to_restart_it(sock, kind, fresh_session):
     fresh_session._bridge_offered = True
     fake_bridge(sock, [{"ok": True, "seq": 0, "events": []}, {"ok": False, "error": "unknown op 'tidy_view'"}], kind)

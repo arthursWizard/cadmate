@@ -257,11 +257,21 @@ def _has_solid(o) -> bool:
 
 
 def _profile(feature):
-    """The sketch a pad, pocket or other profile feature is made from, or None."""
+    """The sketch (or datum or binder) a pad, pocket or other profile feature is made from, or None. A profile that is
+    a face of an earlier feature isn't one: that is a solid, not something to show in the failed feature's place."""
     link = getattr(feature, "Profile", None)
     if isinstance(link, (tuple, list)):
         link = link[0] if link else None
-    return link
+    return link if link is not None and _is(link, HELPER_TYPES) else None
+
+
+def _failed(o) -> bool:
+    """A feature that didn't build: no solid, or marked in error. A feature that worked and then failed on a later
+    recompute keeps its last shape, so its solid alone doesn't say it's fine."""
+    with contextlib.suppress(Exception):
+        if "Invalid" in o.State or "Error" in o.State:
+            return True
+    return not _has_solid(o)
 
 
 def bodies(doc) -> list:
@@ -269,17 +279,18 @@ def bodies(doc) -> list:
 
 
 def broken_tips(doc) -> list[dict]:
-    """Bodies whose tip feature has no solid (it failed, or came out empty), with the last feature before it that has
-    one. Such a body shows nothing but its sketches, though the part up to that feature is fine."""
+    """Bodies whose tip feature failed or came out empty, with the last feature before it that built. Such a body shows
+    nothing but its sketches (or a stale shape), though the part up to that feature is fine. Bodies the user hid are
+    left out."""
     out = []
     for body in bodies(doc):
         tip = getattr(body, "Tip", None)
-        if tip is None or _has_solid(tip):
+        if tip is None or not _shown(body) or not _failed(tip):
             continue
         good, f, seen = None, getattr(tip, "BaseFeature", None), set()
         while f is not None and f.Name not in seen:
             seen.add(f.Name)
-            if _has_solid(f):
+            if not _failed(f):
                 good = f
                 break
             f = getattr(f, "BaseFeature", None)
@@ -310,11 +321,10 @@ def show_last_good(doc, broken=None) -> list[dict]:
                 if o is not good and not _is(o, HELPER_TYPES):
                     _show(o, False)
             _show(good, True)
-        _show(body, True)
         sketch = _profile(tip)
         if sketch is not None:
             _show(sketch, True)
-        shape = getattr(sketch, "Shape", None)
+        shape = getattr(sketch, "Shape", None)  # a sketch that stops solving can keep its old wires: then this misses it
         entry = {"body": body.Name, "tip": tip.Name, "tip_label": tip.Label,
                  "showing": good.Name if good is not None else None,
                  "showing_label": good.Label if good is not None else None,

@@ -634,7 +634,10 @@ def freecad_live_tidy_view(doc: str | None = None, view: str = "isometric", fit:
     feature before the first failure, plus the broken sketch, and lists the
     body under no_solid: failed is the first feature that didn't build, cause
     the object in error. Tell the user which one failed and fix it (the tip is
-    not moved). With showing null and sketch_empty, nothing builds and the
+    not moved). When the failed feature has no sketch (a fillet, a pattern)
+    but the tip still has its last shape, that shape stays shown and the
+    entry has stale: the part on screen is from before the failure; say so.
+    With showing null and sketch_empty, nothing builds and the
     sketch can't be drawn either: say the view is empty and why. Visibility
     changes mark a saved document as modified (no undo step). Returns what it
     hid and no_solid.

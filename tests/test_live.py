@@ -604,6 +604,25 @@ def test_a_broken_sketch_is_found_though_its_feature_still_reads_as_fine():
         del FakeApp.GuiUp
 
 
+def test_a_failed_fillet_keeps_the_part_on_screen_and_says_it_is_stale():
+    b = load_bridge()
+    d = _body_doc()
+    body = d.Objects[1]
+    fillet = _feature("fillet", base=body.Tip, type_id="PartDesign::Fillet")
+    fillet.State = ["Touched", "Invalid"]  # FreeCAD keeps its old shape, and nothing to outline
+    body.Group.append(fillet)
+    body.Tip = fillet
+    d.Objects.insert(-1, fillet)
+    bridge = b.Bridge(FakeApp, "unix")
+    FakeApp.GuiUp = False
+    try:
+        e = bridge._tidy(d)["no_solid"][0]
+        assert (e["failed"], e["showing"], e["sketch_shown"], e["stale"]) == ("fillet", "fillet", None, True)
+        assert "fillet" in _visible(d) and "boss" not in _visible(d)
+    finally:
+        del FakeApp.GuiUp
+
+
 def test_a_hidden_body_and_a_face_profile_are_left_alone():
     b = load_bridge()
     d = _body_doc(boss_solids=0)

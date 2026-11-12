@@ -330,7 +330,12 @@ def present(st) -> dict | None:
     that built, plus the broken sketch (or the failed feature's profile). The tip is never moved: this changes what is
     shown, not the model. Returns what failed, or None."""
     failed = st["failed"]
-    show = st["tip"] if failed is None else st["good"]
+    sketch = _sketch_of(st) if failed is not None else None
+    # A failed feature with nothing to outline (a fillet, a pattern) that still has its last shape: falling back to
+    # an earlier feature would look like work was lost, with nothing on screen pointing at why. Keep the tip's shape
+    # and say it's stale.
+    stale = failed is not None and sketch is None and _has_solid(st["tip"])
+    show = st["tip"] if failed is None or stale else st["good"]
     for f in st["features"]:
         if f is not show:
             _show(f, False)
@@ -338,7 +343,6 @@ def present(st) -> dict | None:
         _show(show, True)
     if failed is None:
         return None
-    sketch = _sketch_of(st)
     if sketch is not None:
         _show(sketch, True)
     shape = getattr(sketch, "Shape", None)
@@ -348,6 +352,8 @@ def present(st) -> dict | None:
              "showing": show.Name if show is not None else None,
              "showing_label": show.Label if show is not None else None,
              "sketch_shown": sketch.Name if sketch is not None else None}
+    if stale:
+        entry["stale"] = True  # the shape shown is from before the failure
     if sketch is not None and (shape is None or shape.isNull()):
         entry["sketch_empty"] = True  # nothing of it to see either
     return entry

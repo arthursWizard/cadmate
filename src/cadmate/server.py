@@ -586,7 +586,8 @@ def freecad_live_edit(code: str, label: str, doc: str | None = None) -> dict:
     objects (doc.getObject("Box").Length = 25), move them, add features on top
     of them. Objects the user edited keep their edits that way. The code sees
     App, Gui, Part, V (App.Vector) and doc (the document); set `result` to
-    return a value. The document is recomputed afterwards. If the code raises,
+    return a value. The document, and any other the code changed, is
+    recomputed afterwards; other open documents are left alone. If the code raises,
     the whole step is undone and the error comes back. origins_shown in the
     reply lists origins (Part and Body axes and planes) the code made visible,
     such as by showing every object in doc.Objects; hide them again unless the

@@ -495,11 +495,11 @@ def test_tidy_hides_the_origins_and_leaves_everything_else():
 
 
 class _Shape:
-    def __init__(self, solids):
-        self.Solids = [object()] * solids
+    def __init__(self, solids, null=None):
+        self.Solids, self.null = [object()] * solids, (not solids) if null is None else null
 
     def isNull(self):
-        return not self.Solids
+        return self.null
 
 
 def _feature(name, base=None, solids=1, profile=None, type_id="PartDesign::Pad"):
@@ -515,6 +515,7 @@ def _body_doc(boss_solids=1):
     layout, outline = _Obj("layout", "Sketcher::SketchObject"), _Obj("outline", "Sketcher::SketchObject")
     lid = _Obj("lid_plane", "PartDesign::Plane")
     boss_sketch = _Obj("boss_sketch", "Sketcher::SketchObject")
+    boss_sketch.Shape = _Shape(0, null=False)  # a sketch that solved: wires, no solid
     shell = _feature("shell", profile=outline)
     boss = _feature("boss", base=shell, solids=boss_solids, profile=boss_sketch)
     shell.ViewObject.Visibility = False  # FreeCAD shows only the newest feature of a body
@@ -559,6 +560,9 @@ def test_tidy_shows_the_last_good_solid_when_the_tip_failed():
         body.Group[3].Shape = _Shape(0)  # nothing builds: the failing feature's sketch is all there is to see
         r = bridge._tidy(d)
         assert r["no_solid"][0]["showing"] is None and "boss_sketch" in _visible(d)
+        assert "sketch_empty" not in r["no_solid"][0]
+        body.Group[4].Shape = _Shape(0, null=True)  # and the sketch didn't solve either: say the view is empty
+        assert bridge._tidy(d)["no_solid"][0]["sketch_empty"] is True
     finally:
         del FakeApp.GuiUp
 

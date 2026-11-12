@@ -314,10 +314,14 @@ def show_last_good(doc, broken=None) -> list[dict]:
         sketch = _profile(tip)
         if sketch is not None:
             _show(sketch, True)
-        out.append({"body": body.Name, "tip": tip.Name, "tip_label": tip.Label,
-                    "showing": good.Name if good is not None else None,
-                    "showing_label": good.Label if good is not None else None,
-                    "sketch_shown": sketch.Name if sketch is not None else None})
+        shape = getattr(sketch, "Shape", None)
+        entry = {"body": body.Name, "tip": tip.Name, "tip_label": tip.Label,
+                 "showing": good.Name if good is not None else None,
+                 "showing_label": good.Label if good is not None else None,
+                 "sketch_shown": sketch.Name if sketch is not None else None}
+        if sketch is not None and (shape is None or shape.isNull()):
+            entry["sketch_empty"] = True  # it didn't solve (over-constrained, conflicting): nothing of it to see
+        out.append(entry)
     return out
 
 

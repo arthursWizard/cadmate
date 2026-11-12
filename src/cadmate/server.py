@@ -632,7 +632,9 @@ def freecad_live_tidy_view(doc: str | None = None, view: str = "isometric", fit:
     sketches. The tidy then shows the last feature before the tip that has a
     solid, plus the failing feature's sketch, and lists each such body under
     no_solid. Tell the user which feature failed and fix it (the tip is not
-    moved). Returns what it hid and no_solid.
+    moved). With no good feature and sketch_empty (the sketch itself didn't
+    solve), the window has nothing to show: say so, don't leave the user
+    looking at an empty view. Returns what it hid and no_solid.
     """
     return _live("tidy_view", doc=doc, view=view, fit=fit, hide_origins=hide_origins, hide_helpers=hide_helpers)
 

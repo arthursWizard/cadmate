@@ -377,3 +377,25 @@ def test_a_file_saved_meanwhile_is_not_written_over(design, monkeypatch):
     with pytest.raises(pn.PartNumberError, match="changed while this ran"):
         pn.set_part_numbers(str(design / "main.kicad_sch"), {"R1": {"MPN": "X"}})
     assert (design / "main.kicad_sch").read_bytes() == before
+
+
+def test_an_unlinked_footprint_must_be_the_symbols_footprint_too(design):
+    """Without a link, the reference and value can agree by chance (a 10k swapped for another 10k in another
+    package); the footprint name has to agree as well. The library nickname may differ."""
+    pcb = design / "main.kicad_pcb"
+    text = pcb.read_text(encoding="utf-8").replace(f'\t\t(path "/{sym_uuid(1)}")\n', "")
+    pcb.write_text(text.replace('(footprint "Lib:R_0603"', '(footprint "Lib:R_0805"', 1), encoding="utf-8", newline="\n")
+    r = pn.set_part_numbers(str(design / "main.kicad_sch"), {"R1": {"MPN": "A"}})
+    assert r["board"]["out_of_date"] == ["R1"] and r["board"]["changed"] == {}
+    pcb.write_text(text, encoding="utf-8", newline="\n")  # Lib:R_0603 against the symbol's Resistor_SMD:R_0603
+    r = pn.set_part_numbers(str(design / "main.kicad_sch"), {"R1": {"MPN": "A"}})
+    assert set(r["board"]["changed"]) == {"R1"}
+
+
+def test_a_part_whose_footprint_still_has_its_old_reference_is_out_of_date(design):
+    """Re-annotated R1 -> R5 in the schematic, board not updated: R5's footprint is there, still reading R1."""
+    sch = design / "main.kicad_sch"
+    sch.write_text(sch.read_text(encoding="utf-8").replace('"R1"', '"R5"'), encoding="utf-8", newline="\n")
+    r = pn.set_part_numbers(str(sch), {"R5": {"MPN": "A"}})
+    assert r["board"]["out_of_date"] == ["R5"] and "not_on_board" not in r["board"]
+    assert "parity" in r["board"]["out_of_date_note"]

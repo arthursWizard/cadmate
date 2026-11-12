@@ -142,15 +142,24 @@ def _symbols(sheets: list[Sheet]) -> list[Sym]:
     return out
 
 
-def _board_ref(fp: sexpr.Node, by_path: dict[str, str], value_of: dict[str, str]) -> str | None:
+def _fp_name(lib_id: str) -> str:
+    return lib_id.split(":")[-1]  # the library nickname can differ between the symbol's field and the board
+
+
+def _board_ref(fp: sexpr.Node, by_path: dict[str, str], value_of: dict[str, str],
+               footprint_of: dict[str, str]) -> str | None:
     """The schematic part a footprint is, or None when the board is out of date for it. A footprint names its symbol
     by path, which survives re-annotation; its Reference text alone doesn't (until Update PCB, the board's R1 may be
-    the schematic's old R1, now C1). Without a path, the reference counts only when the value agrees too."""
+    the schematic's old R1, now C1). Without a path, the reference counts only when the value and the footprint name
+    (where the symbol gives one) agree too."""
     ref = _prop_value(fp, "Reference")
     p = fp.child("path")
     if p is not None and p.atoms():
         return ref if by_path.get(p.atoms()[0]) == ref else None
-    return ref if ref in value_of and _prop_value(fp, "Value") == value_of[ref] else None
+    if ref not in value_of or _prop_value(fp, "Value") != value_of[ref]:
+        return None
+    want = _fp_name(footprint_of.get(ref, ""))
+    return ref if not want or _fp_name((fp.atoms() or [""])[0]) == want else None
 
 
 def ref_of(node: sexpr.Node, sch: bool) -> list[str]:
@@ -402,6 +411,7 @@ def set_part_numbers(schematic: str, parts: dict, board: str | None = None, dry_
     ref_fields = {r: per_sym[id(s)] for s in syms if id(s) in per_sym for r in s.refs}  # units share them
     by_path = {k: r for s in syms for k, r in s.board_paths.items()}
     value_of = {r: s.value for s in syms for r in s.refs}
+    footprint_of = {r: s.footprint for s in syms for r in s.refs}
     pcb = Path(board).expanduser() if board else sch.with_suffix(".kicad_pcb")
     board_out: dict = {}
     pcb_text = pcb_new = None
@@ -414,12 +424,18 @@ def set_part_numbers(schematic: str, parts: dict, board: str | None = None, dry_
         fps: dict[str, list[sexpr.Node]] = {}
         stale: set[str] = set()
         for fp in proot.children("footprint"):
-            r = _board_ref(fp, by_path, value_of)
+            r = _board_ref(fp, by_path, value_of, footprint_of)
             if r is not None:
                 fps.setdefault(r, []).append(fp)
-            elif _prop_value(fp, "Reference") in ref_fields:
+                continue
+            if _prop_value(fp, "Reference") in ref_fields:
                 stale.add(_prop_value(fp, "Reference"))
+            # the footprint of a part asked for, still under its old reference on the board
+            p = fp.child("path")
+            if p is not None and p.atoms() and by_path.get(p.atoms()[0]) in ref_fields:
+                stale.add(by_path[p.atoms()[0]])
         edits, bchanged, missing = [], {}, []
+        stale -= set(fps)  # a part found on the board isn't out of date because another footprint carries its old name
         for r, fields in ref_fields.items():
             if r not in fps:
                 if r not in stale:
@@ -443,7 +459,8 @@ def set_part_numbers(schematic: str, parts: dict, board: str | None = None, dry_
             board_out["out_of_date_note"] = "the board's footprint with this reference isn't this schematic part (the " \
                                             "schematic was re-annotated or changed since the board was updated), so " \
                                             "nothing was written to it: Update PCB from Schematic in KiCad, then run " \
-                                            "this again"
+                                            "this again. Until then DRC's schematic parity check also reports these " \
+                                            "parts' new fields as missing from their footprints"
         if missing:
             board_out["not_on_board"] = sorted(missing, key=fab_export._refkey)
             board_out["not_on_board_note"] = "parts in the schematic with no footprint on the board: Update PCB from " \
@@ -462,7 +479,7 @@ def set_part_numbers(schematic: str, parts: dict, board: str | None = None, dry_
         if f in sheet_of:
             nodes = [(r, s.node) for s in _symbols([Sheet(f, text, new, sheet_of[f].paths)]) for r in s.refs]
         else:
-            nodes = [(_board_ref(n, by_path, value_of), n) for n in new.children("footprint")]
+            nodes = [(_board_ref(n, by_path, value_of, footprint_of), n) for n in new.children("footprint")]
         for r, node in nodes:
             for n, v in ref_fields.get(r, {}).items():
                 t = _target(node, n)

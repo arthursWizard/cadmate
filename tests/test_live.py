@@ -446,7 +446,7 @@ class _VO:
 
 class _Obj:
     def __init__(self, name, type_id="Part::Feature", visible=True, features=()):
-        self.Name, self.TypeId, self.ViewObject = name, type_id, _VO(visible)
+        self.Name, self.Label, self.TypeId, self.ViewObject = name, name, type_id, _VO(visible)
         if features:
             self.OriginFeatures = list(features)
 
@@ -507,6 +507,7 @@ def _feature(name, base=None, solids=1, profile=None, type_id="PartDesign::Pad")
     f.Label, f.BaseFeature, f.Shape = name, base, _Shape(solids)
     if profile is not None:
         f.Profile = (profile, [""])
+    f.OutList = [x for x in (profile, base) if x is not None]
     return f
 
 
@@ -515,7 +516,8 @@ def _body_doc(boss_solids=1):
     layout, outline = _Obj("layout", "Sketcher::SketchObject"), _Obj("outline", "Sketcher::SketchObject")
     lid = _Obj("lid_plane", "PartDesign::Plane")
     boss_sketch = _Obj("boss_sketch", "Sketcher::SketchObject")
-    boss_sketch.Shape = _Shape(0, null=False)  # a sketch that solved: wires, no solid
+    for sk in (layout, outline, boss_sketch):
+        sk.Shape = _Shape(0, null=False)  # a sketch that solved: wires, no solid
     shell = _feature("shell", profile=outline)
     boss = _feature("boss", base=shell, solids=boss_solids, profile=boss_sketch)
     shell.ViewObject.Visibility = False  # FreeCAD shows only the newest feature of a body
@@ -552,16 +554,18 @@ def test_tidy_shows_the_last_good_solid_when_the_tip_failed():
     FakeApp.GuiUp = False
     try:
         r = bridge._tidy(d)
-        assert r["no_solid"] == [{"body": "base", "tip": "boss", "tip_label": "boss", "showing": "shell",
+        assert r["no_solid"] == [{"body": "base", "tip": "boss", "tip_label": "boss", "failed": "boss",
+                                  "failed_label": "boss", "cause": "boss", "cause_label": "boss", "showing": "shell",
                                   "showing_label": "shell", "sketch_shown": "boss_sketch"}]
         assert _visible(d) == ["Params", "base", "shell", "boss_sketch", "notes"]
         body = d.Objects[1]
         assert body.Tip.Name == "boss"  # what's shown changes, not the model
-        body.Group[3].Shape = _Shape(0)  # nothing builds: the failing feature's sketch is all there is to see
+        body.Group[3].Shape = _Shape(0)  # the shell fails too: it is the one to fix, and nothing builds
         r = bridge._tidy(d)
-        assert r["no_solid"][0]["showing"] is None and "boss_sketch" in _visible(d)
-        assert "sketch_empty" not in r["no_solid"][0]
-        body.Group[4].Shape = _Shape(0, null=True)  # and the sketch didn't solve either: say the view is empty
+        e = r["no_solid"][0]
+        assert (e["failed"], e["showing"], e["sketch_shown"]) == ("shell", None, "outline") and "sketch_empty" not in e
+        assert _visible(d) == ["Params", "base", "outline", "notes"]
+        body.Group[2].Shape = _Shape(0, null=True)  # and its sketch didn't solve either: say the view is empty
         assert bridge._tidy(d)["no_solid"][0]["sketch_empty"] is True
     finally:
         del FakeApp.GuiUp
@@ -577,6 +581,25 @@ def test_a_tip_that_failed_after_working_counts_as_failed_though_it_keeps_its_ol
     try:
         assert bridge._tidy(d)["no_solid"][0]["showing"] == "shell"
         assert "boss" not in _visible(d)
+    finally:
+        del FakeApp.GuiUp
+
+
+def test_a_broken_sketch_is_found_though_its_feature_still_reads_as_fine():
+    b = load_bridge()
+    d = _body_doc()
+    body = d.Objects[1]
+    outline = body.Group[2]
+    outline.State = ["Touched", "Invalid"]  # the pad on it stays Up-to-date and keeps its old solid
+    bridge = b.Bridge(FakeApp, "unix")
+    FakeApp.GuiUp = False
+    try:
+        e = bridge._tidy(d)["no_solid"][0]
+        assert (e["failed"], e["cause"], e["showing"], e["sketch_shown"]) == ("shell", "outline", None, "outline")
+        assert _visible(d) == ["Params", "base", "outline", "notes"]  # no stale solid on screen
+        outline.State = []  # fixed: the next tidy shows the tip again, not the last view
+        r = bridge._tidy(d)
+        assert "no_solid" not in r and _visible(d) == ["Params", "base", "boss", "notes"]
     finally:
         del FakeApp.GuiUp
 

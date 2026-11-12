@@ -627,14 +627,17 @@ def freecad_live_tidy_view(doc: str | None = None, view: str = "isometric", fit:
     fit=False when the user asked for origins or sketches on or for a
     particular view. Not an undo step; nothing in the model changes.
 
-    If a body's tip feature has no solid (it failed, e.g. a pad on an
-    over-constrained sketch, or came out empty), the body would show only its
-    sketches. The tidy then shows the last feature before the tip that has a
-    solid, plus the failing feature's sketch, and lists each such body under
-    no_solid. Tell the user which feature failed and fix it (the tip is not
-    moved). With no good feature and sketch_empty (the sketch itself didn't
-    solve), the window has nothing to show: say so, don't leave the user
-    looking at an empty view. Returns what it hid and no_solid.
+    For each body it shows one solid, as FreeCAD does: the tip, when
+    everything up to it built. If a feature up to the tip failed (it's in
+    error or has no solid, or its sketch or datum is in error, which leaves
+    the feature itself looking fine with its old shape), it shows the last
+    feature before the first failure, plus the broken sketch, and lists the
+    body under no_solid: failed is the first feature that didn't build, cause
+    the object in error. Tell the user which one failed and fix it (the tip is
+    not moved). With showing null and sketch_empty, nothing builds and the
+    sketch can't be drawn either: say the view is empty and why. Visibility
+    changes mark a saved document as modified (no undo step). Returns what it
+    hid and no_solid.
     """
     return _live("tidy_view", doc=doc, view=view, fit=fit, hide_origins=hide_origins, hide_helpers=hide_helpers)
 

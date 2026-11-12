@@ -265,37 +265,52 @@ def _profile(feature):
     return link if link is not None and _is(link, HELPER_TYPES) else None
 
 
-def _failed(o) -> bool:
-    """A feature that didn't build: no solid, or marked in error. A feature that worked and then failed on a later
-    recompute keeps its last shape, so its solid alone doesn't say it's fine."""
+def _bad(o) -> bool:
     with contextlib.suppress(Exception):
-        if "Invalid" in o.State or "Error" in o.State:
-            return True
-    return not _has_solid(o)
+        return "Invalid" in o.State or "Error" in o.State
+    return False
+
+
+def _cause(f):
+    """Why feature f didn't build, or None if it did: the sketch, datum or binder it uses that is in error (the feature
+    itself then keeps its last shape and reads as fine), or the feature itself (in error, or no solid)."""
+    for x in getattr(f, "OutList", None) or []:
+        if _is(x, HELPER_TYPES) and _bad(x):
+            return x
+    if _bad(f) or not _has_solid(f):
+        return f
+    return None
 
 
 def bodies(doc) -> list:
     return [o for o in doc.Objects if _is(o, ("PartDesign::Body",))]
 
 
-def broken_tips(doc) -> list[dict]:
-    """Bodies whose tip feature failed or came out empty, with the last feature before it that built. Such a body shows
-    nothing but its sketches (or a stale shape), though the part up to that feature is fine. Bodies the user hid are
-    left out."""
-    out = []
-    for body in bodies(doc):
-        tip = getattr(body, "Tip", None)
-        if tip is None or not _shown(body) or not _failed(tip):
-            continue
-        good, f, seen = None, getattr(tip, "BaseFeature", None), set()
-        while f is not None and f.Name not in seen:
-            seen.add(f.Name)
-            if not _failed(f):
-                good = f
-                break
-            f = getattr(f, "BaseFeature", None)
-        out.append({"body": body, "tip": tip, "good": good})
-    return out
+def body_status(body) -> dict | None:
+    """For a shown body: its tip, the first feature up to the tip that didn't build and why, and the feature before
+    that which did. A broken sketch makes everything after it fail or go stale, so the first failure is the one to
+    fix. None for a body the user hid or one with no tip."""
+    tip = getattr(body, "Tip", None)
+    if tip is None or not _shown(body):
+        return None
+    features = [o for o in getattr(body, "Group", None) or [] if not _is(o, HELPER_TYPES)]
+    upto = features[:features.index(tip) + 1] if tip in features else [tip]
+    failed = cause = good = None
+    for f in upto:
+        c = _cause(f)
+        if c is not None:
+            failed, cause = f, c
+            break
+        good = f
+    return {"body": body, "tip": tip, "features": features, "failed": failed, "cause": cause, "good": good}
+
+
+def _sketch_of(st):
+    """What to leave showing where the failed feature should be: the broken sketch or datum, else its profile."""
+    cause = st["cause"]
+    if cause is not None and cause is not st["failed"]:
+        return cause
+    return _profile(st["failed"])
 
 
 def hide_helpers(doc, keep=()) -> list[str]:
@@ -310,29 +325,32 @@ def hide_helpers(doc, keep=()) -> list[str]:
     return hidden
 
 
-def show_last_good(doc, broken=None) -> list[dict]:
-    """For each body whose tip has no solid, show the last feature that has one, and the failing feature's sketch so
-    the user sees where it goes. The tip stays where it is: this changes what is shown, not the model."""
-    out = []
-    for b in broken_tips(doc) if broken is None else broken:
-        body, tip, good = b["body"], b["tip"], b["good"]
-        if good is not None:
-            for o in getattr(body, "Group", None) or []:
-                if o is not good and not _is(o, HELPER_TYPES):
-                    _show(o, False)
-            _show(good, True)
-        sketch = _profile(tip)
-        if sketch is not None:
-            _show(sketch, True)
-        shape = getattr(sketch, "Shape", None)  # a sketch that stops solving can keep its old wires: then this misses it
-        entry = {"body": body.Name, "tip": tip.Name, "tip_label": tip.Label,
-                 "showing": good.Name if good is not None else None,
-                 "showing_label": good.Label if good is not None else None,
-                 "sketch_shown": sketch.Name if sketch is not None else None}
-        if sketch is not None and (shape is None or shape.isNull()):
-            entry["sketch_empty"] = True  # it didn't solve (over-constrained, conflicting): nothing of it to see
-        out.append(entry)
-    return out
+def present(st) -> dict | None:
+    """Show one solid per body, as FreeCAD does: the tip when everything up to it built, otherwise the last feature
+    that built, plus the broken sketch (or the failed feature's profile). The tip is never moved: this changes what is
+    shown, not the model. Returns what failed, or None."""
+    failed = st["failed"]
+    show = st["tip"] if failed is None else st["good"]
+    for f in st["features"]:
+        if f is not show:
+            _show(f, False)
+    if show is not None:
+        _show(show, True)
+    if failed is None:
+        return None
+    sketch = _sketch_of(st)
+    if sketch is not None:
+        _show(sketch, True)
+    shape = getattr(sketch, "Shape", None)
+    entry = {"body": st["body"].Name, "tip": st["tip"].Name, "tip_label": st["tip"].Label,
+             "failed": failed.Name, "failed_label": failed.Label,
+             "cause": st["cause"].Name, "cause_label": st["cause"].Label,
+             "showing": show.Name if show is not None else None,
+             "showing_label": show.Label if show is not None else None,
+             "sketch_shown": sketch.Name if sketch is not None else None}
+    if sketch is not None and (shape is None or shape.isNull()):
+        entry["sketch_empty"] = True  # nothing of it to see either
+    return entry
 
 
 def _placement(p) -> dict:
@@ -752,11 +770,13 @@ class Bridge:
         if view and view not in VIEWS:
             raise ValueError(f"view {view!r} isn't one of {', '.join(VIEWS)}")
         out = {"doc": d.Name, "origins_hidden": hide_origins(d) if origins else []}
-        broken = broken_tips(d)
-        if helpers:  # the failing feature's sketch stays on: it's where the missing material should be
-            out["helpers_hidden"] = hide_helpers(d, keep={s.Name for s in map(_profile, (b["tip"] for b in broken)) if s})
-        if broken:
-            out["no_solid"] = show_last_good(d, broken)
+        status = [st for st in map(body_status, bodies(d)) if st is not None]
+        if helpers:  # the failed feature's sketch stays on: it's where the missing material should be
+            keep = {k.Name for k in (_sketch_of(st) for st in status if st["failed"] is not None) if k is not None}
+            out["helpers_hidden"] = hide_helpers(d, keep=keep)
+        failed = [e for e in map(present, status) if e is not None]
+        if failed:
+            out["no_solid"] = failed
         if not self.App.GuiUp:
             return out
         import FreeCADGui as Gui

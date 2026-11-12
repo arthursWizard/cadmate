@@ -39,14 +39,21 @@ def sheet(uuid, body):
             f'\t(uuid "{uuid}")\n\t(paper "A4")\n\t(lib_symbols)\n{body})\n')
 
 
-def footprint(ref, value, fields=()):
+def sym_uuid(n):
+    return f"c0000000-0000-4000-8000-{n:012d}"
+
+
+def footprint(ref, name, fields=(), path=None, value=None):
+    """A footprint as KiCad 9 saves it; path links it to its symbol (/<sheet uuid>/.../<symbol uuid>)."""
+    value = name if value is None else value
     def p(name, val, hide=True):
         h = "\n\t\t\t(hide yes)" if hide else ""
         return (f'\t\t(property "{name}" "{val}"\n\t\t\t(at 0 0 0)\n\t\t\t(layer "F.Fab"){h}\n'
                 f'\t\t\t(uuid "e0000000-0000-4000-8000-{abs(hash((ref, name))) % 10**12:012d}")\n'
                 f"\t\t\t(effects\n\t\t\t\t(font\n\t\t\t\t\t(size 1 1)\n\t\t\t\t\t(thickness 0.15)\n\t\t\t\t)\n\t\t\t)\n\t\t)\n")
-    return (f'\t(footprint "Lib:{value}"\n\t\t(layer "F.Cu")\n\t\t(at 10 10)\n' + p("Reference", ref, False)
-            + p("Value", value) + p("Footprint", f"Lib:{value}") + "".join(p(k, v) for k, v in fields) + "\t)\n")
+    link = f'\t\t(path "{path}")\n' if path else ""
+    return (f'\t(footprint "Lib:{name}"\n\t\t(layer "F.Cu")\n\t\t(at 10 10)\n' + p("Reference", ref, False)
+            + p("Value", value) + p("Footprint", f"Lib:{name}") + "".join(p(k, v) for k, v in fields) + link + "\t)\n")
 
 
 @pytest.fixture
@@ -70,8 +77,10 @@ def design(tmp_path):
     sub = symbol(6, "Device:R", "1k", "Resistor_SMD:R_0603", [(f"{top}/{SUB_A}", "R10"), (f"{top}/{SUB_B}", "R110")])
     (d / "sub.kicad_sch").write_text(sheet("f0000000-0000-4000-8000-000000000001", sub), encoding="utf-8", newline="\n")
     pcb = ('(kicad_pcb\n\t(version 20241229)\n\t(generator "pcbnew")\n'
-           + footprint("R1", "R_0603") + footprint("C1", "C_0603", [("Mfr. Part Number", "OLD-123")])
-           + footprint("U1", "SOIC-8") + footprint("R10", "R_0603") + ")\n")
+           + footprint("R1", "R_0603", path=f"/{sym_uuid(1)}", value="10k")
+           + footprint("C1", "C_0603", [("Mfr. Part Number", "OLD-123")], path=f"/{sym_uuid(2)}", value="100n")
+           + footprint("U1", "SOIC-8", path=f"/{sym_uuid(3)}", value="LM358")
+           + footprint("R10", "R_0603", path=f"/{SUB_A}/{sym_uuid(6)}", value="1k") + ")\n")
     (d / "main.kicad_pcb").write_text(pcb, encoding="utf-8", newline="\n")
     return d
 
@@ -317,3 +326,54 @@ def test_a_kicad6_hierarchy_used_twice(tmp_path):
     assert r["shared_symbols"] == [{"refs": ["R10", "R110"], "given": ["R110"], "fields": ["MPN"]}]
     r = pn.set_part_numbers(str(tmp_path / "main.kicad_sch"), {"R1": {"MPN": "Y"}})
     assert set(r["changed"]) == {"R1"}
+
+
+def test_an_out_of_date_board_is_left_alone(design):
+    """After re-annotation, before Update PCB, the board's "R1" is still the old part: match footprints by the symbol
+    they're linked to, not by reference text."""
+    pcb = design / "main.kicad_pcb"
+    text = pcb.read_text(encoding="utf-8")
+    # R1 and C1 swapped on the board only, as after re-annotating the schematic
+    swapped = text.replace('"Reference" "R1"', '"Reference" "TMP"').replace('"Reference" "C1"', '"Reference" "R1"') \
+                  .replace('"Reference" "TMP"', '"Reference" "C1"')
+    pcb.write_text(swapped, encoding="utf-8", newline="\n")
+    r = pn.set_part_numbers(str(design / "main.kicad_sch"), {"R1": {"MPN": "RES-1"}})
+    assert r["board"]["out_of_date"] == ["R1"] and r["board"]["changed"] == {}
+    assert pcb.read_text(encoding="utf-8") == swapped  # C1's footprint kept its OLD-123
+    (f,) = fields(design / "main.kicad_sch", "R1")
+    assert f[MPN] == "RES-1"
+
+
+def test_a_footprint_without_a_link_counts_only_when_its_value_agrees(design):
+    pcb = design / "main.kicad_pcb"
+    text = pcb.read_text(encoding="utf-8")
+    unlinked = text.replace(f'\t\t(path "/{sym_uuid(1)}")\n', "").replace(f'\t\t(path "/{sym_uuid(2)}")\n', "")
+    unlinked = unlinked.replace('"Value" "100n"', '"Value" "220n"')
+    pcb.write_text(unlinked, encoding="utf-8", newline="\n")
+    r = pn.set_part_numbers(str(design / "main.kicad_sch"), {"R1": {"MPN": "A"}, "C1": {"MPN": "B"}})
+    assert set(r["board"]["changed"]) == {"R1"} and r["board"]["out_of_date"] == ["C1"]
+
+
+def test_a_linked_sheet_is_edited_where_it_lives(design, tmp_path):
+    shared = tmp_path / "lib"
+    shared.mkdir()
+    (design / "sub.kicad_sch").rename(shared / "sub.kicad_sch")
+    (design / "sub.kicad_sch").symlink_to(shared / "sub.kicad_sch")
+    pn.set_part_numbers(str(design / "main.kicad_sch"), {"R10": {"MPN": "X"}})
+    assert (design / "sub.kicad_sch").is_symlink()
+    (f,) = fields(shared / "sub.kicad_sch", "R10")
+    assert f[MPN] == "X"
+
+
+def test_a_file_saved_meanwhile_is_not_written_over(design, monkeypatch):
+    real = pn.project.keep
+
+    def save_first(files, why):  # KiCad saves the board between the read and the write
+        p = design / "main.kicad_pcb"
+        p.write_text(p.read_text(encoding="utf-8") + " ", encoding="utf-8")
+        return real(files, why)
+    monkeypatch.setattr(pn.project, "keep", save_first)
+    before = (design / "main.kicad_sch").read_bytes()
+    with pytest.raises(pn.PartNumberError, match="changed while this ran"):
+        pn.set_part_numbers(str(design / "main.kicad_sch"), {"R1": {"MPN": "X"}})
+    assert (design / "main.kicad_sch").read_bytes() == before

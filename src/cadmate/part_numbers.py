@@ -43,6 +43,7 @@ class Sym:
     refs: list[str]
     value: str = ""
     footprint: str = ""
+    board_paths: dict[str, str] = field(default_factory=dict)  # a footprint's (path ...) -> the ref it has there
 
 
 @dataclass
@@ -123,18 +124,33 @@ def _symbols(sheets: list[Sheet]) -> list[Sym]:
             listed = [] if inst is None else [(p.atoms()[0], r.atoms()[0]) for proj in inst.children("project")
                                               for p in proj.children("path") for r in [p.child("reference")]
                                               if p.atoms() and r is not None and r.atoms()]
-            mine = [r for path, r in listed if path in sh.paths]
-            if not mine:
-                # KiCad 6 leaves the root sheet's uuid out of these paths: /<sheet uuid>/<symbol uuid>
-                keys = [k for p in sorted(sh.paths) for k in (f"{p}/{_uuid_of(node)}",
-                                                               f"{p[len(root_path):]}/{_uuid_of(node)}")]
-                mine = [legacy[k] for k in dict.fromkeys(keys) if k in legacy]
-            if not mine and not listed:
-                mine = [_prop_value(node, "Reference")]
-            mine = list(dict.fromkeys(r for r in mine if r and not r.startswith("#") and "?" not in r))
+            # a footprint names its symbol by the same path without the root sheet's uuid: /<sheet uuid>/<symbol uuid>
+            u = _uuid_of(node)
+            at = {f"{path[len(root_path):]}/{u}": r for path, r in listed if path in sh.paths}
+            if not at:
+                # KiCad 6 leaves the root sheet's uuid out of these paths too
+                for p in sorted(sh.paths):
+                    for k in (f"{p}/{u}", f"{p[len(root_path):]}/{u}"):
+                        if k in legacy:
+                            at.setdefault(f"{p[len(root_path):]}/{u}", legacy[k])
+            if not at and not listed:
+                at = {f"/{u}": _prop_value(node, "Reference")}
+            at = {k: r for k, r in at.items() if r and not r.startswith("#") and "?" not in r}
+            mine = list(dict.fromkeys(at.values()))
             if mine:
-                out.append(Sym(sh.path, node, mine, _prop_value(node, "Value"), _prop_value(node, "Footprint")))
+                out.append(Sym(sh.path, node, mine, _prop_value(node, "Value"), _prop_value(node, "Footprint"), at))
     return out
+
+
+def _board_ref(fp: sexpr.Node, by_path: dict[str, str], value_of: dict[str, str]) -> str | None:
+    """The schematic part a footprint is, or None when the board is out of date for it. A footprint names its symbol
+    by path, which survives re-annotation; its Reference text alone doesn't (until Update PCB, the board's R1 may be
+    the schematic's old R1, now C1). Without a path, the reference counts only when the value agrees too."""
+    ref = _prop_value(fp, "Reference")
+    p = fp.child("path")
+    if p is not None and p.atoms():
+        return ref if by_path.get(p.atoms()[0]) == ref else None
+    return ref if ref in value_of and _prop_value(fp, "Value") == value_of[ref] else None
 
 
 def ref_of(node: sexpr.Node, sch: bool) -> list[str]:
@@ -384,6 +400,8 @@ def set_part_numbers(schematic: str, parts: dict, board: str | None = None, dry_
 
     # the board beside the schematic: footprints by reference, the values each ref's symbol now has
     ref_fields = {r: per_sym[id(s)] for s in syms if id(s) in per_sym for r in s.refs}  # units share them
+    by_path = {k: r for s in syms for k, r in s.board_paths.items()}
+    value_of = {r: s.value for s in syms for r in s.refs}
     pcb = Path(board).expanduser() if board else sch.with_suffix(".kicad_pcb")
     board_out: dict = {}
     pcb_text = pcb_new = None
@@ -394,12 +412,18 @@ def set_part_numbers(schematic: str, parts: dict, board: str | None = None, dry_
         except sexpr.SexprError as e:
             raise PartNumberError(f"{pcb.name} isn't a KiCad board: {e}") from None
         fps: dict[str, list[sexpr.Node]] = {}
+        stale: set[str] = set()
         for fp in proot.children("footprint"):
-            fps.setdefault(_prop_value(fp, "Reference"), []).append(fp)
+            r = _board_ref(fp, by_path, value_of)
+            if r is not None:
+                fps.setdefault(r, []).append(fp)
+            elif _prop_value(fp, "Reference") in ref_fields:
+                stale.add(_prop_value(fp, "Reference"))
         edits, bchanged, missing = [], {}, []
         for r, fields in ref_fields.items():
             if r not in fps:
-                missing.append(r)
+                if r not in stale:
+                    missing.append(r)
                 continue
             for fp in fps[r]:
                 added = 0
@@ -414,6 +438,12 @@ def set_part_numbers(schematic: str, parts: dict, board: str | None = None, dry_
         if edits:
             pcb_new = _apply(pcb_text, edits)
         board_out = {"path": str(pcb), "changed": bchanged}
+        if stale:
+            board_out["out_of_date"] = sorted(stale, key=fab_export._refkey)
+            board_out["out_of_date_note"] = "the board's footprint with this reference isn't this schematic part (the " \
+                                            "schematic was re-annotated or changed since the board was updated), so " \
+                                            "nothing was written to it: Update PCB from Schematic in KiCad, then run " \
+                                            "this again"
         if missing:
             board_out["not_on_board"] = sorted(missing, key=fab_export._refkey)
             board_out["not_on_board_note"] = "parts in the schematic with no footprint on the board: Update PCB from " \
@@ -432,7 +462,7 @@ def set_part_numbers(schematic: str, parts: dict, board: str | None = None, dry_
         if f in sheet_of:
             nodes = [(r, s.node) for s in _symbols([Sheet(f, text, new, sheet_of[f].paths)]) for r in s.refs]
         else:
-            nodes = [(_prop_value(n, "Reference"), n) for n in new.children("footprint")]
+            nodes = [(_board_ref(n, by_path, value_of), n) for n in new.children("footprint")]
         for r, node in nodes:
             for n, v in ref_fields.get(r, {}).items():
                 t = _target(node, n)
@@ -487,12 +517,20 @@ def set_part_numbers(schematic: str, parts: dict, board: str | None = None, dry_
     temps: list[tuple[Path, Path]] = []
     done: list[str] = []
     try:
-        for f, text in writes:
+        for link, text in writes:
+            f = link.resolve()  # a sheet linked in from elsewhere is edited where it lives, the link kept
             fd, tmp = tempfile.mkstemp(dir=f.parent, prefix=f".{f.name}.", suffix=".tmp")
             temps.append((Path(tmp), f))
             with os.fdopen(fd, "wb") as fh:
                 fh.write(text.encode("utf-8"))
             os.chmod(tmp, f.stat().st_mode & 0o7777)  # mkstemp makes it private; keep the file's own permissions
+        # a file saved since it was read (KiCad, or anything else) would be lost: refuse rather than write over it
+        read = {sh.path: sh.text for sh in sheets} | ({pcb: pcb_text} if pcb_text is not None else {})
+        moved = [f.name for f, _ in writes if f.read_bytes().decode("utf-8", errors="replace") != read[f]]
+        if moved:
+            for tmp, _ in temps:
+                tmp.unlink(missing_ok=True)
+            raise PartNumberError(f"{', '.join(moved)} changed while this ran, so nothing was written; run it again")
         for tmp, f in temps:
             os.replace(tmp, f)
             done.append(str(f))

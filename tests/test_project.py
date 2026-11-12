@@ -150,11 +150,11 @@ def test_check_flags_stale_and_orphaned_fab_files(tmp_path):
     (root / "fab/main").mkdir()
     (root / "fab/main/main-gerbers.zip").write_text("x")
     os.utime(root / "fab/main/main-gerbers.zip", (1, 1))
-    (root / "fab/port-centre-v3").mkdir()
-    (root / "fab/port-centre-v3/x.zip").write_text("x")
+    (root / "fab/old-v3").mkdir()
+    (root / "fab/old-v3/x.zip").write_text("x")
     probs = {f["path"]: f["problem"] for f in project.check(root)["findings"]}
     assert "older than the board" in probs["fab/main"]
-    assert "isn't in the project" in probs["fab/port-centre-v3"]
+    assert "isn't in the project" in probs["fab/old-v3"]
 
 
 def test_routing_target_in_a_project_is_the_board_itself_after_a_snapshot(tmp_path):

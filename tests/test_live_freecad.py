@@ -35,9 +35,21 @@ for d in (broken, other, work):
     d.UndoMode = 1  # as in the GUI
     d.clearUndos()
 
+# FreeCAD 1.1 records an open transaction in every document that changes before it is committed; newer builds keep
+# it to the document it was opened on. Find out which this one does, so the checks below hold each to its own rule.
+probe_a, probe_b = App.newDocument("probe_a"), App.newDocument("probe_b")
+for d in (probe_a, probe_b):
+    d.UndoMode = 1
+probe_a.openTransaction("probe")
+probe_b.addObject("Part::Box", "Box")
+probe_a.commitTransaction()
+app_wide = probe_b.UndoCount > 0
+App.closeDocument("probe_a")
+App.closeDocument("probe_b")
+
 bridge = mod.Bridge(App, "unix")
 App.addDocumentObserver(bridge.observer)
-out = {"fillet_before": list(fillet.State)}
+out = {"fillet_before": list(fillet.State), "app_wide": app_wide}
 
 def call(label, doc, code):
     before = bridge.seq
@@ -73,8 +85,8 @@ def test_edit_leaves_other_open_documents_alone(run):
     document with a failed feature would pick up an undo step for every edit cadmate makes anywhere."""
     assert "Invalid" in run["fillet_before"], run  # the setup really has a broken feature
     assert all(e["ok"] for e in run["edits"]), run["edits"]
-    # FreeCAD 1.1 records an undo step in every document that changes during a transaction; newer builds don't, but
-    # the recompute still runs the failed fillet again and marks the document unsaved, so check both.
+    # On FreeCAD 1.1 a recompute of the broken document here adds an undo step to it; on newer builds it doesn't, but
+    # the failed fillet still runs again and its changes are logged as cadmate's, which event_docs catches.
     assert run["after_edits"]["broken"] == []
     assert run["after_edits"]["other"] == []
     assert run["after_edits"]["work"] == ["cadmate: edit 2", "cadmate: edit 1", "cadmate: edit 0"]
@@ -87,8 +99,7 @@ def test_edit_leaves_other_open_documents_alone(run):
 def test_edit_recomputes_every_document_its_code_changed(run):
     assert run["both"]["ok"], run["both"]
     assert "Touched" not in run["other_box_state"], run  # the other document it wrote to was recomputed
-    # Whether that change gets an undo step there is FreeCAD's call: 1.1 records one, newer builds keep transactions to
-    # the document they were opened on. Either way it is never more than this one edit's.
-    assert run["after_all"]["other"] in ([], ["cadmate: both"]), run["after_all"]
+    # The change there can be undone where FreeCAD records it (1.1); newer builds keep the step to the target document.
+    assert run["after_all"]["other"] == (["cadmate: both"] if run["app_wide"] else []), run
     assert run["after_all"]["broken"] == ["cadmate: fix"]  # an edit aimed at the broken document still lands there
     assert "Invalid" not in run["fillet_fixed"], run

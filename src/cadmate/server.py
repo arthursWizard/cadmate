@@ -604,25 +604,46 @@ def freecad_live_open(path: str, doc: str | None = None) -> dict:
     .FCStd opens the document; STEP, IGES or BREP is imported into a new
     document (or into doc); a FreeCAD Python script (a model build script,
     .py or .FCMacro) is run in the window, leaving the document it builds open.
+    The view is fitted; a saved .FCStd keeps the origins and sketches its owner
+    left showing. A body whose tip feature has no solid shows its last good
+    feature instead, and is listed under no_solid: tell the user.
     """
     return _live("open", path=str(Path(path).expanduser()), doc=doc)
 
 
 @server.tool()
 def freecad_live_tidy_view(doc: str | None = None, view: str = "isometric", fit: bool = True,
-                           hide_origins: bool = True) -> dict:
+                           hide_origins: bool = True, hide_helpers: bool = True) -> dict:
     """Leave the user's FreeCAD window presentable once a batch of changes is done.
 
     Brings the document's view to the front, turns it to a standard view
     (isometric, front, rear, top, bottom, left, right; "" keeps the user's
     angle), fits the model in the window, and hides the origins (the axes and
-    planes of every Part and Body) and the axis cross. Call it once at the end
+    planes of every Part and Body), the axis cross, and the sketches, datum
+    planes/lines/points and binders inside each PartDesign Body (the layout
+    sketch too), so the solid is what the user sees. Call it once at the end
     of a round of edits, before telling the user it's ready, not after every
-    edit. Pass hide_origins=False, another view, or fit=False when the user
-    asked for origins on or for a particular view. Not an undo step; nothing in
-    the model changes. Returns the origins it hid.
+    edit. Pass hide_origins=False, hide_helpers=False, another view, or
+    fit=False when the user asked for origins or sketches on or for a
+    particular view. Not an undo step; nothing in the model changes.
+
+    For each body it shows one solid, as FreeCAD does: the tip, when
+    everything up to it built. If a feature up to the tip failed (it's in
+    error or has no solid, or its sketch or datum is in error, which leaves
+    the feature itself looking fine with its old shape), it shows the last
+    feature before the first failure, plus the broken sketch, and lists the
+    body under no_solid: failed is the first feature that didn't build, cause
+    the object in error. Tell the user which one failed and fix it (the tip is
+    not moved). When the failed feature has no sketch (a fillet, a pattern)
+    but the tip still has its last shape, that shape stays shown and the
+    entry has stale: the part on screen is from before the failure; say so.
+    With showing null and sketch_empty, nothing builds and the
+    sketch can't be drawn either: say the view is empty and why. A document
+    with no unsaved changes before is still unsaved-free after (visibility is
+    presentation, like the camera). Returns what it
+    hid and no_solid.
     """
-    return _live("tidy_view", doc=doc, view=view, fit=fit, hide_origins=hide_origins)
+    return _live("tidy_view", doc=doc, view=view, fit=fit, hide_origins=hide_origins, hide_helpers=hide_helpers)
 
 
 @server.tool()

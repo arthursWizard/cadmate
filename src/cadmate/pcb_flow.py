@@ -1,18 +1,17 @@
 """The routing flow behind cadmate's tools: classify the critical connections, route and lock them, autoroute the rest.
 
 Each step works on the board open in KiCad's PCB editor (unsaved edits included, results as one undo step) or on a
-.kicad_pcb file. Inside a cadmate project (project.py) a file is changed in place, after a snapshot of the board into
-history/; outside one, or with in_place=False, the result goes to a new file and the original is kept.
+.kicad_pcb file. A file is changed in place, after its files are kept in .cadmate/undo/ (undo_last_write puts them back);
+with in_place=False or an out_path the result goes to another file and the original is left as it was.
 Review the result with review_pcb_layout.
 """
 
 from __future__ import annotations
 
 import re
-import tempfile
 from pathlib import Path
 
-from . import fab, freerouting, pcb_critical, pcb_finish, pcb_review, pcb_route, project
+from . import fab, freerouting, pcb_critical, pcb_finish, pcb_review, pcb_route, project, undo
 from .pcb_board import Board, load_project, load_schematic, parse
 
 
@@ -67,30 +66,24 @@ def _rules_file(dst: Path | None, live) -> Path | None:
 
 
 def target(path: str, out_path: str | None, step: str, in_place: bool | None) -> tuple[Path, dict | None]:
-    """Where a step writes a saved board, and the snapshot taken first when that is the board itself.
+    """Where a step writes a saved board, and the undo entry kept first when that is the board itself.
 
-    out_path given: there (the input itself only with in_place). Otherwise, in a cadmate project the board is changed in
-    place (in_place defaults to True there) after a snapshot of its files into history/, or with in_place=False the
-    result goes to the project's scratch folder, never beside the board. Outside a project: <name>-<step>.kicad_pcb."""
+    out_path given: there (the input itself only with in_place). Otherwise the board is changed in place (in_place
+    defaults to True) after its files are kept in .cadmate/undo/ of its working folder, so undo_last_write puts them
+    back. With in_place=False the result goes to the project's scratch folder (.cadmate/work/), or outside a project to
+    <name>-<step>.kicad_pcb beside the board. No history/ snapshot: that is taken on request (project_snapshot)."""
     src = Path(path).expanduser()
-    root = project.find_root(src)
     if in_place is None:
-        in_place = root is not None and out_path is None
+        in_place = out_path is None
     dst = Path(out_path).expanduser() if out_path else src if in_place else (
         project.work_path(src, step) or src.with_name(f"{src.stem}-{step}{src.suffix}"))
     if dst.resolve() != src.resolve():
         return dst, None
     if not in_place:
-        raise FlowError("out_path is the input board; pass in_place=True to change it (inside a cadmate project the "
-                        "board is snapshotted first), or give a new file")
-    if root is None:
-        raise FlowError("in_place needs the board inside a cadmate project, so its current state can be snapshotted to "
-                        "history/ first (project_init); outside one, give out_path")
-    label = re.sub(r"[^a-z0-9]+", "-", f"before-{step}-{src.stem}".lower())[:40].strip("-")
-    snap = project.snapshot(src, label,
-                            [str(f) for f in project.board_files(src)], note=f"automatic, before {step} on {src.name}",
-                            automatic=True)
-    return dst, {"name": snap["name"], "restore": f"project_restore with name {snap['name']!r} undoes this step"}
+        raise FlowError("out_path is the input board; pass in_place=True to change it (its files are kept in "
+                        ".cadmate/undo/ first), or give a new file")
+    kept = undo.save(project.board_files(src), f"before {step} on {src.name}")
+    return dst, {"name": kept["name"], "restore": f"{undo.TOOL} with path {str(src)!r} undoes this step"} if kept else None
 
 
 def classify(path: str | None = None, roles: dict | None = None, currents: dict | None = None, overrides: dict | None = None,
@@ -143,7 +136,7 @@ def route_critical(path: str | None = None, out_path: str | None = None, roles: 
         pcb_route.write_file(src, dst, tracks, vias)
         out["written"] = str(dst)
         if snap:
-            out["snapshot"] = snap
+            out["undo"] = snap
     if res["boxed_in"]:
         out["boxed_in_note"] = ("these pads had a way out before this routing and have none now: their nets will stay open. "
                                 "Route them first (or move a part), then route the critical items again")
@@ -185,7 +178,7 @@ def autoroute(path: str | None = None, out_path: str | None = None, currents: di
         dst, snap = target(path, out_path, "routed", in_place)
         out = freerouting.autoroute_file(src, dst, widths, passes, timeout, lim)
         if snap:
-            out["snapshot"] = snap
+            out["undo"] = snap
     out["widths_from_currents"] = widths
     if not lim:
         out["fab_choice"] = chosen | {"note": (f"cadmate has no rule profile for {chosen['house']}" if chosen["house"] else
@@ -221,8 +214,8 @@ def autoroute(path: str | None = None, out_path: str | None = None, currents: di
 
 def finish_routing(path: str, out_path: str | None = None, outer_only: bool = True, in_place: bool | None = None) -> dict:
     """After the autorouter: take out the tracks that break clearance or the minimum width, route what is still open, and
-    refill the zones. Saved boards only; where the result goes is target()'s rule (outside a project,
-    <name>-finished.kicad_pcb)."""
+    refill the zones. Saved boards only; where the result goes is target()'s rule (in place by
+    default, undoable)."""
     if not path:
         raise FlowError("finish_routing works on a saved .kicad_pcb: save the board and pass its path")
     if not Path(path).expanduser().with_suffix(".kicad_pro").exists():
@@ -258,10 +251,10 @@ def finish_routing(path: str, out_path: str | None = None, outer_only: bool = Tr
            "open_before": res["open_before"], "open_after": res["open_after"], "still_open": res["open"],
            "left_alone": sorted(skip), "by_hand": res["by_hand"]}
     if snap:
-        out["snapshot"] = snap
+        out["undo"] = snap
     if res["open_after"] > res["open_before"]:
         out["worse"] = ("more connections open than before: the bad tracks it took out couldn't all be replaced. "
-                        + (f"project_restore {snap['name']!r} puts the board back; " if snap else "Keep the input board and ")
+                        + (f"{undo.TOOL} puts the board back; " if snap else "Keep the input board and ")
                         + "fix the ripped list by hand")
     try:
         freerouting.refill(dst)

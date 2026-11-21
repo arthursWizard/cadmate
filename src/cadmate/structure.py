@@ -464,7 +464,7 @@ def save(result: dict, fcstd: Path) -> Path:
 def check(path: str | Path) -> dict:
     """Check a saved .FCStd headless and save the report beside it."""
     fcstd = locate(path)
-    facts = apps.run_freecad_script(SCRIPT, env={"CADMATE_DOC": str(fcstd)})
+    facts = apps.run_freecad_script(SCRIPT, env={"CADMATE_DOC": str(fcstd)}, near=fcstd)
     result = {"file": str(fcstd)} | evaluate(facts)
     result["report"] = str(save(result, fcstd))
     return result

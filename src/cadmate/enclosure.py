@@ -134,12 +134,13 @@ def resolve(case_dir: Path, spec: dict) -> dict:
 
 
 def measure(assembly: Path, resolved: dict, timeout: int = 1800) -> dict:
-    import tempfile
+    from . import workdir
 
-    with tempfile.TemporaryDirectory() as tmp:
-        f = Path(tmp) / "spec.json"
+    with workdir.tmp(assembly, "enclosure") as tmp:
+        f = tmp / "spec.json"
         f.write_text(json.dumps(resolved), encoding="utf-8")
-        return apps.run_freecad_script(SCRIPT, env={"CADMATE_ASSEMBLY": str(assembly), "CADMATE_SPEC": str(f)}, timeout=timeout)
+        return apps.run_freecad_script(SCRIPT, env={"CADMATE_ASSEMBLY": str(assembly), "CADMATE_SPEC": str(f)}, timeout=timeout,
+                                       near=assembly)
 
 
 # ---------------------------------------------------------------------------------------------------------------------

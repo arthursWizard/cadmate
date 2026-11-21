@@ -123,7 +123,8 @@ def test_existing_files_are_kept_unless_asked(tmp_path, no_freecad):
     again = part.generate_part(tmp_path, "my_parts", NE555_SYMBOL, SOIC8_FP, datasheet=DATASHEET)
     assert not again["ok"] and any("overwrite" in e for e in again["errors"])
     assert part.generate_part(tmp_path, "my_parts", NE555_SYMBOL, SOIC8_FP, datasheet=DATASHEET, overwrite=True)["ok"]
-    assert (tmp_path / "my_parts.kicad_sym.bak").exists()
+    assert not (tmp_path / "my_parts.kicad_sym.bak").exists()
+    assert list((tmp_path / ".cadmate/undo").glob("*/my_parts.kicad_sym"))
     # The library tables keep one entry each.
     assert (tmp_path / "fp-lib-table").read_text().count("(lib ") == 1
 

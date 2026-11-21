@@ -150,7 +150,8 @@ than the document, or failing.
 
 ## Tidying a model that's already messy
 
-1. `project_snapshot` with a label like `before-restructure`.
+1. Ask the user whether to snapshot first (`project_snapshot`, label `before-restructure`): the tidy is many live
+   steps, and FreeCAD's undo only lasts while the document is open. Snapshot only on their yes.
 2. `check_model_structure`, and note each piece's bounding box (`freecad_live_state`) and volume (`Shape.Volume`):
    the tidy must not change the shape.
 3. Add the Params sheet and move the sizes into it, binding each feature, offset and sketch dimension as you go.

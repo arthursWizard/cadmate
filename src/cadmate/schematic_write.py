@@ -931,7 +931,7 @@ def write(path: str, parts: list[dict], nets: dict[str, list[str]], no_connect: 
     root_uuid = _sheet_uuid(out_path)
     text = _render(out_path, placed, power_parts, d, junctions, paper, title, root_uuid)
     sexpr.parse(text)
-    kept = project.keep([out_path], "schematic-write")  # a snapshot inside a project, a .bak outside one
+    kept = project.keep([out_path], "schematic-write")  # into .cadmate/undo/, for undo_last_write
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(text, encoding="utf-8", newline="\n")
 

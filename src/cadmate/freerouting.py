@@ -19,10 +19,9 @@ import platform
 import re
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 
-from . import apps, sexpr
+from . import apps, sexpr, workdir
 from .pcb_board import Board, NetGraph, Track, Via, dist, parse, point_seg
 
 JAR_ENV = "CADMATE_FREEROUTING_JAR"
@@ -556,10 +555,17 @@ def open_counts(left: list[dict]) -> dict:
 
 def autoroute_file(board_file: Path, out_file: Path, widths: dict[str, float] | None = None, passes: int = 30, timeout: int = 1200,
                    fab_limits: dict | None = None) -> dict:
+    """Route a saved board with Freerouting into out_file. The DSN/SES exchange files go in .cadmate/tmp/ of the board's
+    working folder, deleted before this returns."""
+    with workdir.tmp(board_file, "freerouting") as work:
+        return _autoroute_file(work, board_file, out_file, widths, passes, timeout, fab_limits)
+
+
+def _autoroute_file(work: Path, board_file: Path, out_file: Path, widths: dict[str, float] | None, passes: int, timeout: int,
+                    fab_limits: dict | None) -> dict:
     from . import pcb_route
 
     widths = widths or {}
-    work = Path(tempfile.mkdtemp(prefix="cadmate-fr-"))
     dsn, ses = work / (board_file.stem + ".dsn"), work / (board_file.stem + ".ses")
     board = parse(board_file.read_text(encoding="utf-8"), board_file.name)
     from .pcb_board import load_project
@@ -589,8 +595,7 @@ def autoroute_file(board_file: Path, out_file: Path, widths: dict[str, float] | 
     left = unrouted(after)
     out = {"ok": True, "complete": not left, "board": str(out_file), "freerouting": fr,
            "added": {"tracks": len(tracks), "vias": len(vias)}, "stubs_removed": pruned,
-           "keepouts": {"edge_mm": edge, "hole_mm": hole}, "widened": widened, "zones_refilled": filled, "plane_fanout": _fan_report(fan), "unrouted": left,
-           "work": str(work)}
+           "keepouts": {"edge_mm": edge, "hole_mm": hole}, "widened": widened, "zones_refilled": filled, "plane_fanout": _fan_report(fan), "unrouted": left}
     out["open"] = open_counts(left)
     if left:
         out["next"] = (f"{len(left)} net(s) not fully routed: run again with more passes (now {passes}), "
@@ -619,12 +624,20 @@ def _clearances(board: Board, fab_limits: dict | None) -> tuple[float, float]:
 
 
 def autoroute_live(widths: dict[str, float] | None = None, passes: int = 30, timeout: int = 1200, fab_limits: dict | None = None) -> dict:
+    """Route the board open in KiCad with Freerouting, as undo steps there. A saved copy of it and the DSN/SES files go
+    in .cadmate/tmp/ of its project folder, deleted before this returns."""
+    from . import kicad_pcb_live
+
+    kicad, live = kicad_pcb_live.connect()
+    with workdir.tmp(kicad_pcb_live.folder(live), "freerouting") as work:
+        return _autoroute_live(work, live, widths, passes, timeout, fab_limits)
+
+
+def _autoroute_live(work: Path, live, widths: dict[str, float] | None, passes: int, timeout: int, fab_limits: dict | None) -> dict:
     from . import kicad_pcb_live, pcb_route
     from .pcb_board import load_project
 
     widths = widths or {}
-    kicad, live = kicad_pcb_live.connect()
-    work = Path(tempfile.mkdtemp(prefix="cadmate-fr-"))
     copy = work / Path(live.name).name
     live.save_as(str(copy), overwrite=True, include_project=True)
     dsn, ses = copy.with_suffix(".dsn"), copy.with_suffix(".ses")
@@ -661,7 +674,7 @@ def autoroute_live(widths: dict[str, float] | None = None, passes: int = 30, tim
     out = {"ok": True, "complete": not left, "board": live.name, "freerouting": fr,
            "added": {"tracks": len(tracks), "vias": len(vias)}, "stubs_removed": pruned,
            "keepouts": {"edge_mm": edge, "hole_mm": hole}, "widened": widened, "zones": refill_note, "plane_fanout": _fan_report(fan), "unrouted": left,
-           "undo": "two steps in KiCad's undo list: 'cadmate: Freerouting …' and 'cadmate: refill zones'", "work": str(work)}
+           "undo": "two steps in KiCad's undo list: 'cadmate: Freerouting …' and 'cadmate: refill zones'"}
     out["open"] = open_counts(left)
     if left:
         out["next"] = (f"{len(left)} net(s) not fully routed: run again with more passes (now {passes}), "

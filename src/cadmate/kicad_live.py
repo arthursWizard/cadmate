@@ -33,12 +33,11 @@ import platform
 import re
 import shutil
 import subprocess
-import tempfile
 import time
 from dataclasses import asdict
 from pathlib import Path
 
-from . import apps, check, footprint, live, sexpr, symbol, symbol_check, versions
+from . import apps, check, footprint, live, sexpr, symbol, symbol_check, versions, workdir
 
 RAW_DIFF_LINES = 80  # longer diffs are cut; the item changes cover them
 HISTORY_KEPT = 50
@@ -116,8 +115,16 @@ class Target:
         return symbol_check.check_symbol(parsed)
 
     def state_file(self) -> Path:
-        key = hashlib.sha1(f"{self.path}\0{self.name or ''}".encode()).hexdigest()[:16]
-        return data_dir() / f"{key}.json"
+        """cadmate's steps on this item, with what each replaced (for kicad_live_undo): in .cadmate/live/ of the
+        library's working folder, not in a per-user folder."""
+        return workdir.base(self.path) / workdir.LIVE / f"{self._key()}.json"
+
+    def legacy_state_file(self) -> Path:
+        """Where cadmate 0.5 and earlier kept it: read once, so steps from before an upgrade can still be undone."""
+        return data_dir() / f"{self._key()}.json"
+
+    def _key(self) -> str:
+        return hashlib.sha1(f"{self.path}\0{self.name or ''}".encode()).hexdigest()[:16]
 
     def label(self) -> str:
         return f"{self.path.name}:{self.name}" if self.kind == "symbol" else self.path.name
@@ -127,20 +134,23 @@ class Target:
 
 
 def _load(t: Target) -> dict:
-    try:
-        st = json.loads(t.state_file().read_text(encoding="utf-8"))
-        if st.get("path") == str(t.path) and st.get("name") == t.name:
-            return st
-    except (OSError, ValueError):
-        pass
+    for f in (t.state_file(), t.legacy_state_file()):
+        try:
+            st = json.loads(f.read_text(encoding="utf-8"))
+            if st.get("path") == str(t.path) and st.get("name") == t.name:
+                return st
+        except (OSError, ValueError):
+            pass
     return {"path": str(t.path), "name": t.name, "seen": None, "steps": []}
 
 
 def _save(t: Target, st: dict) -> None:
     st["steps"] = st["steps"][-HISTORY_KEPT:]
     f = t.state_file()
+    workdir.dot(f.parent.parent.parent)
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_text(json.dumps(st), encoding="utf-8")
+    t.legacy_state_file().unlink(missing_ok=True)  # moved: nothing of this item's left in the per-user folder
 
 
 MAC_SETTLE = 0.5  # seconds between the file leaving its folder and coming back, so KiCad sees both
@@ -548,13 +558,18 @@ def _svg_to_png(svg: Path, png: Path, width: int) -> None:
                     "install librsvg (rsvg-convert)")
 
 
-def snapshot(path: str, name: str | None = None, width: int = 900) -> Path:
-    """Render the item as saved, with kicad-cli, to a PNG. Returns its path."""
+def snapshot(path: str, name: str | None = None, width: int = 900) -> bytes:
+    """Render the item as saved, with kicad-cli, to a PNG (its bytes). kicad-cli's SVG and the PNG go in .cadmate/tmp/
+    of the library's working folder and are deleted again."""
     t = Target(path, name)
     cli = apps.find_kicad_cli()
     if not cli:
         raise LiveError(f"kicad-cli not found; set {apps.KICAD_CLI_ENV}")
-    out = Path(tempfile.mkdtemp(prefix="cadmate-snap-"))
+    with workdir.tmp(t.path, "picture") as out:
+        return _render(cli, t, out, width)
+
+
+def _render(cli: str, t: Target, out: Path, width: int) -> bytes:
     if t.kind == "footprint":
         # Pad outlines and numbers on the fab layer, so the picture shows which pad is which.
         cmd = [cli, *versions.kicad_cli_args("fp_svg"), "--footprint", t.path.stem, "--output", str(out), str(t.path.parent)]
@@ -566,4 +581,4 @@ def snapshot(path: str, name: str | None = None, width: int = 900) -> Path:
         raise LiveError(f"kicad-cli made no picture (exit {proc.returncode}): {(proc.stderr or proc.stdout)[-1500:]}")
     png = out / (svgs[0].stem + ".png")
     _svg_to_png(svgs[0], png, width)
-    return png
+    return png.read_bytes()

@@ -51,10 +51,13 @@ def test_snapshot_png(tmp_path, item, name):
     src = FIXTURES / item
     path = tmp_path / src.name
     path.write_bytes(src.read_bytes())
-    png = kicad_live.snapshot(str(path), name, width=600)
+    data = kicad_live.snapshot(str(path), name, width=600)
+    png = tmp_path / "out.png"
+    png.write_bytes(data)
     width, height, corner = png_info(png)
     assert width == 600 and height > 50 and corner[:3] == (255, 255, 255)
-    assert png.stat().st_size > 2_000  # a drawing, not a blank page
+    assert len(data) > 2_000  # a drawing, not a blank page
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted([src.name, "out.png"])  # kicad-cli's scratch is gone
 
 
 def test_drc_report_has_the_fields_cadmate_reads(tmp_path):

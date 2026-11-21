@@ -14,7 +14,6 @@ import platform
 import re
 import shutil
 import subprocess
-import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -161,13 +160,17 @@ def kicad_info() -> AppInfo:
         return AppInfo("kicad", path, None, f"could not run kicad-cli: {e}")
 
 
-def run_freecad_script(script: Path, env: dict[str, str] | None = None, timeout: int = 300) -> dict:
-    """Run a script under FreeCADCmd and return the JSON it writes to CADMATE_OUT."""
+def run_freecad_script(script: Path, env: dict[str, str] | None = None, timeout: int = 300,
+                       near: str | Path | None = None) -> dict:
+    """Run a script under FreeCADCmd and return the JSON it writes to CADMATE_OUT, a scratch file in the working folder
+    of near (the file the script works on), deleted before returning."""
+    from . import workdir
+
     path = find_freecadcmd()
     if not path:
         raise RuntimeError(_not_found("FreeCADCmd", FREECADCMD_ENV))
-    with tempfile.TemporaryDirectory() as tmp:
-        out_file = Path(tmp) / "out.json"
+    with workdir.tmp(near, "freecad") as tmp:
+        out_file = tmp / "out.json"
         run_env = os.environ | (env or {}) | {"CADMATE_OUT": str(out_file)}
         proc = subprocess.run([path, str(script)], capture_output=True, text=True, encoding="utf-8", errors="replace",
                               timeout=timeout, env=run_env)

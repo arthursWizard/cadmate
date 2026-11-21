@@ -45,7 +45,7 @@ Most sheets use generic symbols (`Device:R`, `Device:C`) with only a value, so e
 - `<project>/<library>.3dshapes/<footprint name>.step`, built in the footprint's frame, so it needs no offset or rotation.
 - Entries for both libraries in the project's `sym-lib-table` and `fp-lib-table` (created if missing; other entries are kept).
 
-Existing files are only replaced with `overwrite: true`, and the old files are kept (in `history/` inside a cadmate project, else as `.bak`).
+Existing files are only replaced with `overwrite: true`, and the old files are kept (in `.cadmate/undo/`, so `undo_last_write` can put it back).
 
 ## The 3D model
 

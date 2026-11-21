@@ -3,14 +3,16 @@
 The rules (skills/cadmate-project/SKILL.md has the why):
 
 - Every change goes into the active project, in place. There are no side-by-side versions (-v2, -routed, variant-x).
-- Before a change worth going back to, snapshot what's there into history/<YYYYMMDD-HHMM>_<label>/, same relative paths.
+- History is on request: project_snapshot copies a state into history/<YYYYMMDD-HHMM>_<label>/, same relative paths,
+  when the user asks to keep it, and project_release does at a release. Tools take no snapshots of their own: a tool
+  that rewrites saved files keeps the replaced ones in .cadmate/undo/ (the newest few, undo.py) instead.
 - The layout is fixed, so every file has one obvious place and depth. No folder holds just one thing:
   - A project with one kind of design (KiCad, FreeCAD or cadmate's protoboards) keeps its files at the root. With two or
     more, each has its folder: kicad/, freecad/, protoboard/. cadmate-project.json says which ("tools"); add_tool adds
-    one, after a snapshot.
+    one.
   - In a tool's area (the root, or its folder), one design sits directly there: one board's <board>.kicad_pro, one
     FreeCAD part's <part>.FCStd and STEPs. Two or more each get a folder named after what they are: <board>/, <part>/
-    (enclosure/, bracket/, knob/). add_unit moves the first one into its folder, after a snapshot.
+    (enclosure/, bracket/, knob/). add_unit moves the first one into its folder.
   - KiCad's project libraries sit in lib/ in the KiCad area, shared by its boards.
 
 A project is a folder with a cadmate-project.json marker. Nothing here needs KiCad or FreeCAD.
@@ -25,6 +27,8 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+
+from . import undo, workdir
 
 MARKER = "cadmate-project.json"
 # 1: no "tools" in the marker, always kicad/ + case/; 2: "tools" says which, one tool is flat, both use kicad/ + freecad/
@@ -46,9 +50,9 @@ COMMON = {
     "fab": "fab/<board>/: generated fab files (Gerbers, drill, BOM, CPL); regenerate, don't edit",
     "tools": "generator scripts and their inputs: source code of the design, never archived",
     "docs": "datasheets, drawings, photos and notes from the user",
-    HISTORY: "history/<YYYYMMDD-HHMM>_<label>/: snapshots taken before a change, and HISTORY.md, the index",
+    HISTORY: "history/<YYYYMMDD-HHMM>_<label>/: snapshots the user asked for, and HISTORY.md, the index",
     "releases": "releases/<board>/<rev>/: each released revision's fab files, renders and notes, frozen (project_release)",
-    ".cadmate": ".cadmate/work/: scratch (comparisons, routing temp files); safe to delete at any time",
+    ".cadmate": ".cadmate/: cadmate's own files (tmp/ for one call, undo/, live/, work/ for options); git ignores it",
 }
 SKIP_TOP = {HISTORY, ".cadmate", ".git", ".DS_Store"}
 # how deep files may sit in each area (1 = directly inside it): a lib part, a part's renders/ in its folder
@@ -76,13 +80,16 @@ Follow cadmate's project rules (the cadmate-project skill). In short:
 
 - This folder is the one active project. Apply every change here, in place. Never make side-by-side copies such as
   main-v2/, main-routed.kicad_pcb, enclosure-variant-b/ or *.bak.
-- Before a change worth going back to (the user saw or approved the current state, or the change is big or risky),
-  run cadmate's `project_snapshot` with a short label. It copies the current state into history/<YYYYMMDD-HHMM>_<label>/.
+- No history by default. Snapshot only when the user asks to keep a state: cadmate's `project_snapshot` with a short
+  label copies it into history/<YYYYMMDD-HHMM>_<label>/. Tools that rewrite saved files keep the replaced ones in
+  .cadmate/undo/ (the newest 3; `undo_last_write` puts them back), and edits in the open KiCad or FreeCAD window have
+  the app's own undo.
 - No folder holds just one thing. One tool: its files at the root; both: kicad/ and freecad/. One board or FreeCAD
   part: its files directly in its tool's place; two or more: a folder each, named for what it is (main/, enclosure/,
   bracket/). Adding the second tool, board or part: `project_add_tool`, `project_add_board`, `project_add_part`.
   Never move them by hand. This project: {layout}.
-- Scratch goes in .cadmate/work/ and is deleted when done.
+- Nothing goes outside this folder. Scratch goes in .cadmate/ (cadmate deletes its own after each call; options to
+  compare go in .cadmate/work/ and are deleted once one is picked).
 - FreeCAD parts are built as the freecad-modelling skill says: one Body per piece, sizes in one Params sheet, sketches
   on origin or datum planes, named; change the feature, don't stack a fix. Run `check_model_structure` after each round.
 - Never rename a KiCad project; never move tools/ out: the scripts are the design's source.
@@ -438,7 +445,7 @@ def init(root: str | Path, name: str | None = None, boards: list[str] | None = N
         if tools is not None and _tools(tools) != have.tools:
             want = [t for t in _tools(tools) if t not in have.tools]
             raise ProjectError(f"this project is {' + '.join(have.tools)}; " + (
-                f"project_add_tool {want[0]} adds {want[0]} (it moves the files into subfolders, after a snapshot)" if want
+                f"project_add_tool {want[0]} adds {want[0]} (it moves the files into subfolders; undo_last_write moves them back)" if want
                 else "cadmate doesn't drop a tool from a project"))
         sh = have
     else:
@@ -468,14 +475,13 @@ def init(root: str | Path, name: str | None = None, boards: list[str] | None = N
     mk("README.md", readme_md(name, sh))
     mk("CLAUDE.md", CLAUDE_MD.format(name=name, layout=sh.summary()))
     mk(BRIEF, BRIEF_MD.format(name=name, fab=_fab_md(fab_settings(root))))
-    dirs = ["tools", "docs", HISTORY, WORK]
+    dirs = ["tools", "docs"]  # history/ and .cadmate/ appear when first used
     if "kicad" in sh.tools:
         dirs += [sh.show("kicad", KICAD_LIB), "fab"]
     if sh.nested:
         dirs += [sh.dir(t) for t in sh.tools]
     for d in dirs:
         mk(d)
-    mk(f"{HISTORY}/{INDEX}", _index_header(name))
     nxt = []
     for tool, names in (("kicad", boards), ("freecad", parts), ("protoboard", protoboards)):
         if tool not in sh.tools:
@@ -498,20 +504,20 @@ def init(root: str | Path, name: str | None = None, boards: list[str] | None = N
 
 
 def add_tool(path: str | Path, tool: str, now: datetime | None = None) -> dict:
-    """Add a tool. To a one-tool project: snapshot the whole project, then move the first tool's files from the root into
+    """Add a tool. To a one-tool project: keep what moves in .cadmate/undo/, then move the first tool's files from the root into
     its folder (kicad/, freecad/, protoboard/) and make the new one's. With folders already, just make the new one's. A board moves with lib/, so ${KIPRJMOD} paths still
     resolve, and a part's files move together; nothing inside a file is rewritten."""
     root = _root(path)
     (tool,) = _tools(tool)
     sh = shape(root)
     if tool in sh.tools:
-        return {"ok": True, "root": str(root), "tools": list(sh.tools), "moved": [], "snapshot": None,
+        return {"ok": True, "root": str(root), "tools": list(sh.tools), "moved": [], "undo": None,
                 "next": f"the project already has {tool}"}
     new = Shape(tuple(t for t in TOOLS if t in (*sh.tools, tool)), sh.freecad_dir if sh.nested else "freecad")
     if sh.nested:  # each tool has its folder already: just add the new one's
         m = _marker(root) | {"tools": list(new.tools)}
         (root / MARKER).write_text(json.dumps(m, indent=2) + "\n", encoding="utf-8")
-        return {"ok": True, "root": str(root), "tools": list(new.tools), "moved": [], "snapshot": None,
+        return {"ok": True, "root": str(root), "tools": list(new.tools), "moved": [], "undo": None,
                 "made": init(root)["made"], "next": f"put the {tool} files in {new.dir(tool)}/; then project_check"}
     (have,) = sh.tools
     dest = root / new.dir(have)
@@ -533,18 +539,18 @@ def add_tool(path: str | Path, tool: str, now: datetime | None = None) -> dict:
     bring = [p for p in sorted(root.iterdir()) if p not in move and p.name not in COMMON and not p.name.startswith(".")
              and (_is_design(tool, p) or p.is_dir() and _has_design(tool, p)
                   or p.is_file() and any(p.name.startswith(st + c) for st in stems for c in ".-"))]
-    snap = snapshot(root, f"before-add-{tool}", note=f"automatic, before adding {tool}: the {have} files move into "
-                                                     f"{dest.name}/", now=now, automatic=True)
+    there = root / new.dir(tool)
+    u = undo.save([*move, *bring, root / MARKER], f"before adding {tool}: the {have} files move into {dest.name}/",
+                  created=[dest, there], now=now)
     dest.mkdir(exist_ok=True)
     for p in move:
         shutil.move(str(p), str(dest / p.name))
     m = _marker(root) | {"layout": LAYOUT_VERSION, "tools": list(new.tools)}
     (root / MARKER).write_text(json.dumps(m, indent=2) + "\n", encoding="utf-8")
     made = init(root)["made"]  # the other tool's folders; the marker now says both
-    there = root / new.dir(tool)
     for p in bring:
         shutil.move(str(p), str(there / p.name))
-    return {"ok": True, "root": str(root), "tools": list(new.tools), "snapshot": snap["name"],
+    return {"ok": True, "root": str(root), "tools": list(new.tools), "undo": u["name"],
             "moved": [f"{p.name} -> {dest.name}/{p.name}" for p in move] + [f"{p.name} -> {there.name}/{p.name}"
                                                                             for p in bring], "made": made,
             "next": (f"files moved: if KiCad or FreeCAD has any of them open, close and reopen them from {dest.name}/. "
@@ -554,7 +560,7 @@ def add_tool(path: str | Path, tool: str, now: datetime | None = None) -> dict:
 def add_unit(path: str | Path, tool: str, name: str | None = None, current: str | None = None,
              now: datetime | None = None) -> dict:
     """Go from one board (or FreeCAD part) to a folder each. The one sitting directly in the tool's area moves into
-    <area>/<current>/ after a snapshot; name, if given, is the new one, and gets its folder too.
+    <area>/<current>/ (undo_last_write moves it back); name, if given, is the new one, and gets its folder too.
 
     current: the name of the one already there. A board's is its .kicad_pro's; a part's is taken from its only .FCStd,
     else pass it (what the part is: enclosure, bracket). A moved board's ${KIPRJMOD} paths (lib tables, 3D models) get
@@ -570,17 +576,16 @@ def add_unit(path: str | Path, tool: str, name: str | None = None, current: str 
     area = root / sh.dir(tool)
     here, folders = units(root, sh, tool)
     if tool == "kicad" and len(here) > 1:
-        raise ProjectError(f"{len(here)} boards sit directly in {sh.here(tool)}; move all but one into folders by hand "
-                           "(project_snapshot first)")
+        raise ProjectError(f"{len(here)} boards sit directly in {sh.here(tool)}; move all but one into folders by hand")
     if not here:
         if name is None:
-            return {"ok": True, "moved": [], "snapshot": None, "next": f"no {u} sits directly in {sh.here(tool)}"}
+            return {"ok": True, "moved": [], "undo": None, "next": f"no {u} sits directly in {sh.here(tool)}"}
         if not folders:
-            return {"ok": True, "moved": [], "snapshot": None, "made": [],
+            return {"ok": True, "moved": [], "undo": None, "made": [],
                     "next": f"this is the first {u}: put its files directly in {sh.here(tool)}, no folder"}
         made = [] if (area / name).exists() else [sh.show(tool, name)]
         (area / name).mkdir(exist_ok=True)
-        return {"ok": True, "moved": [], "snapshot": None, "made": made,
+        return {"ok": True, "moved": [], "undo": None, "made": made,
                 "next": f"put the {u} in {sh.show(tool, name)}/"}
     if tool == "kicad":
         current = current or here[0].stem
@@ -599,9 +604,8 @@ def add_unit(path: str | Path, tool: str, name: str | None = None, current: str 
     skip = set(COMMON) | SKIP_TOP | sh.area_dirs() | {KICAD_LIB} | {d.name for d in folders} if not sh.nested else \
         {KICAD_LIB} | {d.name for d in folders}
     move = [p for p in sorted(area.iterdir()) if p.name not in skip and _unit_file(tool, p)]
-    snap = snapshot(root, f"before-{u}-folders-{current}"[:40].rstrip("-"), [sh.dir(tool)] if sh.nested else None,
-                    now=now, note=f"automatic, before moving {current} into its own folder for a second {u}",
-                    automatic=True)
+    kept = undo.save(move, f"before moving {current} into its own folder for a second {u}",
+                     created=[dest] + ([area / name] if name is not None and not (area / name).exists() else []), now=now)
     dest.mkdir(exist_ok=True)
     moved_names = {p.name for p in move}
     rewritten = []
@@ -621,7 +625,7 @@ def add_unit(path: str | Path, tool: str, name: str | None = None, current: str 
         (area / name).mkdir()
         made.append(sh.show(tool, name))
     app = {"kicad": "KiCad", "freecad": "FreeCAD", "protoboard": "the viewer"}[tool]
-    return {"ok": True, "root": str(root), "snapshot": snap["name"], u: current,
+    return {"ok": True, "root": str(root), "undo": kept["name"] if kept else None, u: current,
             "moved": [f"{p.name} -> {sh.show(tool, current, p.name)}" for p in move], "rewritten": rewritten,
             "made": made,
             "next": (f"{app}: close {current} and reopen it from {sh.show(tool, current)}/. "
@@ -868,7 +872,7 @@ def prune(path: str | Path, keep: int = KEEP_AUTOMATIC, delete: list[str] | None
 
 
 def restore(path: str | Path, name: str, paths: list[str] | None = None, now: datetime | None = None) -> dict:
-    """Put a snapshot's files back into the active project. The current state is snapshotted first, so this is undoable.
+    """Put a snapshot's files back into the active project. What it replaces goes to .cadmate/undo/ first, so undo_last_write takes it back.
     paths limits it to part of the snapshot (project-relative, e.g. ["kicad/main"])."""
     root = _root(path)
     src = root / HISTORY / name
@@ -880,10 +884,7 @@ def restore(path: str | Path, name: str, paths: list[str] | None = None, now: da
     missing = [r.as_posix() for r in rels if not (src / r).exists()]
     if missing:
         raise ProjectError(f"not in {name}: {', '.join(missing)}")
-    present = [r.as_posix() for r in rels if (root / r).exists()]
-    label = re.sub(r"[^a-z0-9-]", "", f"before-restore-{SNAP_NAME.match(name)[2] if SNAP_NAME.match(name) else 'snapshot'}")[:40]
-    before = snapshot(root, label, present, note=f"automatic, before restoring {name}", now=now,
-                      automatic=True) if present else None
+    before = undo.save([root / r for r in rels], f"before restoring {name}", now=now)
     for r in rels:
         s, d = src / r, root / r
         if d.is_dir():
@@ -896,7 +897,7 @@ def restore(path: str | Path, name: str, paths: list[str] | None = None, now: da
             if f.is_file():
                 f.touch()  # restored now: fab/ exported earlier must read as older than the board
     return {"ok": True, "restored": [r.as_posix() for r in rels], "from": name,
-            "previous_state": before["name"] if before else None,
+            "previous_state": f"{workdir.UNDO}/{before['name']} ({undo.TOOL} puts it back)" if before else None,
             "next": "regenerate fab/ for any board restored; fab files aren't restored unless the snapshot had them"}
 
 
@@ -941,10 +942,10 @@ def check(path: str | Path) -> dict:
                                   where))
         elif p.is_file() and (p.suffix in (".bak", ".orig") or p.name.endswith("~")):
             found.append(_finding("warning", rel.as_posix(), "a backup copy beside the original",
-                                  "delete it; history/ holds earlier states (project_snapshot before changing)"))
+                                  "delete it; cadmate keeps what a tool replaced in .cadmate/undo/ (undo_last_write), and project_snapshot keeps a state on request"))
         elif top in NAME_CHECKED and VERSIONED.search(stem) and "renders" not in rel.parts and not in_lib:
             found.append(_finding("warning", rel.as_posix(), "the name marks a version or variant of something else",
-                                  "apply the change to the original in place (project_snapshot first if the old state matters), "
+                                  "apply the change to the original in place (a snapshot first only if the user wants the old state kept), "
                                   "then delete this one"))
         limit = DEPTH.get(top)
         if p.is_file() and limit and len(within) > limit and not in_lib:
@@ -963,6 +964,11 @@ def check(path: str | Path) -> dict:
     found += enclosure.project_findings(root)
     found += structure.project_findings(root)
     found += release.project_findings(root)
+    left = workdir.leftovers(root)
+    if left:
+        found.append(_finding("warning", workdir.TMP, f"{len(left)} scratch folder(s) left by a call that didn't finish",
+                              "delete .cadmate/tmp/ (nothing in it is part of the design); the next cadmate call that "
+                              "uses it clears ones whose process is gone"))
     work = root / WORK
     if work.exists() and any(work.iterdir()):
         n = sum(1 for f in work.rglob("*") if f.is_file())
@@ -1034,7 +1040,7 @@ def _check_top(root: Path, sh: Shape) -> list[dict]:
             kind = f"a {tool}-only project" if tool else f"a project without {mt}"
             out.append(_finding("warning", p.name, f"{mt} files in {kind}",
                                 f"project_add_tool {mt}: " + (f"it makes {mt}/ for these" if sh.nested else
-                                f"it snapshots the project, moves the {tool} files into {tool}/ and makes {mt}/ for these")))
+                                f"it moves the {tool} files into {tool}/ and makes {mt}/ for these")))
         elif tool and (p in folders or _unit_file(tool, p) or tool == "kicad" and p.suffix in LIBS):
             continue  # a board or part at the root, or its folder; _check_kicad and _check_parts say whether it fits
         elif tool and p.is_dir():
@@ -1059,7 +1065,7 @@ def _check_units(root: Path, sh: Shape, tool: str) -> list[dict]:
     if here and full:
         out.append(_finding("warning", here[0].relative_to(root).as_posix(),
                             f"a {u} directly in {here_} beside {u} folders ({', '.join(d.name for d in full[:3])})",
-                            f"{add} moves it into a folder of its own (snapshot first"
+                            f"{add} moves it into a folder of its own (undoable"
                             + (", ${KIPRJMOD} paths fixed)" if tool == "kicad" else "; pass current, what the part is)")))
     if len(full) == 1 and not here:
         out.append(_finding("info", full[0].relative_to(root).as_posix(), f"the only {u}, in a folder of its own",
@@ -1209,20 +1215,16 @@ def work_path(board: Path, step: str) -> Path | None:
 
 
 def board_files(board: Path) -> list[Path]:
-    """A board's own design files, the set a snapshot before an in-place tool run takes."""
+    """A board's own design files, the set kept in .cadmate/undo/ before an in-place tool run."""
     return [board.with_suffix(ext) for ext in KICAD_DESIGN if board.with_suffix(ext).exists()]
 
 
 def keep(files: list[Path], why: str) -> str | None:
-    """Keep the current version of files that are about to be replaced. Inside a project: one snapshot of them into
-    history/; outside one: a .bak beside each (the old behaviour). Returns where they went, or None if none existed."""
+    """Keep the current version of files that are about to be replaced, in .cadmate/undo/ of their working folder (the
+    project, else their folder), so undo_last_write can put them back. Returns where they went, or None if none existed.
+    No history/ snapshot and no .bak: history is taken on request only (project_snapshot)."""
     files = [Path(f).expanduser() for f in files if f and Path(f).expanduser().exists()]
     if not files:
         return None
-    root = find_root(files[0])
-    if root is not None and all(find_root(f) == root for f in files):
-        label = re.sub(r"[^a-z0-9]+", "-", f"before-{why}-{files[0].stem}".lower())[:40].strip("-")
-        return snapshot(root, label, [str(f) for f in files], note=f"automatic, before {why}", automatic=True)["snapshot"]
-    for f in files:
-        shutil.copy2(f, f.with_suffix(f.suffix + ".bak"))
-    return ", ".join(str(f.with_suffix(f.suffix + ".bak")) for f in files)
+    u = undo.save(files, f"before {why}")
+    return str(Path(u["folder"]) / workdir.UNDO / u["name"])

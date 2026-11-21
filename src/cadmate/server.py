@@ -6,6 +6,7 @@ live in the user's window through cadmate's bridge) and the checks that tie the 
 
 from __future__ import annotations
 
+import base64
 import json
 import shutil
 import subprocess
@@ -14,29 +15,32 @@ from pathlib import Path
 from mcp.server.mcpserver import Image, MCPServer
 
 from . import (apps, check, enclosure, fab_export, footprint, freerouting, generate, ipc, kicad_live, kicad_pcb_live, live, model, packages, part, part_numbers, pcb_flow, pcb_place, pcb_review, pcb_write, ready,
-               pcb_route, project, protoboard, release, protoboard_place, protoboard_render, review, schematic_review, schematic_write, structure, symbol, symbol_check, symbol_generate)
+               pcb_route, project, protoboard, release, protoboard_place, protoboard_render, review, schematic_review, schematic_write, structure, symbol, symbol_check, symbol_generate, undo)
 from .footprint import read as _read_footprint  # generate_symbol's footprint argument shadows the module
 
 INSTRUCTIONS = """\
-cadmate keeps each design as ONE active project with a fixed layout and a single history folder. Follow this in every
+cadmate keeps each design as ONE active project with a fixed layout, worked on in place. Follow this in every
 session that creates or changes design files, whoever asked for the change:
 
 - Apply every change to the active project in place. Never create side-by-side versions: no main-v2/,
   main-routed.kicad_pcb, main-hand3.kicad_pcb, enclosure-variant-b/, *.bak, or copies "to keep the old one".
-- To keep the old state, call project_snapshot first (label like "before-rework"). It copies the files into
-  history/<YYYYMMDD-HHMM>_<label>/ at the same relative paths and logs it in history/HISTORY.md; project_restore puts
-  one back. Snapshot when the user has seen or approved the current state, or before a big or risky change. The routing
-  tools snapshot the board themselves when they change it in place.
+- No history unless the user asks for it. Edits in the open KiCad or FreeCAD window have the app's own undo. Tools that
+  rewrite saved files keep the replaced files in .cadmate/undo/ (the newest 3); undo_last_write puts them back. Only
+  when the user asks to keep a state, call project_snapshot (label like "approved-layout"): it copies the files into
+  history/<YYYYMMDD-HHMM>_<label>/ and logs it in history/HISTORY.md; project_restore puts one back.
+- Write nothing outside the working folder unless the user asks: cadmate's own scratch goes in .cadmate/ there and is
+  deleted after each call. Do the same with your own scratch files (scripts, exports to look at): .cadmate/work/,
+  deleted when done.
 - Layout: no folder holds just one thing. One kind of design (KiCad, FreeCAD, protoboard): its files at the project
   root; several: kicad/, freecad/, protoboard/. In each, one board (<board>.kicad_pro|.kicad_sch|.kicad_pcb|.kicad_dru),
   one FreeCAD part (<part>.FCStd, its STEPs, assembly.step, renders/) or one protoboard (<name>.json with its .png,
   .svg and -build.md) sits directly there; two or more get a folder each, named for what it is
   (main/, sensor/; enclosure/, bracket/, knob/: take the part's name from the conversation or the brief, never a
   generic "case"). KiCad's lib/ (project footprints, symbols, 3D models) sits in the KiCad area. Also fab/<board>/
-  (generated), tools/ (generator scripts: the design's source, never archived or deleted), docs/, history/,
-  .cadmate/work/ (scratch). docs/ is for the user's documents and the brief, never for design outputs. Going from one
-  to two, use project_add_tool, project_add_board, project_add_part or project_add_protoboard: they snapshot, move the
-  files and fix the paths. Never move them by hand.
+  (generated), tools/ (generator scripts: the design's source, never archived or deleted), docs/, history/ (on
+  request), .cadmate/ (cadmate's own; git ignores it). docs/ is for the user's documents and the brief, never for design outputs. Going from one
+  to two, use project_add_tool, project_add_board, project_add_part or project_add_protoboard: they move the files and fix
+  the paths (undo_last_write moves them back). Never move them by hand.
 - To compare options, build them in .cadmate/work/, show the user, apply the pick to the active project, delete the rest.
 - Never rename a KiCad project: its schematic annotations are tied to the name. Use ${KIPRJMOD}-relative library paths.
 - Never assume a board house. When a KiCad project starts, ask the user once where the board gets made (project_init
@@ -162,7 +166,7 @@ def link_model_to_footprint(
     scale: list[float] | None = None,
     replace_existing: bool = True,
 ) -> dict:
-    """Link a 3D model into a footprint file, keeping the original (history/ in a cadmate project, else a .bak).
+    """Link a 3D model into a footprint file, keeping the original (in .cadmate/undo/, for undo_last_write).
 
     model_path is written as given, so KiCad variables like
     ${KICAD10_3DMODEL_DIR} or ${KIPRJMOD} stay portable. Close the footprint
@@ -210,7 +214,7 @@ def generate_footprint(
     "6.0+/-0.2". custom places pads exactly as the datasheet's recommended land
     pattern gives them. The result is checked before it is written; nothing is
     written when the check finds errors. An existing file is only replaced with
-    overwrite=True, and the old file is kept (history/ in a cadmate project, else .bak). description and tags replace the
+    overwrite=True, and the old file is kept (in .cadmate/undo/, for undo_last_write). description and tags replace the
     family's own (KiCad's library style: "USB 3.2 Type-C receptacle, hybrid
     SMD/THT, https://...", tags "USB C Type-C receptacle").
     """
@@ -225,7 +229,7 @@ def generate_footprint(
     path = lib / f"{result['name']}.kicad_mod"
     if path.exists() and not overwrite:
         result["ok"] = False
-        result["errors"] = [f"{path} exists; pass overwrite=True to replace it (the old one is kept: in history/ inside a cadmate project, else as .bak)"]
+        result["errors"] = [f"{path} exists; pass overwrite=True to replace it (the old one is kept in .cadmate/undo/; undo_last_write puts it back)"]
         return result
     lib.mkdir(parents=True, exist_ok=True)
     kept = project.keep([path], "footprint")
@@ -358,7 +362,7 @@ def generate_symbol(
     default footprint as Library:Name; footprint_path, a local .kicad_mod, also checks that every pad
     has a pin and every pin a pad. The symbol is checked before it is written; nothing is written when
     the check finds errors. An existing symbol of the same name is only replaced with overwrite=True,
-    and the old library is kept (history/ in a cadmate project, else .bak). Other symbols in the library are left byte for byte.
+    and the old library is kept (in .cadmate/undo/, for undo_last_write). Other symbols in the library are left byte for byte.
     """
     lib = Path(library_path).expanduser()
     if lib.suffix != ".kicad_sym":
@@ -381,7 +385,7 @@ def generate_symbol(
         new_text = symbol.put_in_library(existing, text, name, replace=overwrite)
     except FileExistsError:
         result["ok"] = False
-        result["errors"] = [f"{lib.name} already has {name}; pass overwrite=True to replace it (the old one is kept: in history/ inside a cadmate project, else as .bak)"]
+        result["errors"] = [f"{lib.name} already has {name}; pass overwrite=True to replace it (the old one is kept in .cadmate/undo/; undo_last_write puts it back)"]
         return result
     symbol.parse_library(new_text)  # never write a library we cannot read back
     lib.parent.mkdir(parents=True, exist_ok=True)
@@ -459,7 +463,7 @@ def generate_part(
     linked as ${KIPRJMOD}/<library>.3dshapes/<footprint>.step, and adds the libraries to the project's
     sym-lib-table and fp-lib-table. Every pin must have a pad and every pad a pin, and the model must sit on the
     pads; nothing is written when any check finds errors. Existing files are only replaced with overwrite=True,
-    keeping the old files (history/ in a cadmate project, else .bak). The model needs FreeCAD; without it, symbol and footprint are written without a model.
+    keeping the old files (in .cadmate/undo/, for undo_last_write). The model needs FreeCAD; without it, symbol and footprint are written without a model.
     """
     r = part.generate_part(project_dir, library, symbol, footprint, model, datasheet=datasheet, overwrite=overwrite)
     return r if model and model.get("skip") else _with_offer(r)
@@ -659,7 +663,9 @@ def freecad_live_snapshot(doc: str | None = None, view: str = "isometric", width
     r = _live("snapshot", offer=False, doc=doc, view=view, width=width, height=height, fit=bool(view))
     if not r.get("ok"):
         raise RuntimeError(r.get("error") or json.dumps(r))
-    return Image(path=r["file"])
+    if "png_b64" in r:
+        return Image(data=base64.b64decode(r["png_b64"]), format="png")
+    return Image(path=r["file"])  # a bridge started before cadmate 0.6, which saves it in the system's temp folder
 
 
 @server.tool()
@@ -786,7 +792,7 @@ def kicad_live_snapshot(path: str, name: str | None = None, width: int = 900) ->
     KiCad aren't in it.
     """
     try:
-        return Image(path=kicad_live.snapshot(path, name, width))
+        return Image(data=kicad_live.snapshot(path, name, width), format="png")
     except (kicad_live.LiveError, OSError, subprocess.SubprocessError) as e:
         raise RuntimeError(str(e)) from e
 
@@ -863,7 +869,7 @@ def kicad_pcb_snapshot(layers: str = "F.Cu,B.Cu,F.SilkS,B.SilkS,F.Fab,Edge.Cuts"
     KiCad writes a copy to a temporary folder for this; the user's file is untouched. layers is KiCad's comma list.
     """
     try:
-        return Image(path=kicad_pcb_live.snapshot(layers, width))
+        return Image(data=kicad_pcb_live.snapshot(layers, width), format="png")
     except (kicad_pcb_live.PcbUnavailable, kicad_live.LiveError, OSError, subprocess.SubprocessError) as e:
         raise RuntimeError(str(e)) from e
 
@@ -901,7 +907,7 @@ def write_schematic(path: str, parts: list[dict], nets: dict[str, list[str]], no
     nets leaving their block get a label; show_names labels a net even where it's wired. no_connect: unused pins.
     notes: [{text, at}]. Coordinates are mm, Y down, on the 1.27 mm grid.
     plan_only returns each part's outline and pin positions without writing, to plan positions first. It writes new
-    sheets only (replace=True writes over one cadmate wrote, keeping the old one in history/ or as .bak); it doesn't edit a
+    sheets only (replace=True writes over one cadmate wrote, keeping the old one in .cadmate/undo/ for undo_last_write); it doesn't edit a
     sheet someone drew. Fix what the review reports, then write again with replace=True.
     """
     try:
@@ -1009,8 +1015,8 @@ def route_critical_nets(path: str | None = None, out_path: str | None = None, ro
     segment and via added is locked, so Freerouting routes around them; nothing else is locked. On the open board the
     result is one undo step (not saved).
     pairs reports each pair's lengths and mismatch against its rule. dry_run routes without writing anything.
-    Saved boards: inside a cadmate project the board itself is changed, after a snapshot of its files into history/
-    (snapshot in the result; project_restore undoes the step); in_place=False writes to .cadmate/work/ instead.
+    Saved boards: the board itself is changed, after its files are kept in .cadmate/undo/ (undo in the result;
+    undo_last_write undoes the step); in_place=False writes to .cadmate/work/ (outside a project, <name>-<step>) instead.
     Outside a project it goes to out_path, default <name>-critical.kicad_pcb.
     """
     return _flow_call(pcb_flow.route_critical, path=path, out_path=out_path, roles=roles, currents=currents, overrides=overrides,
@@ -1039,8 +1045,8 @@ def apply_placement(moves: list[dict], path: str | None = None, out_path: str | 
     """Make the placement moves the user agreed to: each {ref, to: {x, y, rotation}} as propose_placement gave it (or edited).
 
     Moves carrying from are refused if that part has moved since the proposal. On the open board (no path) all moves are one
-    undo step, not saved. With a path, the result goes to out_path, or in a cadmate project into the board itself after a
-    snapshot (in_place). courtyard_overlaps lists any that remain around the moved parts. Run classify_critical_nets again
+    undo step, not saved. With a path, the result goes to out_path, or into the board itself, undoable with
+    undo_last_write (in_place). courtyard_overlaps lists any that remain around the moved parts. Run classify_critical_nets again
     after: the decap and crystal items should then be ready to route.
     """
     return _flow_call(pcb_place.apply, path=path, moves=moves, out_path=out_path, in_place=in_place)
@@ -1057,8 +1063,8 @@ def autoroute_rest(path: str | None = None, out_path: str | None = None, current
     smallest pad on the net (widths_capped says where). On the way back, tracks narrower than their net class are widened
     (widened lists them) and zones are refilled. On the open board the result is one undo step. unrouted lists nets
     still not joined. Then run review_pcb_layout.
-    Saved boards: inside a cadmate project the board itself is changed, after a snapshot of its files into history/
-    (snapshot in the result; project_restore undoes the step); in_place=False writes to .cadmate/work/ instead.
+    Saved boards: the board itself is changed, after its files are kept in .cadmate/undo/ (undo in the result;
+    undo_last_write undoes the step); in_place=False writes to .cadmate/work/ (outside a project, <name>-<step>) instead.
     Outside a project it goes to out_path, default <name>-routed.kicad_pcb.
     On a board with inner-layer planes, each SMD pad on a plane net first gets a locked via into its plane (plane_fanout
     says how many, and which pads had no room), since Freerouting doesn't route to planes itself.
@@ -1083,8 +1089,8 @@ def finish_routing(path: str, out_path: str | None = None, outer_only: bool = Tr
     are never touched. With outer_only (default) new tracks stay on the outer layers so inner planes stay whole.
     path is a saved .kicad_pcb. still_open lists what it couldn't join, with the reason, to route by hand. Run KiCad's
     DRC on the result.
-    Saved boards: inside a cadmate project the board itself is changed, after a snapshot of its files into history/
-    (snapshot in the result; project_restore undoes the step); in_place=False writes to .cadmate/work/ instead.
+    Saved boards: the board itself is changed, after its files are kept in .cadmate/undo/ (undo in the result;
+    undo_last_write undoes the step); in_place=False writes to .cadmate/work/ (outside a project, <name>-<step>) instead.
     Outside a project it goes to out_path, default <name>-finished.kicad_pcb.
     """
     return _flow_call(pcb_flow.finish_routing, path=path, out_path=out_path, outer_only=outer_only, in_place=in_place)
@@ -1157,7 +1163,7 @@ def set_part_numbers(schematic: str, parts: dict[str, dict[str, str]], board: st
     of fields, so a ref there sets its copies too (shared_symbols), and different numbers for them are refused
     (conflicts). board defaults to the .kicad_pcb beside the schematic; footprints get the same fields, so export_fab
     and check_ready_to_order see them without an Update PCB. Only the named fields change; every other byte of the
-    files stays. The old files are kept first (a snapshot in history/ inside a project, else .bak). Refused while KiCad
+    files stays. The old files are kept first (in .cadmate/undo/, for undo_last_write). Refused while KiCad
     has a file open. changed gives each part's value and footprint beside its new fields: check them against what was
     picked. dry_run shows the changes without writing. cadmate doesn't search distributors: find the parts with the
     user's search tool, agree the picks with the user, then set them here."""
@@ -1167,7 +1173,7 @@ def set_part_numbers(schematic: str, parts: dict[str, dict[str, str]], board: st
         return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
 
 
-# Projects: one active project, a fixed layout, snapshots in history/ (project.py, skills/cadmate-project).
+# Projects: one active project, a fixed layout, snapshots in history/ on request (project.py, skills/cadmate-project).
 
 
 def _project(fn, *a, **kw) -> dict:
@@ -1196,7 +1202,7 @@ def project_init(root: str, name: str | None = None, boards: list[str] | None = 
 
 @server.tool()
 def project_add_tool(path: str, tool: str) -> dict:
-    """Add KiCad, FreeCAD or protoboards to a project. To a one-tool project: snapshots the whole project first, then
+    """Add KiCad, FreeCAD or protoboards to a project. To a one-tool project: keeps what moves in .cadmate/undo/, then
     moves the existing tool's files from the root into kicad/ (boards and lib/ together, so ${KIPRJMOD} paths still
     work), freecad/ or protoboard/, and the new tool's files lying at the root into its folder. With folders already,
     it just makes the new one's. Updates cadmate-project.json. Nothing inside a file is rewritten. Ask the user to save and
@@ -1207,7 +1213,7 @@ def project_add_tool(path: str, tool: str) -> dict:
 @server.tool()
 def project_add_board(path: str, board: str | None = None) -> dict:
     """Add a second board. The board sitting directly in the KiCad area (the root, or kicad/) moves into a folder named
-    after it, after a snapshot, and its ${KIPRJMOD} paths (lib tables, 3D model links) get the ../ they now need; board
+    after it (undo_last_write moves it back), and its ${KIPRJMOD} paths (lib tables, 3D model links) get the ../ they now need; board
     is the new one's name, and gets its folder too. With board folders already, it only makes the new folder. Ask the
     user to save and close the board in KiCad first."""
     return _project(project.add_board, path, board)
@@ -1216,7 +1222,7 @@ def project_add_board(path: str, board: str | None = None) -> dict:
 @server.tool()
 def project_add_part(path: str, part: str | None = None, current: str | None = None) -> dict:
     """Add a second FreeCAD part. The part sitting directly in the FreeCAD area (the root, or freecad/) moves into a
-    folder named for it, after a snapshot, with its STEPs, renders/ and enclosure files; part is the new one's name,
+    folder named for it (undoable with undo_last_write), with its STEPs, renders/ and enclosure files; part is the new one's name,
     and gets its folder too. current: what the part already there is (enclosure, bracket), from the conversation or the
     brief; left out, it's taken from the part's only .FCStd. Ask the user to save and close the files in FreeCAD first."""
     return _project(project.add_part, path, part, current)
@@ -1225,15 +1231,16 @@ def project_add_part(path: str, part: str | None = None, current: str | None = N
 @server.tool()
 def project_add_protoboard(path: str, name: str | None = None, current: str | None = None) -> dict:
     """Add a second protoboard. The one sitting directly in the protoboard area (the root, or protoboard/) moves into a
-    folder named for it with its renders and build list, after a snapshot; name is the new one's, and gets its folder
+    folder named for it with its renders and build list (undoable with undo_last_write); name is the new one's, and gets its folder
     too. current: the name of the one already there; left out, it's taken from its only design JSON."""
     return _project(project.add_protoboard, path, name, current)
 
 
 @server.tool()
 def project_snapshot(path: str, label: str, paths: list[str] | None = None, note: str = "") -> dict:
-    """Keep the current state before changing it: copies it into history/<YYYYMMDD-HHMM>_<label>/ at the same relative
-    paths and adds a line to history/HISTORY.md. Then make the change in the active project itself, never in a copy.
+    """Keep a state the user asked to keep: copies it into history/<YYYYMMDD-HHMM>_<label>/ at the same relative paths
+    and adds a line to history/HISTORY.md. Only on the user's request (or their standing instruction): undoing a tool's
+    last writes is undo_last_write's job, not this one. Then work on the active project itself, never on a copy.
 
     path is the project or anything in it. label: lowercase words with dashes saying what state this is or what comes
     next ("approved-layout", "before-rework"). paths limits it (e.g. ["kicad/main"], ["freecad/enclosure"], or
@@ -1262,9 +1269,24 @@ def project_history(path: str) -> dict:
 
 @server.tool()
 def project_restore(path: str, name: str, paths: list[str] | None = None) -> dict:
-    """Bring a snapshot back into the active project (all of it, or just paths such as ["kicad/main"]). The current
-    state is snapshotted first, so a restore can itself be undone. Re-export fab/ for any board restored."""
+    """Bring a snapshot back into the active project (all of it, or just paths such as ["kicad/main"]). What it
+    replaces is kept in .cadmate/undo/ first, so undo_last_write takes a restore back. Re-export fab/ for any board restored."""
     return _project(project.restore, path, name, paths)
+
+
+@server.tool()
+def undo_last_write(path: str, name: str | None = None, list_only: bool = False) -> dict:
+    """Undo the last write a cadmate tool made to saved files in a working folder (the project, else the folder): routing
+    or placement in place, a replaced footprint, symbol, part, schematic or board, part numbers, a move into folders, a
+    restore. It puts back the files as they were and removes the ones that write created. cadmate keeps the newest 3 such
+    states in .cadmate/undo/; call again to go one further back. path: any file or folder in the working folder.
+    list_only lists them, newest first; name picks one (refused while a newer one touched the same files). Edits made in
+    the open KiCad or FreeCAD window aren't here: those have the app's own undo. Ask the user to close or reload the
+    files in KiCad and FreeCAD after."""
+    try:
+        return undo.entries(path) if list_only else undo.undo(path, name)
+    except (undo.UndoError, OSError, ValueError) as e:
+        return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
 
 
 @server.tool()
@@ -1285,8 +1307,8 @@ def project_release(path: str, revision: str | None = None, notes: str = "", boa
 
 @server.tool()
 def project_prune(path: str, keep: int = 10, delete: list[str] | None = None) -> dict:
-    """Free space in history/: delete the automatic snapshots tools took before changing something (routing passes,
-    restores, moves), keeping the newest keep. Snapshots taken on purpose with project_snapshot and released ones are
+    """Free space in history/: delete the automatic snapshots older cadmate versions took before changing something
+    (routing passes, restores, moves), keeping the newest keep; cadmate no longer takes them. Snapshots taken on purpose with project_snapshot and released ones are
     never touched. Without delete it only lists what would go (would_delete) and the space freed: show the user, and on
     their yes call again with delete set to those names; only those still beyond the newest keep are deleted. Deleted
     snapshots can't be restored; HISTORY.md marks them pruned."""
@@ -1369,11 +1391,14 @@ def route_protoboard(design: dict | str, out_path: str | None = None, allow_jump
 
     In a cadmate project the design is a protoboard design like a board or a part: <name>.json directly in the
     protoboard area (the root, or protoboard/) when it's the only one, else <name>/<name>.json. Never in docs/.
-    Write the result back over the design's own file (project_snapshot first if the old state matters), not a
+    Write the result back over the design's own file (the old one is kept in .cadmate/undo/ for undo_last_write), not a
     -routed copy."""
     r = _proto(protoboard.route, design, allow_jumpers=allow_jumpers)
     if out_path and r.get("design"):
+        kept = project.keep([Path(out_path).expanduser()], "protoboard")
         r["written"] = str(protoboard.save(r["design"], out_path))
+        if kept:
+            r["previous_kept"] = kept
     return r
 
 
@@ -1396,7 +1421,10 @@ def place_protoboard(design: dict | str, out_path: str | None = None, tries: int
     except (protoboard.DesignError, OSError, ValueError) as e:
         return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
     if out_path and r.get("design"):
+        kept = project.keep([Path(out_path).expanduser()], "protoboard")
         r["written"] = str(protoboard.save(r["design"], out_path))
+        if kept:
+            r["previous_kept"] = kept
     return r
 
 

@@ -166,7 +166,9 @@ def test_server_writes_into_a_pretty_folder(tmp_path):
     again = server.generate_footprint("soic", SOIC8, str(lib))
     assert not again["ok"] and "exists" in again["errors"][0]
     assert server.generate_footprint("soic", SOIC8, str(lib), overwrite=True)["ok"]
-    assert (lib / "SOIC-8_3.9x4.9mm_P1.27mm.kicad_mod.bak").exists()
+    # the old one is in .cadmate/undo/ of the folder holding the library, not a .bak inside the library
+    assert not (lib / "SOIC-8_3.9x4.9mm_P1.27mm.kicad_mod.bak").exists() and not (lib / ".cadmate").exists()
+    assert list((tmp_path / ".cadmate/undo").glob("*/mine.pretty/SOIC-8_3.9x4.9mm_P1.27mm.kicad_mod"))
     assert not server.generate_footprint("soic", SOIC8, str(tmp_path / "plain"))["ok"]
     review = server.check_footprint(r["written"], "soic", SOIC8)
     assert review["ok"] and review["vs_datasheet"]["same_pads"]

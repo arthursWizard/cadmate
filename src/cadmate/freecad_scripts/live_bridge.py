@@ -31,6 +31,7 @@
 # Macro > Macros... (and then Macro > Recent macros) instead of pasting this
 # line again, and cadmate_bridge_stop.FCMacro stops it. The start macro runs the
 # copy of this file in cadmate's data folder, which cadmate refreshes on update.
+import base64
 import contextlib
 import hmac
 import io
@@ -78,6 +79,41 @@ def data_dir() -> Path:
         return (Path(local) if local else Path.home() / "AppData" / "Local") / "cadmate"
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     return (Path(runtime) if runtime else Path.home() / ".cache") / "cadmate"
+
+
+@contextlib.contextmanager
+def _scratch(doc_file: str):
+    """A folder for one picture, deleted after: in .cadmate/tmp/ of the document's working folder (its cadmate project,
+    else its folder), as cadmate's workdir.py does it; the system's temp folder only for a document never saved."""
+    if not doc_file:
+        with tempfile.TemporaryDirectory(prefix="cadmate-view-") as t:
+            yield Path(t)
+        return
+    folder = Path(doc_file).resolve().parent
+    root = next((q for q in [folder, *folder.parents] if (q / "cadmate-project.json").exists()), folder)
+    dot = root / ".cadmate"
+    tmp = dot / "tmp" / f"{os.getpid()}-view-{secrets.token_hex(4)}"
+    try:
+        tmp.mkdir(parents=True)
+        if not (dot / ".gitignore").exists():
+            (dot / ".gitignore").write_text("# cadmate's scratch, undo and live state; nothing here is part of the design\n*\n",
+                                            encoding="utf-8")
+    except OSError:  # a read-only folder
+        with tempfile.TemporaryDirectory(prefix="cadmate-view-") as t:
+            yield Path(t)
+        return
+    try:
+        yield tmp
+    finally:
+        import shutil
+
+        shutil.rmtree(tmp, ignore_errors=True)
+        with contextlib.suppress(OSError):
+            (dot / "tmp").rmdir()
+        with contextlib.suppress(OSError):
+            if {p.name for p in dot.iterdir()} <= {".gitignore"}:
+                (dot / ".gitignore").unlink()
+                dot.rmdir()
 
 
 def socket_path() -> Path:
@@ -883,14 +919,18 @@ class Bridge:
             if fit:
                 v.fitAll()
             Gui.updateGui()
-            p = path or tempfile.mkstemp(prefix="cadmate-view-", suffix=".png")[1]
-            v.saveImage(str(p), int(width), int(height), "Current")
+            if path:
+                v.saveImage(str(path), int(width), int(height), "Current")
+                return {"file": str(path)}
+            with _scratch(getattr(d, "FileName", "") or "") as tmp:  # no path: the picture travels in the reply
+                p = tmp / "view.png"
+                v.saveImage(str(p), int(width), int(height), "Current")
+                return {"png_b64": base64.b64encode(p.read_bytes()).decode("ascii")}
         finally:
             if camera is not None:
                 v.setCamera(camera)
             if animate:
                 v.setAnimationEnabled(True)
-        return {"file": str(p)}
 
     def op_tidy_view(self, doc=None, view="isometric", fit=True, hide_origins=True, hide_helpers=True):
         """Leave the document's view presentable: a standard view, the model fitted, origins and axis cross off,

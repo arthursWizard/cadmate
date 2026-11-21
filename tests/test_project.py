@@ -1,9 +1,10 @@
 import json
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
-from cadmate import pcb_flow, project
+from cadmate import pcb_flow, project, undo
 
 T0 = datetime(2026, 10, 31, 12, 13)
 FP_TABLE = '(fp_lib_table\n\t(version 7)\n\t(lib (name "proj")(type "KiCad")(uri "${KIPRJMOD}/../lib/proj.pretty")(options "")(descr ""))\n)\n'
@@ -30,7 +31,9 @@ def make(tmp_path, boards=("main",)):
 def test_init_makes_the_layout_and_is_safe_to_rerun(tmp_path):
     root = tmp_path / "proj"
     out = project.init(root, boards=["main", "sensor"])
-    assert {"cadmate-project.json", "README.md", "CLAUDE.md", "kicad/main", "kicad/sensor", "history/HISTORY.md", ".cadmate/work"} <= set(out["made"])
+    assert {"cadmate-project.json", "README.md", "CLAUDE.md", "kicad/main", "kicad/sensor"} <= set(out["made"])
+    # history/ and .cadmate/ come when first used, not up front
+    assert not (root / "history").exists() and not (root / ".cadmate").exists()
     (root / "README.md").write_text("mine")
     assert project.init(root)["made"] == [] and (root / "README.md").read_text() == "mine"
     assert project.find_root(root / "kicad/main") == root.resolve()
@@ -58,6 +61,7 @@ def test_snapshot_names_sort_by_time_and_carry_the_libraries(tmp_path):
 
 def test_whole_project_snapshot_skips_history_and_scratch(tmp_path):
     root = make(tmp_path)
+    (root / ".cadmate/work").mkdir(parents=True)
     (root / ".cadmate/work/main-routed.kicad_pcb").write_text("x")
     project.snapshot(root, "first", now=T0)
     out = project.snapshot(root, "second", now=T0.replace(minute=14))
@@ -87,9 +91,11 @@ def test_restore_brings_files_back_and_keeps_the_current_state(tmp_path):
     (root / "kicad/main/stray.txt").write_text("made after")
     out = project.restore(root, snap, now=T0.replace(minute=20))
     assert pcb.read_text() == good and not (root / "kicad/main/stray.txt").exists()
-    before = root / "history" / out["previous_state"]
-    assert out["previous_state"] == "20261031-1220_before-restore-approved"
-    assert (before / "kicad/main/main.kicad_pcb").read_text() == "(kicad_pcb broken)"
+    # no automatic snapshot: the state it replaced is in the undo store, and undo brings it back
+    assert [s["name"] for s in project.history(root)["snapshots"]] == [snap]
+    assert out["previous_state"].startswith(".cadmate/undo/20261031-122000")
+    assert undo.undo(root)["ok"]
+    assert pcb.read_text() == "(kicad_pcb broken)" and (root / "kicad/main/stray.txt").read_text() == "made after"
     with pytest.raises(project.ProjectError, match="no snapshot"):
         project.restore(root, "nope")
 
@@ -112,7 +118,7 @@ def test_check_finds_side_by_side_versions_and_backups(tmp_path):
     (root / "freecad/a/b/c").mkdir(parents=True)
     (root / "freecad/a/b/c/deep.step").write_text("x")
     (root / "old-case-try").mkdir()
-    (root / "history/mid joint try").mkdir()
+    (root / "history/mid joint try").mkdir(parents=True)
     out = project.check(root)
     by_path = {f["path"]: f for f in out["findings"]}
     assert not out["ok"]
@@ -157,12 +163,13 @@ def test_check_flags_stale_and_orphaned_fab_files(tmp_path):
     assert "isn't in the project" in probs["fab/old-v3"]
 
 
-def test_routing_target_in_a_project_is_the_board_itself_after_a_snapshot(tmp_path):
+def test_routing_target_in_a_project_is_the_board_itself_kept_for_undo(tmp_path):
     root = make(tmp_path)
     pcb = root / "kicad/main/main.kicad_pcb"
     dst, snap = pcb_flow.target(str(pcb), None, "routed", None)
-    assert dst == pcb and snap["name"].endswith("_before-routed-main")
-    assert (root / "history" / snap["name"] / "kicad/main/main.kicad_pcb").exists()
+    assert dst == pcb and snap["name"].endswith("_before-routed-on-main-kicad-pcb")
+    assert (root / ".cadmate/undo" / snap["name"] / "kicad/main/main.kicad_pcb").exists()
+    assert not (root / "history").exists()
     # in_place=False: scratch, never beside the board
     dst, snap = pcb_flow.target(str(pcb), None, "routed", False)
     assert dst == root / ".cadmate/work/main-routed.kicad_pcb" and snap is None
@@ -171,12 +178,12 @@ def test_routing_target_in_a_project_is_the_board_itself_after_a_snapshot(tmp_pa
     assert dst == tmp_path / "x.kicad_pcb" and snap is None
 
 
-def test_routing_target_outside_a_project_keeps_the_old_behaviour(tmp_path):
+def test_routing_target_outside_a_project_is_in_place_too(tmp_path):
     pcb = tmp_path / "b.kicad_pcb"
     pcb.write_text("(kicad_pcb)")
-    assert pcb_flow.target(str(pcb), None, "finished", None) == (tmp_path / "b-finished.kicad_pcb", None)
-    with pytest.raises(pcb_flow.FlowError, match="cadmate project"):
-        pcb_flow.target(str(pcb), None, "finished", True)
+    dst, snap = pcb_flow.target(str(pcb), None, "finished", None)
+    assert dst == pcb and (tmp_path / ".cadmate/undo" / snap["name"] / "b.kicad_pcb").exists()
+    assert pcb_flow.target(str(pcb), None, "finished", False) == (tmp_path / "b-finished.kicad_pcb", None)
     with pytest.raises(pcb_flow.FlowError, match="in_place"):
         pcb_flow.target(str(pcb), str(pcb), "finished", None)
 
@@ -191,19 +198,19 @@ def test_finish_routing_changes_the_project_board_in_place(tmp_path, monkeypatch
     pcb.write_text(HEAD + ic() + ")\n")
     monkeypatch.setattr(fr, "refill", lambda f: None)
     out = pcb_flow.finish_routing(str(pcb))
-    assert out["written"] == str(pcb) and out["snapshot"]["name"].endswith("before-finished-main")
+    assert out["written"] == str(pcb) and out["undo"]["name"].endswith("before-finished-on-main-kicad-pcb")
     assert sorted(p.name for p in pcb.parent.iterdir()) == ["fp-lib-table", "main.kicad_pcb", "main.kicad_pro", "main.kicad_sch"]
 
 
-def test_replaced_library_files_go_to_history_not_bak(tmp_path):
+def test_replaced_library_files_go_to_the_undo_store_not_history_or_bak(tmp_path):
     root = make(tmp_path)
     fp = root / "kicad/lib/proj.pretty/Conn.kicad_mod"
     kept = project.keep([fp, None, root / "kicad/lib/proj.pretty/missing.kicad_mod"], "footprint")
-    assert "history" in kept and not fp.with_suffix(".kicad_mod.bak").exists()
-    assert (root / "history" / kept.split("/")[-1] / "kicad/lib/proj.pretty/Conn.kicad_mod").exists()
+    assert ".cadmate/undo/" in kept and not fp.with_suffix(".kicad_mod.bak").exists() and not (root / "history").exists()
+    assert (Path(kept) / "kicad/lib/proj.pretty/Conn.kicad_mod").exists()
     loose = tmp_path / "x.kicad_mod"
     loose.write_text("x")
-    assert project.keep([loose], "footprint").endswith("x.kicad_mod.bak") and (tmp_path / "x.kicad_mod.bak").exists()
+    assert ".cadmate/undo/" in project.keep([loose], "footprint") and not (tmp_path / "x.kicad_mod.bak").exists()
     assert project.keep([tmp_path / "none"], "footprint") is None
 
 
@@ -291,8 +298,8 @@ def test_add_board_moves_the_first_board_into_its_folder_and_fixes_its_paths(tmp
     f = next(f for f in project.check(root)["findings"] if f["path"] == "main.kicad_pro")
     assert "beside board folders (sensor)" in f["problem"] and "project_add_board" in f["fix"]
     out = project.add_board(root, now=T0)
-    assert out["board"] == "main" and out["snapshot"] == "20261031-1213_before-board-folders-main"
-    assert (root / "history" / out["snapshot"] / "main.kicad_pcb").exists()
+    assert out["board"] == "main" and out["undo"].startswith("20261031-121300")
+    assert (root / ".cadmate/undo" / out["undo"] / "main.kicad_pcb").exists() and not (root / "history").exists()
     assert sorted(p.name for p in (root / "main").iterdir()) == ["fp-lib-table", "main.kicad_pcb", "main.kicad_pro", "main.kicad_sch"]
     assert "${KIPRJMOD}/../lib/proj.pretty" in (root / "main/fp-lib-table").read_text()
     assert "${KIPRJMOD}/../lib/proj.3dshapes/Conn.step" in (root / "main/main.kicad_pcb").read_text()
@@ -398,8 +405,8 @@ def test_add_tool_moves_a_one_board_project_into_kicad(tmp_path):
     (root / "fab/main/main.zip").write_text("x")
     (root / "tools/gen.py").write_text("x")
     out = project.add_tool(root, "freecad", now=T0)
-    assert out["tools"] == ["kicad", "freecad"] and out["snapshot"] == "20261031-1213_before-add-freecad"
-    assert (root / "history" / out["snapshot"] / "main.kicad_pcb").exists()
+    assert out["tools"] == ["kicad", "freecad"] and out["undo"].startswith("20261031-121300")
+    assert (root / ".cadmate/undo" / out["undo"] / "main.kicad_pcb").exists() and not (root / "history").exists()
     assert sorted(p.name for p in (root / "kicad").iterdir()) == [
         "fp-lib-table", "lib", "main.kicad_pcb", "main.kicad_pro", "main.kicad_sch"]
     assert (root / "freecad").is_dir() and not (root / "case").exists()
@@ -407,6 +414,16 @@ def test_add_tool_moves_a_one_board_project_into_kicad(tmp_path):
     # ${KIPRJMOD}/lib still resolves: the board and lib/ moved together
     assert project.check(root)["ok"], project.check(root)["findings"]
     assert project.add_tool(root, "kicad")["moved"] == []
+
+
+def test_undo_moves_a_new_tool_back_out(tmp_path):
+    root = make_flat(tmp_path)
+    before = sorted(p.name for p in root.iterdir())
+    marker = (root / "cadmate-project.json").read_text()
+    project.add_tool(root, "freecad", now=T0)
+    assert undo.undo(root)["ok"]
+    assert sorted(p.name for p in root.iterdir()) == before and (root / "cadmate-project.json").read_text() == marker
+    assert project.check(root)["ok"], project.check(root)["findings"]
 
 
 def test_add_tool_moves_board_folders_too(tmp_path):

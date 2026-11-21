@@ -104,15 +104,15 @@ def test_mistakes_are_named(tmp_path):
         sw.write(str(out), r1, {}, libraries=LIBS)
 
 
-def test_writing_over_a_sheet_in_a_project_snapshots_it_first(tmp_path):
+def test_writing_over_a_sheet_in_a_project_keeps_it_for_undo(tmp_path):
     project.init(tmp_path, tools=["kicad"])
     out = tmp_path / "kicad" / "main.kicad_sch"
     out.parent.mkdir(exist_ok=True)
     out.write_text('(kicad_sch (version 20250114) (generator "cadmate"))\n')
     r = sw.write(str(out), [{"ref": "R1", "symbol": "Device:R"}], {"A": ["R1.1", "R1.2"]}, libraries=LIBS,
                  replace=True, erc=False)
-    meta = json.loads((Path(r["previous_kept"]) / "SNAPSHOT.json").read_text())
-    assert meta["paths"] == ["kicad/main.kicad_sch"] and meta["note"]
+    meta = json.loads((Path(r["previous_kept"]) / "UNDO.json").read_text())
+    assert meta["kept"] == ["kicad/main.kicad_sch"] and meta["why"] and not (tmp_path / "history").exists()
 
 
 def test_a_sheet_someone_drew_is_never_written_over(tmp_path):
@@ -122,12 +122,12 @@ def test_a_sheet_someone_drew_is_never_written_over(tmp_path):
         sw.write(str(out), [{"ref": "R1", "symbol": "Device:R"}], {}, libraries=LIBS, replace=True)
 
 
-def test_outside_a_project_the_old_sheet_is_kept_as_bak(tmp_path):
+def test_outside_a_project_the_old_sheet_is_kept_for_undo_too(tmp_path):
     out = tmp_path / "s.kicad_sch"
     sw.write(str(out), [{"ref": "R1", "symbol": "Device:R"}], {}, libraries=LIBS, erc=False)
     first = out.read_text()
     r = sw.write(str(out), [{"ref": "R1", "symbol": "Device:R"}], {}, libraries=LIBS, replace=True, erc=False)
-    assert Path(r["previous_kept"]).read_text() == first
+    assert (Path(r["previous_kept"]) / "s.kicad_sch").read_text() == first and not (tmp_path / "s.kicad_sch.bak").exists()
 
 
 def test_writing_again_gives_the_same_file(tmp_path):

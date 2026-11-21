@@ -146,8 +146,10 @@ You don't need a separate FreeCAD MCP server or FreeCAD addon. cadmate builds an
 
 ## Part 2: how a project is laid out
 
-Every design is one folder, the active project. There are no `board-v2` or `board-routed` copies: changes go in place,
-and before a change worth undoing, Claude takes a snapshot into `history/`.
+Every design is one folder, the active project. There are no `board-v2` or `board-routed` copies: changes go in place.
+Nothing is written outside the folder unless you ask. Undo works without a history folder: edits in your open KiCad
+or FreeCAD window have the app's undo, and when cadmate rewrites a saved file it keeps the old one in `.cadmate/undo/`
+(the last 3), so "undo that" puts it back. A snapshot in `history/` is taken only when you ask for one.
 
 ```
 my-design/
@@ -158,19 +160,21 @@ my-design/
   fab/<board>/           Gerbers, BOM, CPL (generated, never edited)
   tools/                 generator scripts
   docs/brief.md          your requirements, as a checklist
-  history/               20261031-1213_before-rework/ ... and HISTORY.md
+  history/               only if you ask: 20261031-1213_approved-layout/ ... and HISTORY.md
+  .cadmate/              cadmate's own scratch, undo and live state; git ignores it
 ```
 
 That's a design with one board and one enclosure. No folder holds just one thing: a board-only design has
 `main.kicad_pro`, `lib/` and `fab/` right in `my-design/`, and a FreeCAD-only one its `.FCStd` and STEPs. A second
 board or part gets a folder each, named for what it is (`kicad/main/`, `kicad/sensor/`; `freecad/enclosure/`,
-`freecad/knob/`). Claude moves things when that happens (`project_add_tool`, `project_add_board`, `project_add_part`),
-after a snapshot; close the files in KiCad and FreeCAD first.
+`freecad/knob/`). Claude moves things when that happens (`project_add_tool`, `project_add_board`, `project_add_part`;
+`undo_last_write` moves them back); close the files in KiCad and FreeCAD first.
 
-The tools behind it: `project_init` makes this layout (safe on an existing folder, it only adds), `project_snapshot`
-saves a state under a label, `project_history` lists the snapshots, `project_restore` brings one back (snapshotting the
-current state first), and `project_check` lists anything out of place. Claude gets these rules every time it connects,
-so you mostly say "snapshot this as before-rework" or "go back to yesterday's version".
+The tools behind it: `project_init` makes this layout (safe on an existing folder, it only adds), `undo_last_write`
+takes back cadmate's last rewrite of a saved file, `project_snapshot` saves a state under a label when you ask,
+`project_history` lists the snapshots, `project_restore` brings one back, and `project_check` lists anything out of
+place. Claude gets these rules every time it connects, so you mostly say "undo that", "keep this as approved-layout"
+or "go back to the approved layout".
 
 ## Part 3: your first session
 
@@ -187,7 +191,7 @@ so you mostly say "snapshot this as before-rework" or "go back to yesterday's ve
 ## Part 4: the board flow
 
 At every step Claude does the work and shows you a picture or a report. You look in KiCad and say "good" or what to
-change. When you say good, Claude snapshots.
+change. Say "keep this" when a state is worth a snapshot; otherwise Claude just carries on.
 
 1. **Parts.** cadmate doesn't search distributors. For stock and price, add a search tool for where you buy:
    jlc-mcp (from anthropics/ai-eda) for JLCPCB and LCSC, or DigiKey's or Mouser's own API with your key. Put the
@@ -218,8 +222,8 @@ change. When you say good, Claude snapshots.
    regulator loops, ESD, analog, strap and high-current nets, each with its rule and source. You confirm, correct, or
    give currents ("VBUS carries 2 A").
 5. **Routing.** `route_critical_nets` routes and locks the confirmed connections, `autoroute_rest` gives the rest to
-   Freerouting, and `finish_routing` cleans up after Freerouting. Inside a project each changes the board in place
-   after a snapshot; reload the board in KiCad when Claude says so.
+   Freerouting, and `finish_routing` cleans up after Freerouting. Each changes the saved board in place, keeping the
+   old one for `undo_last_write`; reload the board in KiCad when Claude says so.
 6. **Review and DRC.** `review_pcb_layout` checks what a reviewer would (decap loops, crystal traces, return paths,
    track width for the current, and your board house's limits when you've chosen one cadmate knows: JLCPCB, PCBWay, OSH Park, AISLER or Eurocircuits)
    and runs KiCad's DRC, reported as errors, warnings, unconnected and parity. Fix, and review again.

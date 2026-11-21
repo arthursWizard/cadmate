@@ -483,7 +483,7 @@ def apply(path: str | None, moves: list[dict], out_path: str | None = None, in_p
             dst.with_suffix(".kicad_pro").write_text(pro.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
         out["written"] = str(dst)
         if snap:
-            out["snapshot"] = snap
+            out["undo"] = snap
         from .pcb_board import parse
 
         after = parse(text, dst.name)

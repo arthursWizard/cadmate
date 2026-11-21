@@ -74,15 +74,38 @@ def tidy(folder: Path) -> None:
 
 
 def _alive(pid: int) -> bool:
+    """Whether a process with this id is running. Unsure counts as running, so a sweep never deletes a live call's files."""
     if pid == os.getpid():
         return True
+    if os.name == "nt":  # os.kill(pid, 0) on Windows sends Ctrl+C to a console group, never use it to probe
+        return _alive_windows(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
-    except (PermissionError, OSError, SystemError, ValueError):
+    except (PermissionError, OSError, SystemError, ValueError, OverflowError):
         return True  # exists but not ours, or the OS can't say: leave it
     return True
+
+
+def _alive_windows(pid: int) -> bool:
+    import ctypes
+
+    try:
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.restype = ctypes.c_void_p
+        handle = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.get_last_error() != 87  # ERROR_INVALID_PARAMETER: no such process
+        try:
+            code = ctypes.c_ulong()
+            if not k32.GetExitCodeProcess(ctypes.c_void_p(handle), ctypes.byref(code)):
+                return True
+            return code.value == 259  # STILL_ACTIVE
+        finally:
+            k32.CloseHandle(ctypes.c_void_p(handle))
+    except (OSError, AttributeError, ValueError, OverflowError):
+        return True
 
 
 def sweep(folder: Path) -> list[str]:

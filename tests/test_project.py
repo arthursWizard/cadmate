@@ -206,11 +206,13 @@ def test_replaced_library_files_go_to_the_undo_store_not_history_or_bak(tmp_path
     root = make(tmp_path)
     fp = root / "kicad/lib/proj.pretty/Conn.kicad_mod"
     kept = project.keep([fp, None, root / "kicad/lib/proj.pretty/missing.kicad_mod"], "footprint")
-    assert ".cadmate/undo/" in kept and not fp.with_suffix(".kicad_mod.bak").exists() and not (root / "history").exists()
+    assert Path(kept).parent == root.resolve() / ".cadmate/undo"
+    assert not fp.with_suffix(".kicad_mod.bak").exists() and not (root / "history").exists()
     assert (Path(kept) / "kicad/lib/proj.pretty/Conn.kicad_mod").exists()
     loose = tmp_path / "x.kicad_mod"
     loose.write_text("x")
-    assert ".cadmate/undo/" in project.keep([loose], "footprint") and not (tmp_path / "x.kicad_mod.bak").exists()
+    assert Path(project.keep([loose], "footprint")).parent == tmp_path.resolve() / ".cadmate/undo"
+    assert not (tmp_path / "x.kicad_mod.bak").exists()
     assert project.keep([tmp_path / "none"], "footprint") is None
 
 

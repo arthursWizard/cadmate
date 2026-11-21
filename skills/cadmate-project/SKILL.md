@@ -1,9 +1,9 @@
 ---
 name: cadmate-project
-description: Where design files go and how history is kept in a KiCad/FreeCAD project. Use before creating, copying, renaming or moving any file in a design folder, when starting a new design, when the user asks to clean up, archive or "keep the old version", and before trying an alternative.
+description: Where design files go, where cadmate's own files go, and how undo and history work in a KiCad/FreeCAD project. Use before creating, copying, renaming or moving any file in a design folder, when starting a new design, when the user asks to clean up, archive or "keep the old version", and before trying an alternative.
 ---
 
-# One active project, a fixed layout, one history folder
+# One active project, a fixed layout, nothing extra
 
 The user collaborates on a design by looking at it, in KiCad, FreeCAD and Finder, between your steps. That only works if
 there is one current version to look at. Side-by-side versions (`main-v2/`, `main-routed.kicad_pcb`,
@@ -13,9 +13,12 @@ copy. Over a long design this piles up hundreds of superseded files, and the use
 So:
 
 1. **One active project.** Every change is applied to the active project, in place. No copies to "keep the old one".
-2. **History is snapshots.** When the current state is worth going back to, `project_snapshot` copies it into
-   `history/<YYYYMMDD-HHMM>_<label>/` first, then you change the active files. `project_restore` brings one back.
-3. **A fixed layout**, so every file has one place and one depth.
+2. **No history unless the user asks.** Changes can be undone without it (below). When the user asks to keep a state,
+   `project_snapshot` copies it into `history/<YYYYMMDD-HHMM>_<label>/`; `project_restore` brings one back.
+3. **Nothing outside the working folder** unless the user asks. cadmate's own scratch, undo and live-editing state sit
+   in `.cadmate/` there, git ignores it, and scratch is deleted after each call. Your own scratch goes in
+   `.cadmate/work/` and is deleted when done: not the system temp folder, not beside the design files.
+4. **A fixed layout**, so every file has one place and one depth.
 
 These rules are about your own habits as much as cadmate's tools: hand-made copies, generator scripts that write
 `-v2` folders and instructions to another session ("build it as a new folder next to the current one") cause the same
@@ -54,13 +57,17 @@ A board and an enclosure, the most common shape:
   tools/                   generator scripts and their inputs: the design's source code
   docs/                    the user's documents: datasheets, drawings, photos and notes. Never design outputs
     brief.md               every requirement the user stated, as a checklist
-  history/
+  history/                 only once the user asked to keep a state
     HISTORY.md             index: one row per snapshot, oldest first
-    20261031-1213_before-rework/   same relative paths as the project
+    20261031-1213_approved-layout/   same relative paths as the project
   releases/
     RELEASES.md            index: one row per released revision
     main/A/                frozen at release: fab files as sent, renders, RELEASE.md, release.json. Never edit
-  .cadmate/work/           scratch: comparisons, temp outputs. Delete when the step is done
+  .cadmate/                cadmate's own, ignored by git (its .gitignore says *); never part of the design
+    tmp/                   one call's scratch (kicad-cli reports, board copies); deleted when the call ends
+    undo/                  the files the last 3 headless writes replaced (undo_last_write)
+    live/                  what the live editing tools remember about their steps, for their undo
+    work/                  your scratch: options to compare, scripts' outputs. Delete when the step is done
 ```
 
 Two boards and two parts: each gets its folder, and what's inside is the same as above.
@@ -92,8 +99,8 @@ it isn't clear. Without `tools`, `project_init` goes by the files already there,
 
 ### Going from one to two
 
-Never move the files by hand. Each of these takes a snapshot first, then moves the files and fixes what the move
-would break:
+Never move the files by hand. Each of these moves the files and fixes what the move would break, and
+`undo_last_write` moves them back:
 
 - **A second tool**: `project_add_tool kicad|freecad`. The existing tool's files move from the root into `kicad/` or
   `freecad/`; a board moves with `lib/`, so `${KIPRJMOD}` paths still resolve.
@@ -107,7 +114,7 @@ would break:
 Ask the user to save and close the files in KiCad and FreeCAD first, and to reopen them from the new place after. Then
 update the layout lines in CLAUDE.md and README.md. `project_check` flags each of these states (the other tool's files
 at the root, a loose board or part beside folders) and names the tool to run. Going back (two boards to one) isn't
-automated: ask the user, snapshot, and move the files up yourself, fixing the `${KIPRJMOD}` paths.
+automated: ask the user, and move the files up yourself, fixing the `${KIPRJMOD}` paths.
 
 `project_init` makes it (safe on an existing folder: it only adds). `project_check` lists everything out of place,
 each with a fix. Run it before you tell the user a step is done.
@@ -153,24 +160,26 @@ board pressed into a wall. A part with no assembly.step (a bracket, a knob) isn'
 - A step or gap that's designed (a rim, a shadow line) gets its own limit under joints, with the reason in the brief.
 - `project_check` flags the assembly when the report is missing, older than the STEPs, or has errors.
 
-## When to snapshot
+## Undo, and when to snapshot
 
-Snapshot what you're about to change (`paths: ["kicad/main"]`, `["freecad/enclosure"]`, or a lone board's files),
-or the whole project, when:
+Every change can be taken back without a history folder:
 
-- the user has seen or approved the current state ("seems good", "PR good", a picked option), and the next change
-  replaces it;
-- the change is big or hard to undo by hand (re-placement, a new connector, reshaping a part);
-- the user asks to keep it.
+- **In the open KiCad or FreeCAD window** (live edits): the app's own undo. Each cadmate edit is one step named
+  "cadmate: <label>" in its undo list; `kicad_pcb_undo` and `kicad_live_undo` take back cadmate's last step. That undo
+  lasts while the file is open. On save, FreeCAD keeps a `.FCBak` and KiCad a `-backups/` zip when the user's
+  preferences have them on: those are the user's settings, leave them alone.
+- **Saved files cadmate rewrites with no editor open** (routing or placement in place, replacing a footprint, symbol,
+  part, schematic or board, part numbers, moving files into folders, a restore): the tool first keeps the files it
+  replaces in `.cadmate/undo/`. The newest 3 are kept. `undo_last_write` with any path in the folder puts the last one
+  back; call it again to go further back.
+- **A git repository**: commit when the user asks. Don't commit on your own.
 
-When something is ordered, don't snapshot: release it (below).
+Snapshot (`project_snapshot`, the whole project or `paths: ["kicad/main"]`) only when the user asks to keep a state
+("keep this one", "snapshot it as approved-layout"), or their standing instructions say to. Not before routing or
+any other step: the undo store covers that. When something is ordered, release it (below).
 
-Not before every small step. The routing tools (`route_critical_nets`, `autoroute_rest`, `finish_routing`) snapshot the
-board themselves before changing it in place, and the footprint, symbol and part writers put a replaced file into
-history/ instead of a `.bak`.
-
-The label says what the state is or what comes next: `approved-layout`, `before-rework`, `ordered`.
-The note (one sentence) goes into HISTORY.md: "User approved the placement; next, routing".
+The label says what the state is: `approved-layout`, `ordered-a`. The note (one sentence) goes into HISTORY.md: "User
+approved the placement".
 
 ## Releasing a board revision
 
@@ -190,18 +199,18 @@ whose files changed, or whose snapshot is gone. To open revision A again, `proje
 
 ## Pruning history
 
-Routing tools snapshot the board before each pass, so history grows by a board's size every time. `project_prune`
-deletes the automatic snapshots (the ones tools take before changing something) beyond the newest ten (`keep`).
-Snapshots taken with `project_snapshot` and released ones are never pruned. Called without `delete`, it only lists what
-would go: show the user the list and the space it frees, and on their yes call it again with `delete` set to those
-names, since deleted snapshots can't be restored. `project_check` suggests it once there are more than ten.
+Older cadmate versions snapshotted the board before every routing pass, so a project from then can have a history/
+full of automatic snapshots. `project_prune` deletes the automatic ones beyond the newest ten (`keep`). Snapshots
+taken with `project_snapshot` and released ones are never pruned. Called without `delete`, it only lists what would
+go: show the user the list and the space it frees, and on their yes call it again with `delete` set to those names,
+since deleted snapshots can't be restored. `project_check` suggests it once there are more than ten.
 
 ## Alternatives
 
 When the user needs to choose between options, build them in `.cadmate/work/<option>/` (renders, a STEP, a board
 copy), show them, apply the chosen one to the active project, and delete the work folder. Don't leave options in
-the project, and don't make the user pick between folders. If an unpicked option might come back, snapshot it with a
-label like `option-b`.
+the project, and don't make the user pick between folders. If the user wants to keep an unpicked option, snapshot it
+with a label like `option-b`.
 
 ## Why it fits KiCad and FreeCAD, and where it doesn't
 
@@ -224,21 +233,20 @@ label like `option-b`.
   to another part's file breaks when either moves: re-link it in FreeCAD after.
 - **fab/ is generated.** Re-export after every board change (`project_check` flags fab files older than the board).
   Snapshots include fab/ only when you snapshot the whole project; a release keeps the fab files as ordered.
-- **Git.** If the project is a git repository, commits do the same job better for text files (all KiCad files are
-  text) and snapshots are still handy for the user to open an old version from Finder. Use both; don't commit
-  `.cadmate/`.
+- **Git.** If the project is a git repository, commits keep states better than snapshots for text files (all KiCad
+  files are text). Commit when the user asks, never on your own. `.cadmate/` is ignored already.
 
 ## Cleaning up a project that sprawled
 
 1. `project_init` on the folder, then `project_check`.
 2. Ask the user which version of each board and part is current, if it isn't obvious from the thread. Don't guess from
    modification times alone.
-3. Snapshot the whole folder as it is (`label: "before-cleanup"`), so nothing is lost.
+3. Deleting the other versions can't be undone. Ask the user whether to snapshot the whole folder first
+   (`label: "before-cleanup"`); do it only on their yes.
 4. Move the current files to their layout paths. Where the current board is a copy with a version name, copy its
    contents over the board named after the folder rather than renaming the KiCad project. A copied schematic keeps the
    old project name in its annotations: copy it the same way, then have the user open it in KiCad and check the
-   references (`project_check` flags the mismatch). Delete the other versions
-   (they're in the snapshot). Keep `tools/`: generator scripts are source, not intermediates.
+   references (`project_check` flags the mismatch). Delete the other versions. Keep `tools/`: generator scripts are source, not intermediates.
 5. `project_check` again until it's clean, run DRC on each board, re-export fab/.
 
 Moving a project's own history to the Trash deletes the snapshots; say so before doing it.

@@ -18,11 +18,10 @@ import hashlib
 import json
 import math
 import subprocess
-import tempfile
 import traceback
 from pathlib import Path
 
-from . import apps, live, sexpr, versions
+from . import apps, live, sexpr, versions, workdir
 
 TIMEOUT_MS = 20000  # reading a large board as text takes a while
 LISTED_CHANGES = 60  # changes beyond this are counted, not listed
@@ -242,9 +241,24 @@ def _touched(before: dict[str, dict], after: dict[str, dict]) -> set[str]:
 # --- what cadmate last saw ----------------------------------------------------------------------------
 
 
+def folder(board) -> Path | None:
+    """The folder of the KiCad project the open board belongs to, or None (a board not saved in a project yet)."""
+    project = getattr(getattr(getattr(board, "document", None), "project", None), "path", "") or ""
+    if not project:
+        return None
+    p = Path(project)
+    return p.parent if p.is_file() else p
+
+
 def _state_file(board_name: str, project: str = "") -> Path:
+    """What cadmate remembers about its steps on a board: in .cadmate/live/ of the board's working folder (its cadmate
+    project, else its KiCad project folder), else cadmate's per-user folder for a board with no folder yet."""
     key = hashlib.sha1(f"{project}\0{board_name}".encode()).hexdigest()[:16]
-    return live.data_dir() / "kicad_pcb" / f"{key}.json"
+    p = Path(project) if project else None
+    base = workdir.base(p.parent if p and p.is_file() else p) if p else None
+    if base is None:
+        return live.data_dir() / "kicad_pcb" / f"{key}.json"
+    return base / workdir.LIVE / f"pcb-{key}.json"
 
 
 def _load(f: Path) -> dict:
@@ -256,6 +270,8 @@ def _load(f: Path) -> dict:
 
 def _save(f: Path, st: dict) -> None:
     st["steps"] = st["steps"][-50:]
+    if f.parent.name == "live" and f.parent.parent.name == workdir.DOT:
+        workdir.dot(f.parent.parent.parent)
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_text(json.dumps(st), encoding="utf-8")
 
@@ -430,22 +446,23 @@ def save() -> dict:
     return {"ok": True, "saved": board.name}
 
 
-def snapshot(layers: str = "F.Cu,B.Cu,F.SilkS,B.SilkS,F.Fab,Edge.Cuts", width: int = 1400) -> Path:
-    """A picture of the board as it is in the editor (unsaved edits included), from a copy saved by KiCad."""
+def snapshot(layers: str = "F.Cu,B.Cu,F.SilkS,B.SilkS,F.Fab,Edge.Cuts", width: int = 1400) -> bytes:
+    """A PNG of the board as it is in the editor (unsaved edits included), from a copy saved by KiCad into .cadmate/tmp/
+    of its project folder and deleted again."""
     from .kicad_live import LiveError, _svg_to_png
 
     kicad, board = connect()
     cli = apps.find_kicad_cli()
     if not cli:
         raise LiveError(f"kicad-cli not found; set {apps.KICAD_CLI_ENV}")
-    out = Path(tempfile.mkdtemp(prefix="cadmate-pcb-"))
-    copy = out / "board.kicad_pcb"
-    board.save_as(str(copy), overwrite=True, include_project=False)
-    svg = out / "board.svg"
-    proc = subprocess.run([cli, *versions.kicad_cli_args("pcb_svg"), "--layers", layers, "--output", str(svg), str(copy)],
-                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
-    if not svg.exists():
-        raise LiveError(f"kicad-cli made no picture (exit {proc.returncode}): {(proc.stderr or proc.stdout)[-1500:]}")
-    png = out / "board.png"
-    _svg_to_png(svg, png, width)
-    return png
+    with workdir.tmp(folder(board), "pcb-picture") as out:
+        copy = out / "board.kicad_pcb"
+        board.save_as(str(copy), overwrite=True, include_project=False)
+        svg = out / "board.svg"
+        proc = subprocess.run([cli, *versions.kicad_cli_args("pcb_svg"), "--layers", layers, "--output", str(svg), str(copy)],
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
+        if not svg.exists():
+            raise LiveError(f"kicad-cli made no picture (exit {proc.returncode}): {(proc.stderr or proc.stdout)[-1500:]}")
+        png = out / "board.png"
+        _svg_to_png(svg, png, width)
+        return png.read_bytes()

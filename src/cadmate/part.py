@@ -19,10 +19,9 @@ from __future__ import annotations
 
 import fnmatch
 import shutil
-import tempfile
 from pathlib import Path
 
-from . import apps, check, footprint, generate, model, review, sexpr, symbol, symbol_check, symbol_generate, versions
+from . import apps, check, footprint, generate, model, review, sexpr, symbol, symbol_check, symbol_generate, versions, workdir
 from . import project as _project
 from .footprint import BBox, Model
 
@@ -89,7 +88,7 @@ def generate_part(
     model_report: dict = {}
     model_file: Path | None = None
     placement: Model | None = None
-    built_tmp: tempfile.TemporaryDirectory | None = None
+    built_tmp: workdir.Scratch | None = None
     if model_spec.get("path"):
         try:
             placement = _existing_placement(model_spec, fp_result, warnings, project)
@@ -122,8 +121,8 @@ def generate_part(
         errors += [f"model: {e}" for e in offline["errors"]]
         if not offline["errors"]:
             if apps.find_freecadcmd():
-                built_tmp = tempfile.TemporaryDirectory()
-                model_file = Path(built_tmp.name) / f"{fp_name}.step"
+                built_tmp = workdir.Scratch(project, "model")
+                model_file = built_tmp.path / f"{fp_name}.step"
                 try:
                     info = model.build(planned["solids"], model_file, fp_name)
                 except (RuntimeError, OSError) as e:
@@ -155,11 +154,11 @@ def generate_part(
     try:
         new_lib = symbol.put_in_library(existing_sym, sym_text, sym_name, replace=overwrite)
     except FileExistsError:
-        errors.append(f"symbol: {sym_lib.name} already has {sym_name}; pass overwrite=True to replace it (the old one is kept: in history/ inside a cadmate project, else as .bak)")
+        errors.append(f"symbol: {sym_lib.name} already has {sym_name}; pass overwrite=True to replace it (the old one is kept in .cadmate/undo/; undo_last_write puts it back)")
         new_lib = None
     for f in (fp_file, step_file):
         if f is not None and f.exists() and not overwrite:
-            errors.append(f"{f} exists; pass overwrite=True to replace it (the old one is kept: in history/ inside a cadmate project, else as .bak)")
+            errors.append(f"{f} exists; pass overwrite=True to replace it (the old one is kept in .cadmate/undo/; undo_last_write puts it back)")
 
     result = {
         "ok": not errors,
@@ -176,7 +175,7 @@ def generate_part(
             built_tmp.cleanup()
         return result
 
-    # Everything checked: write. What gets replaced is kept first (history/ in a cadmate project, else .bak).
+    # Everything checked: write. What gets replaced is kept first (in .cadmate/undo/, for undo_last_write).
     project.mkdir(parents=True, exist_ok=True)
     written = []
     kept = _project.keep([sym_lib if existing_sym is not None else None, fp_file, step_file], f"part-{sym_name}")

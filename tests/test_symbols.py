@@ -245,7 +245,8 @@ def test_generate_symbol_tool_writes_and_refuses_to_overwrite(tmp_path):
     again = server.generate_symbol("NE555D", NE555, str(lib), **NE555_FIELDS)
     assert not again["ok"] and "overwrite" in again["errors"][0]
     assert server.generate_symbol("NE555D", NE555, str(lib), overwrite=True, **NE555_FIELDS)["ok"]
-    assert (tmp_path / "parts.kicad_sym.bak").exists()
+    assert not (tmp_path / "parts.kicad_sym.bak").exists()
+    assert list((tmp_path / ".cadmate/undo").glob("*/parts.kicad_sym"))
     ch = server.generate_symbol("CH340G", [{"number": n, "name": m, "type": t} for n, m, t, *_ in CH340G], str(lib), footprint_path=str(SOIC))
     assert not ch["ok"] and "no pad" in ch["errors"][0]
     review = server.check_symbol(str(lib), "NE555D", pins=NE555, footprint_path=str(SOIC))

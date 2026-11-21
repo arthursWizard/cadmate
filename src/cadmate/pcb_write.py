@@ -18,14 +18,12 @@ from __future__ import annotations
 
 import math
 import re
-import shutil
 import subprocess
-import tempfile
 import uuid as uuidlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import apps, kicad_libs, project, sexpr
+from . import apps, kicad_libs, project, sexpr, workdir
 
 PCB_FORMAT = "20250926"  # (kicad_pcb ...) that KiCad 10 reads
 NS = uuidlib.UUID("2d6b8f1e-7c3a-5b90-8e4d-1a9f6c2e7b30")  # cadmate's namespace for board UUIDs
@@ -86,12 +84,8 @@ def netlist(sch: Path, pin_info: dict | None = None) -> tuple[list[Comp], dict[s
     if not cli:
         raise BoardWriteError("this needs kicad-cli to read the schematic's netlist; install KiCad 10 "
                               "(or give the parts and nets directly)")
-    tmp = Path(tempfile.mkdtemp(prefix="cadmate-net-"))
-    out = tmp / "net.net"
-    try:
-        return _export(cli, sch, out, pin_info)
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+    with workdir.tmp(sch, "netlist") as tmp:
+        return _export(cli, sch, tmp / "net.net", pin_info)
 
 
 def _export(cli: str, sch: Path, out: Path, pin_info: dict | None) -> tuple[list[Comp], dict[str, list[str]]]:

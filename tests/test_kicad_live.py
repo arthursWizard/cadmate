@@ -220,7 +220,9 @@ def test_macos_symbol_write_moves_the_file_out_and_back(lib, monkeypatch):
                         "GND pin longer", name="NE555D")
     assert r["ok"] and "reloads" in r["kicad"]
     assert seen == [(lib.name, f".{lib.name}.cadmate-old"), (f".{lib.name}.cadmate-new", lib.name)]
-    assert sorted(p.name for p in lib.parent.iterdir()) == [lib.name]
+    # nothing left beside it but cadmate's own folder, which holds the step for kicad_live_undo
+    assert sorted(p.name for p in lib.parent.iterdir()) == [".cadmate", lib.name]
+    assert [p.parent.name for p in (lib.parent / ".cadmate").rglob("*.json")] == ["live"]
 
 
 def test_macos_footprint_write_stays_in_place(fp, monkeypatch):

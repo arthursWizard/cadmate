@@ -34,7 +34,7 @@ Early. These workflows work end to end:
 - **Review a routed board**: after routing by hand or with Freerouting, cadmate points out what a reviewer would. A decap whose track wanders to its pin or loops back through a distant ground. A crystal trace that is long, uses vias or has another signal alongside. Fast signals crossing gaps in the ground pour. Tracks narrower than their net class or than IPC-2221 asks for the current. Your board house's track, via and spacing limits, when you've chosen one cadmate knows (JLCPCB, PCBWay, OSH Park, AISLER, Eurocircuits); it never assumes one. Each finding comes with its location, the reasoning and a source. See "Reviewing a layout" below.
 - **Make a symbol from a datasheet**: Claude reads the pin table, cadmate lays out the symbol per KiCad's library conventions (grid, sides by pin type, stacked power pins, hidden NC pins, fields) and writes it into a `.kicad_sym` library, checked against the pin table and the footprint's pads.
 
-- **Keep one active project with its history**: every design lives in one folder with a fixed layout (`kicad/`, `kicad/lib/`, `freecad/`, `fab/<board>/`, `tools/`, `docs/`) where no folder holds just one thing: a one-tool design keeps its files at the root, one board or part sits directly in its tool's place, and two or more get a folder each, named for what they are (`enclosure/`, `bracket/`). Changes go into it in place; when a state is worth keeping, `project_snapshot` copies it into `history/<YYYYMMDD-HHMM>_<label>/` first, and `project_restore` brings it back. The routing tools and the footprint, symbol and part writers follow this by themselves inside a project, and `project_check` points out anything out of place. See "Projects and history" below.
+- **Keep one active project with its history**: every design lives in one folder with a fixed layout (`kicad/`, `kicad/lib/`, `freecad/`, `fab/<board>/`, `tools/`, `docs/`) where no folder holds just one thing: a one-tool design keeps its files at the root, one board or part sits directly in its tool's place, and two or more get a folder each, named for what they are (`enclosure/`, `bracket/`). Changes go into it in place, and nothing is written outside it: cadmate's own scratch goes in `.cadmate/` there and is deleted after each call. A tool that rewrites a saved file keeps the old one in `.cadmate/undo/` (the last 3) for `undo_last_write`; when you ask to keep a state, `project_snapshot` copies it into `history/<YYYYMMDD-HHMM>_<label>/`, and `project_restore` brings it back. `project_check` points out anything out of place. See "Projects and history" below.
 
 - **Keep a part easy to change**: a model can be right and still be "spaghetti CAD", sketches stuck to faces that break when the geometry changes, sizes typed into one feature after another, fixes stacked on top instead of edits. The `freecad-modelling` skill builds parts as a tree you can edit (one Params sheet, sketches on origin or datum planes, every feature named), and `check_model_structure` checks it, so the rules are enforced, not hoped for.
 - **Check a printed case**: `check_enclosure` reads the case assembly in FreeCAD and reports what you'd otherwise find by eye or after printing: case parts colliding with boards, components or each other, a shell with an opening nobody asked for, and two case parts that don't meet flush (a gap along the seam, or one standing proud of the other). The openings meant to be there (buttons, USB, a display window) and the heights from the brief go in `enclosure.json` beside the assembly.
@@ -47,7 +47,7 @@ Early. These workflows work end to end:
 | `read_footprint` | Pads, pitch, pin 1, courtyard and linked models from a `.kicad_mod` | nothing |
 | `list_package_families` | Package families and the datasheet dimensions each needs | nothing |
 | `package_params` | Checks datasheet dimensions, and cross-checks them with the footprint | nothing |
-| `link_model_to_footprint` | Writes the 3D model link into the footprint, keeping a `.bak` | nothing |
+| `link_model_to_footprint` | Writes the 3D model link into the footprint, keeping the old file for `undo_last_write` | nothing |
 | `check_model_vs_footprint` | Checks a STEP model's centring, seating height, courtyard and size | FreeCAD |
 | `list_footprint_families` | Footprint families and the datasheet values each needs | nothing |
 | `generate_footprint` | Writes a footprint from datasheet dimensions into a `.pretty` library, checked first | nothing |
@@ -95,14 +95,15 @@ Early. These workflows work end to end:
 | `route_protoboard` | Routes a perfboard design on the hole grid (bottom, top on unplated double-sided boards, jumpers), keeping wires already drawn; lists what stays open | nothing |
 | `render_protoboard` | Top and mirrored bottom views as PNG and SVG, plus a step-by-step build list | nothing |
 | `project_init` | Makes a design folder a cadmate project with the fixed layout (flat for one tool, one board or one part); adds what's missing, moves nothing | nothing |
-| `project_add_tool` | Adds KiCad or FreeCAD to a one-tool project: snapshots it, then moves the existing files from the root into `kicad/` or `freecad/` | nothing |
-| `project_add_board`, `project_add_part`, `project_add_protoboard` | Add a second board, FreeCAD part or protoboard: snapshot, move the first one into a folder named for it (fixing a board's `${KIPRJMOD}` paths), make the new one's folder | nothing |
+| `project_add_tool` | Adds KiCad or FreeCAD to a one-tool project: moves the existing files from the root into `kicad/` or `freecad/` (undoable) | nothing |
+| `project_add_board`, `project_add_part`, `project_add_protoboard` | Add a second board, FreeCAD part or protoboard: move the first one into a folder named for it (fixing a board's `${KIPRJMOD}` paths, undoable), make the new one's folder | nothing |
 | `project_fab` | Where the board gets made (house, assembly, distributor, layers), asked once at the start and kept in the project and the brief; any of it can stay undecided | nothing |
-| `project_snapshot` | Copies the current state (or part of it) into `history/<YYYYMMDD-HHMM>_<label>/` before a change, with the libraries KiCad needs to open it | nothing |
+| `undo_last_write` | Puts back the files cadmate's last headless write replaced (routing or placement in place, a replaced footprint, symbol, part, schematic or board, part numbers, a move, a restore), from `.cadmate/undo/`; the last 3 are kept | nothing |
+| `project_snapshot` | When you ask to keep a state: copies it (or part of it) into `history/<YYYYMMDD-HHMM>_<label>/`, with the libraries KiCad needs to open it | nothing |
 | `project_history` | The snapshots, oldest first, with what each holds and why it was taken | nothing |
-| `project_restore` | Puts a snapshot back into the active project, snapshotting the current state first | nothing |
+| `project_restore` | Puts a snapshot back into the active project (undoable with `undo_last_write`) | nothing |
 | `project_release` | Releases a board revision (A, B, ...): snapshots the project, freezes the fab files, renders and notes in `releases/<board>/<rev>/`, and lists what changed since the last revision | nothing (kicad-cli for the optional renders) |
-| `project_prune` | Lists, then deletes the listed ones once the user agrees, the automatic snapshots tools took beyond the newest ten; labelled and released snapshots stay | nothing |
+| `project_prune` | Lists, then deletes the listed ones once the user agrees, the automatic snapshots older cadmate versions took beyond the newest ten; labelled and released snapshots stay | nothing |
 | `project_check` | Everything out of place: stray versions and backups, wrong depth, misnamed boards, broken or absolute library paths, renamed-project annotations, stale fab files, a released revision changed after release, a missing, stale or failing enclosure check, a loose board or part beside folders | nothing |
 | `check_enclosure` | Checks a case assembly: parts that collide, openings in each shell that aren't declared, joints between case parts with a gap or a step, part heights against the brief | FreeCAD |
 | `check_model_structure` | Checks how a FreeCAD part is built: sketches attached to generated faces, sketches not fully constrained, sizes typed as numbers instead of coming from one Params sheet, default names, broken or leftover features, solids with no history. A saved .FCStd, or the document open in your window | FreeCAD |
@@ -306,8 +307,8 @@ Stripboard (copper strips you cut) isn't supported yet.
 
 ## Projects and history
 
-A design is one folder, the active project. Everything changes in place; history is a folder of snapshots, not
-`-v2` copies beside the files.
+A design is one folder, the active project. Everything changes in place, with no `-v2` copies beside the files and
+nothing written outside the folder. History is a folder of snapshots, taken when you ask for one.
 
 No folder holds just one thing. A design with one kind of file (KiCad, FreeCAD or protoboards) keeps it at the root;
 with several, each gets its folder: `kicad/`, `freecad/`, `protoboard/`. In each, one board, part or protoboard sits directly there, and two or
@@ -325,26 +326,30 @@ more get a folder each, named for what they are: `main/`, `sensor/`; `enclosure/
   fab/<board>/          generated fab files
   tools/                generator scripts: the design's source
   docs/                 datasheets, drawings, notes, brief.md
-  history/HISTORY.md    and 20261031-1213_before-rework/ ... (same paths as the project)
+  history/HISTORY.md    and 20261031-1213_approved-layout/ ... (same paths as the project; only when asked)
   releases/<board>/A/   a released revision, frozen: fab files, renders, RELEASE.md (project_release)
-  .cadmate/work/        scratch
+  .cadmate/             cadmate's own, ignored by git: tmp/ (one call's scratch, deleted after it), undo/ (the
+                        last 3 headless writes), live/ (the live tools' steps), work/ (options to compare)
 ```
 
 A KiCad-only design with one board is just `main.kicad_pro` and friends, `lib/` and `fab/` at the root.
 `cadmate-project.json` records the tools; pass `tools` (and `boards`, `parts`) to `project_init`. Going from one to
-two is a tool call, never a hand move: `project_add_tool`, `project_add_board`, `project_add_part` and `project_add_protoboard` snapshot first,
-move the files and fix the `${KIPRJMOD}` paths a moved board needs.
+two is a tool call, never a hand move: `project_add_tool`, `project_add_board`, `project_add_part` and `project_add_protoboard`
+move the files and fix the `${KIPRJMOD}` paths a moved board needs, and `undo_last_write` moves them back.
 
-Inside a project, `route_critical_nets`, `autoroute_rest` and `finish_routing` change the board itself after
-snapshotting it (`in_place=False` sends the result to `.cadmate/work/` instead), `export_fab` writes to `fab/<board>/`
-and replaces the old Gerbers, and the footprint, symbol and part writers keep replaced files in `history/` rather than
-as `.bak`. Outside a project they behave as before. The server's instructions carry the rules to every session that
+`route_critical_nets`, `autoroute_rest`, `finish_routing` and `apply_placement` change a saved board itself
+(`in_place=False` sends the result to `.cadmate/work/` instead, or `<name>-<step>.kicad_pcb` outside a project),
+`export_fab` writes to `fab/<board>/` and replaces the old Gerbers, and every tool that replaces a saved file
+(these, the footprint, symbol and part writers, `write_schematic`, `board_from_schematic`, `set_part_numbers`) keeps the
+old one in `.cadmate/undo/` first, never a `.bak` or a `history/` snapshot. Edits in your open KiCad or FreeCAD window
+have the app's own undo. Scratch (kicad-cli reports, board copies for DRC, Freerouting's files, pictures) goes in
+`.cadmate/tmp/` and is deleted before the call returns, not in the system's temp folder. The server's instructions carry the rules to every session that
 connects, and the `cadmate-project` skill has the reasons and the edge cases (library paths, renaming, open files).
 
 When a board is ordered, `project_release` makes it a revision: a whole-project snapshot that's never pruned, and
 `releases/<board>/<rev>/` with the fab files as sent and RELEASE.md listing what changed since the previous revision
-(parts, nets, layers, outline, routing). Tools snapshot the board before every routing pass, so history grows;
-`project_prune` deletes the older automatic snapshots on confirmation and keeps every labelled and released one.
+(parts, nets, layers, outline, routing). Older cadmate versions snapshotted the board before every routing pass;
+`project_prune` deletes those automatic snapshots on confirmation and keeps every labelled and released one.
 
 ## Skills
 
@@ -352,7 +357,7 @@ When a board is ordered, `project_release` makes it a revision: a whole-project 
 
 To read datasheets, Claude needs a way to read PDFs and to look at drawings as images; `pip install pypdf cryptography pypdfium2 pillow` (or poppler's `pdftotext` and `pdftoppm`) covers both. `cryptography` is for the AES-encrypted PDFs some manufacturers publish (GCT's, for one), `pillow` for saving pypdfium2's page renders.
 
-- `cadmate-project`: where files go, when to snapshot, how to try alternatives and clean up a sprawled project. Read it first.
+- `cadmate-project`: where files go, undo and when to snapshot, how to try alternatives and clean up a sprawled project. Read it first.
 - `kicad-3d-models`: how to build, check and link a 3D model for a KiCad footprint.
 - `freecad-modelling`: how to build and change a printed part in FreeCAD so its tree stays editable (one Params sheet, sketches on planes, named, edit instead of patching), and how to tidy a messy one.
 - `kicad-footprints`: how to read a datasheet into a footprint, and review an existing one.

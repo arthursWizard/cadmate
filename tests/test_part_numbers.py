@@ -183,21 +183,22 @@ def test_mistakes_are_reported_or_refused(design):
 
 
 def test_the_old_files_are_kept_first(design, tmp_path):
-    # outside a project: a .bak beside each file written
-    pn.set_part_numbers(str(design / "main.kicad_sch"), {"R1": {"MPN": "X"}})
-    assert (design / "main.kicad_sch.bak").exists() and (design / "main.kicad_pcb.bak").exists()
-    assert not (design / "sub.kicad_sch.bak").exists()
-    assert '"X"' not in (design / "main.kicad_sch.bak").read_text(encoding="utf-8")
+    # outside a project: in .cadmate/undo/ of the files' folder, no .bak
+    r = pn.set_part_numbers(str(design / "main.kicad_sch"), {"R1": {"MPN": "X"}})
+    kept = Path(r["previous_kept"])
+    assert (kept / "main.kicad_sch").exists() and (kept / "main.kicad_pcb").exists() and not (kept / "sub.kicad_sch").exists()
+    assert '"X"' not in (kept / "main.kicad_sch").read_text(encoding="utf-8")
+    assert not list(design.glob("*.bak"))
 
-    # inside one: a snapshot in history/
+    # inside one: the same, in the project's .cadmate/undo/, and no history/
     root = tmp_path / "proj"
     project.init(root, tools=["kicad"])
     (root / "kicad").mkdir(exist_ok=True)
     for f in ("main.kicad_sch", "sub.kicad_sch", "main.kicad_pcb"):
         (root / "kicad" / f).write_bytes((design / f).read_bytes())
     r = pn.set_part_numbers(str(root / "kicad" / "main.kicad_sch"), {"R1": {"MPN": "Y"}})
-    meta = json.loads((Path(r["previous_kept"]) / "SNAPSHOT.json").read_text())
-    assert sorted(meta["paths"]) == ["kicad/main.kicad_pcb", "kicad/main.kicad_sch"]
+    meta = json.loads((Path(r["previous_kept"]) / "UNDO.json").read_text())
+    assert sorted(meta["kept"]) == ["kicad/main.kicad_pcb", "kicad/main.kicad_sch"] and not (root / "history").exists()
 
 
 def test_older_kicad_formats(tmp_path):

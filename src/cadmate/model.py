@@ -26,10 +26,9 @@ from __future__ import annotations
 import json
 import os
 import re
-import tempfile
 from pathlib import Path
 
-from . import apps, check, ipc
+from . import apps, check, ipc, workdir
 from .footprint import BBox, Footprint, Model, Pad
 
 BODY = (0.15, 0.15, 0.15)
@@ -249,10 +248,11 @@ def planned_marks(solids: list[dict]) -> list[dict]:
 def build(solids: list[dict], out: Path, name: str) -> dict:
     """Write the planned solids as a STEP file through FreeCADCmd. Returns what FreeCAD measured."""
     out.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory() as tmp:
-        spec = Path(tmp) / "model.json"
+    with workdir.tmp(out, "model") as tmp:
+        spec = tmp / "model.json"
         spec.write_text(json.dumps({"name": name, "solids": solids, "out": str(out)}), encoding="utf-8")
-        info = apps.run_freecad_script(Path(__file__).parent / "freecad_scripts" / "build_model.py", env={"CADMATE_SPEC": str(spec)})
+        info = apps.run_freecad_script(Path(__file__).parent / "freecad_scripts" / "build_model.py", env={"CADMATE_SPEC": str(spec)},
+                                       near=out)
     info["colours"] = has_colours(out)
     return info
 
@@ -294,7 +294,7 @@ def inspect(model_file: Path, placement: Model | None = None, board_thickness: f
     if placement is not None:
         env["CADMATE_PLACEMENT"] = json.dumps({"matrix": check.placement_matrix(placement), "section_z": -board_thickness / 2,
                                                "parts": parts})
-    return apps.run_freecad_script(Path(__file__).parent / "freecad_scripts" / "inspect_model.py", env=env)
+    return apps.run_freecad_script(Path(__file__).parent / "freecad_scripts" / "inspect_model.py", env=env, near=model_file)
 
 
 def _step_for(model_file: Path) -> tuple[Path | None, str | None]:

@@ -15,11 +15,10 @@ from __future__ import annotations
 import json
 import math
 import subprocess
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import apps, sexpr, versions
+from . import apps, sexpr, versions, workdir
 
 SOURCES = {
     "kicad_ssg": "KiCad Library Conventions S4.2 (klc.kicad.org/symbol/s4/s4.2/) place a symbol's inputs left, outputs "
@@ -500,15 +499,16 @@ def run_erc(sch: Path) -> dict | None:
     cli = apps.find_kicad_cli()
     if not cli:
         return None
-    out = Path(tempfile.mkdtemp(prefix="cadmate-erc-")) / "erc.json"
-    try:
-        proc = subprocess.run([cli, *versions.kicad_cli_args("sch_erc"), "--output", str(out), str(sch)],
-                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
-    except (OSError, subprocess.SubprocessError) as e:
-        return {"error": f"kicad-cli erc failed: {e}"}
-    if not out.exists():
-        return {"error": f"kicad-cli erc wrote no report (exit {proc.returncode}): {(proc.stderr or proc.stdout)[-800:]}"}
-    return json.loads(out.read_text(encoding="utf-8"))
+    with workdir.tmp(sch, "erc") as tmp:
+        out = tmp / "erc.json"
+        try:
+            proc = subprocess.run([cli, *versions.kicad_cli_args("sch_erc"), "--output", str(out), str(sch)],
+                                  capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+        except (OSError, subprocess.SubprocessError) as e:
+            return {"error": f"kicad-cli erc failed: {e}"}
+        if not out.exists():
+            return {"error": f"kicad-cli erc wrote no report (exit {proc.returncode}): {(proc.stderr or proc.stdout)[-800:]}"}
+        return json.loads(out.read_text(encoding="utf-8"))
 
 
 def _erc_findings(rep: dict) -> list[dict]:

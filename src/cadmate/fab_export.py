@@ -22,11 +22,10 @@ import re
 import os
 import shutil
 import subprocess
-import tempfile
 import zipfile
 from pathlib import Path
 
-from . import sexpr, versions
+from . import sexpr, versions, workdir
 from .apps import KICAD_CLI_ENV, find_kicad_cli
 
 GERBER_LAYERS = ["F.Cu", "B.Cu", "F.Paste", "B.Paste", "F.Silkscreen", "B.Silkscreen", "F.Mask", "B.Mask", "Edge.Cuts"]
@@ -247,6 +246,13 @@ def placeholder(lcsc: str) -> bool:
 
 
 def export(board: Path, out_dir: Path | None = None, refill: bool = True, fab: str | None = None) -> dict:
+    """See _export. The refilled board copy and kicad-cli's position file go in .cadmate/tmp/ of the board's working
+    folder, deleted before this returns."""
+    with workdir.tmp(board, "fab") as scratch:
+        return _export(board, scratch, out_dir, refill, fab)
+
+
+def _export(board: Path, scratch: Path, out_dir: Path | None = None, refill: bool = True, fab: str | None = None) -> dict:
     """Gerbers + drill (zipped), a generic BOM and placement file, and the board house's own BOM and CPL when cadmate
     knows its columns, into out_dir (default: <project>/fab/<board name> inside a cadmate project, else <board
     folder>/fab/<board name>). fab: the board house, else the project's choice, else none ("none" to skip it). The
@@ -270,8 +276,7 @@ def export(board: Path, out_dir: Path | None = None, refill: bool = True, fab: s
     if refill:
         from .freerouting import refill as _refill
 
-        scratch = tempfile.TemporaryDirectory(prefix="cadmate-fab-")
-        copy = Path(scratch.name) / board.name  # not in the fab folder: it isn't for the fab
+        copy = scratch / board.name  # not in the fab folder: it isn't for the fab
         shutil.copyfile(board, copy)
         for ext in (".kicad_pro", ".kicad_dru"):
             if board.with_suffix(ext).exists():
@@ -293,10 +298,9 @@ def export(board: Path, out_dir: Path | None = None, refill: bool = True, fab: s
     for old in (f"{stem}-pos-kicad.csv", f"{stem}-bom-jlc.csv", f"{stem}-cpl-jlc.csv", f"{stem}-assembly-top.pdf",
                 f"{stem}-assembly-bottom.pdf"):  # a previous export's, maybe for another house
         (out / old).unlink(missing_ok=True)
-    with tempfile.TemporaryDirectory(prefix="cadmate-pos-") as d:
-        tmp = Path(d) / f"{stem}-pos.csv"
-        _cli(*versions.kicad_cli_args("pcb_pos"), "--output", str(tmp), str(board))
-        kicad_pos = tmp.read_text(encoding="utf-8")
+    tmp = scratch / f"{stem}-pos.csv"
+    _cli(*versions.kicad_cli_args("pcb_pos"), "--output", str(tmp), str(board))
+    kicad_pos = tmp.read_text(encoding="utf-8")
     parts = footprints(text)
     bom, pos = out / f"{stem}-bom.csv", out / f"{stem}-pos.csv"
     bom.write_text(generic_bom(parts), encoding="utf-8")

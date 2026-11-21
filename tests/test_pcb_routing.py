@@ -322,16 +322,20 @@ def test_pair_on_one_layer_is_routed_coupled_and_matched():
     _clear(b, res["tracks"], res["vias"])
 
 
-def test_flow_on_a_file_writes_a_new_board_and_keeps_the_original(tmp_path):
+def test_flow_on_a_file_changes_it_in_place_and_keeps_the_original_for_undo(tmp_path):
+    from cadmate import undo
+
     from cadmate import pcb_flow
 
     src = tmp_path / "b.kicad_pcb"
     src.write_text(HEAD + ic() + vcap() + gnd_pour() + ")\n")
     plan = pcb_flow.classify(str(src))
     assert plan["ok"] and "next" in plan
+    before = src.read_text()
     out = pcb_flow.route_critical(str(src))
-    assert out["routed"] == 2 and out["written"].endswith("b-critical.kicad_pcb")
-    assert "(segment" not in src.read_text()
+    assert out["routed"] == 2 and out["written"] == str(src) and "(segment" in src.read_text()
+    assert sorted(p.name for p in tmp_path.iterdir()) == [".cadmate", "b.kicad_pcb"]
+    assert undo.undo(src)["ok"] and src.read_text() == before and not (tmp_path / ".cadmate").exists()
     with pytest.raises(pcb_flow.FlowError):
         pcb_flow.route_critical(str(src), out_path=str(src))
 

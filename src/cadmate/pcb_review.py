@@ -15,10 +15,9 @@ import json
 import math
 import re
 import subprocess
-import tempfile
 from pathlib import Path
 
-from . import apps, versions
+from . import apps, versions, workdir
 from . import fab as fabmod
 from .pcb_board import (Board, NetGraph, Pad, Part, Track, convex_hull, dist, load_project, load_schematic, parse, point_in_polygon, point_seg,
                         polygon_area, polygon_gap, seg_seg)
@@ -909,17 +908,18 @@ def run_drc(board_file: Path) -> dict | None:
     cli = apps.find_kicad_cli()
     if not cli:
         return None
-    out = Path(tempfile.mkdtemp(prefix="cadmate-drc-")) / "drc.json"
-    try:
-        parity = versions.kicad_cli_args("pcb_drc_parity") if board_file.with_suffix(".kicad_sch").exists() else []
-        # zones as they'd be after a refill: a saved board may hold unfilled pours, which DRC would count as unrouted
-        proc = subprocess.run([cli, *versions.kicad_cli_args("pcb_drc"), *parity, "--output", str(out), str(board_file)],
-                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
-    except (OSError, subprocess.SubprocessError) as e:
-        return {"error": f"kicad-cli drc failed: {e}"}
-    if not out.exists():
-        return {"error": f"kicad-cli drc wrote no report (exit {proc.returncode}): {(proc.stderr or proc.stdout)[-800:]}"}
-    return json.loads(out.read_text(encoding="utf-8"))
+    with workdir.tmp(board_file, "drc") as tmp:
+        out = tmp / "drc.json"
+        try:
+            parity = versions.kicad_cli_args("pcb_drc_parity") if board_file.with_suffix(".kicad_sch").exists() else []
+            # zones as they'd be after a refill: a saved board may hold unfilled pours, which DRC would count as unrouted
+            proc = subprocess.run([cli, *versions.kicad_cli_args("pcb_drc"), *parity, "--output", str(out), str(board_file)],
+                                  capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+        except (OSError, subprocess.SubprocessError) as e:
+            return {"error": f"kicad-cli drc failed: {e}"}
+        if not out.exists():
+            return {"error": f"kicad-cli drc wrote no report (exit {proc.returncode}): {(proc.stderr or proc.stdout)[-800:]}"}
+        return json.loads(out.read_text(encoding="utf-8"))
 
 
 def drc_summary(rep: dict) -> dict:
@@ -1081,10 +1081,10 @@ def review_live(**kw) -> dict:
         load_schematic(board, folder, Path(live_board.name).stem)
     drc = None
     if kw.pop("drc", True) and apps.find_kicad_cli():
-        tmp = Path(tempfile.mkdtemp(prefix="cadmate-review-"))
-        copy = tmp / Path(live_board.name).name
-        live_board.save_as(str(copy), overwrite=True, include_project=True)
-        drc = run_drc(copy)
+        with workdir.tmp(folder, "review") as tmp:
+            copy = tmp / Path(live_board.name).name
+            live_board.save_as(str(copy), overwrite=True, include_project=True)
+            drc = run_drc(copy)
     out = _with_fab(board, folder, drc, kw)
     out["source"] = "the open PCB editor, unsaved edits included"
     return out
